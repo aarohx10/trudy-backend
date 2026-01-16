@@ -1,0 +1,2199 @@
+# Backend Plan
+
+# Trudy Backend Plan (FastAPI + Hetzner VPS) — Single-Agency, Multi-Client## Overview- Backend framework: FastAPI (Python 3.11), Pydantic v2, Uvicorn.
+
+- Hosting: Hetzner VPS with systemd service management.
+- Async workflows: Background jobs via systemd timers or cron.
+- Storage: Local file storage on mounted volume (uploads/artifacts).
+- Database: Supabase Postgres with RLS (single-agency, client-scoped).
+- Secrets: Environment variables (.env file). Observability: journald + Sentry.
+- Auth: Auth0 JWT (RS256). Ultravox is the primary voice/calls provider.
+
+## Services (logical modules)- Identity & Access: clients (tenants), users/roles, API keys.
+
+- Voices: native cloning via Ultravox; external refs; status polling.
+- Agents: CRUD, voice linkage, tools/corpora mapping.
+- Knowledge Base: Local storage intake + Ultravox corpus/source sync.
+- Calls: direct calls; transcripts/recordings/analysis proxy.
+- Campaigns: CSV ingest, batching, scheduled dialing (Ultravox + Telnyx medium).
+- Billing & Credits: Stripe webhooks → credit ledger; feature gating.
+- Webhooks: ingress (Ultravox, Stripe, Telnyx), egress (client-configured).
+
+## API Surface (v1)- Auth & client: GET /me; GET /clients; POST /api-keys
+
+- Voices: POST /voices; GET /voices; GET /voices/{id}
+- Agents: POST /agents; PATCH /agents/{id}; GET /agents; GET /agents/{id}
+- Knowledge Base: POST /kb; POST /kb/{id}/files/presign; POST /kb/{id}/files/ingest; GET /kb/{id}
+- Campaigns: POST /campaigns; POST /campaigns/{id}/contacts; POST /campaigns/{id}/schedule; GET /campaigns/{id}
+- Calls: POST /calls; GET /calls/{id}; GET /calls/{id}/transcript; GET /calls/{id}/recording
+- Webhooks ingress: POST /webhooks/ultravox|stripe|telnyx
+- Webhooks egress mgmt: POST /webhooks; GET /webhooks; DELETE /webhooks/{id}
+
+### Response & errors- Envelope: { "data": ..., "meta": { "request_id": ..., "ts": ... } }
+
+- Errors: { "error": { "code": "...", "message": "...", "details": { ... } } }
+
+## Architecture- Entry: Hetzner VPS → FastAPI (Uvicorn with multiple workers).
+
+- Local storage with presigned URLs for uploads/downloads; hash/size validation on callback.
+- Background jobs: voice-clone-native, voice-clone-external, campaign-execute-batch, artifacts-backfill.
+- Background job queues: campaign-dialer, artifacts-sync, webhook-egress (implemented via database or in-memory queues).
+- Scheduled jobs: nightly-analytics, stale-upload-cleaner, retry-voice-status (via systemd timers or cron).
+
+## Environments & config- Stages: dev, staging, prod. Stage-specific Supabase.
+
+- Env vars (prefix TRUDY_): SUPABASE_URL/KEY, JWT_AUDIENCE/ISSUER, ULTRAVOX_API_KEY, STRIPE_SECRET, TELNYX_API_KEY, FILE_STORAGE_PATH, FILE_SERVER_URL, WEBHOOK_SIGNING_SECRET.
+- Secrets in .env file; loaded at service start.
+
+## Security- Auth0 JWKs verification (cached). Tenancy via `x-client-id` header alignment with JWT claim (validated) and RLS.
+
+- Webhook HMAC (egress): X-Trudy-Timestamp + X-Trudy-Signature.
+- Provider webhook verification (Ultravox/Stripe/Telnyx). Reject skew > 5m.
+- File storage encryption + lifecycle policies; file permissions; audit log on sensitive tables.
+
+## Rate limits & quotas- FastAPI rate limiting middleware for public API keys.
+
+- Per-client quotas in DB (calls/day, campaigns, storage GB).
+- Optional Redis (Upstash) for burst control.
+
+## Milestones1) Auth/JWT guard + health
+
+1. DB connectivity + RLS smoke tests (client-scoped)
+2. Voices: presign + native Ultravox clone + status tracker
+3. Agents CRUD + Ultravox sync
+4. KB create/upload/ingest + corpus sync
+5. Calls (direct) + artifacts proxy
+6. Campaigns (schedule via Ultravox batches)
+7. Webhooks ingress + egress fan-out
+8. Stripe credits; debit on usage
+9. OpenAPI + error guide + rate limiting
+
+## Acceptance criteria- E2E native voice clone emits started/completed events and is usable by an agent.
+
+- Campaign scheduling creates Ultravox batches and updates stats via webhooks.
+- Webhooks signed, retried, DLQs empty in steady state.
+- OpenAPI validates; tenancy tests enforce client-level RLS.
+
+## Deployment- Infrastructure: Hetzner VPS with systemd service management.
+
+- CI/CD: GitHub Actions (ruff, mypy, pytest, deploy via SSH). Automatic deployment on push to main branch.
+
+## Feature-by-feature backend design (contracts, logic, database)Notes
+
+- All responses use the { data, meta } envelope. All errors use the { error } envelope.
+- All writes are idempotent using an `X-Idempotency-Key` header (persisted per client with request hash + outcome).
+- All requests must include `x-client-id`; backend validates it against JWT and uses it for Supabase filters.
+- All database queries automatically filtered by RLS using JWT context (set via `supabase.postgrest.auth.set_auth(jwt_token)`).
+- Event emissions: Emit events for async processing and real-time frontend updates via WebSocket.
+
+### 0) Auth & Client Management
+
+### GET /api/v1/me**Step-by-Step Flow:**
+
+1. Extract JWT from Authorization header
+2. Validate JWT (signature, expiration, issuer, audience)
+3. Extract claims: `sub`, `client_id`, `role`, `email`4. Validate `x-client-id` header matches JWT `client_id` (unless `role='agency_admin'`)
+4. Query database: `SELECT * FROM users WHERE auth0_sub = $sub`6. RLS automatically filters by `client_id` if applicable
+5. Return user object with permissions
+**Response:**
+
+**Error Scenarios:**
+- 401 Unauthorized: Invalid/expired JWT
+- 403 Forbidden: client_id mismatch (unless agency_admin)
+- 404 Not Found: User not found in database
+
+### GET /api/v1/clients
+
+**Step-by-Step Flow:**
+1. Validate JWT and extract claims
+2. If `role='agency_admin'`: Query all clients
+3. If `role='client_admin'` or `client_user'`: Query only their client (`client_id` from JWT)
+4. RLS policy: `SELECT * FROM clients WHERE (client_id = jwt_client_id() OR jwt_role() = 'agency_admin')`
+5. Return list of clients
+
+**Response:**
+
+```json
+{  "data": [    {      "id": "client_uuid",      "name": "Acme Corp",      "email": "admin@acme.com",      "subscription_status": "active",      "credits_balance": 1000,      "credits_ceiling": 5000,      "created_at": "2025-01-01T00:00:00Z"    }  ],  "meta": {"request_id": "req_...", "ts": "2025-10-19T10:00:00Z"}}
+```
+
+### POST /api/v1/api-keys
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id, permissions (must be `client_admin` or `agency_admin`)
+2. Check idempotency key (if present)
+3. Validate request body: `service` (required), `key_name` (required), `api_key` (required)
+4. Encrypt `api_key` using client-side encryption (Fernet or similar)
+5. Insert into `api_keys` table:
+- `client_id` (from JWT, validated)
+- `service`: “ultravox” | “stripe” | “telnyx” | “google_cloud” | “aws” | “azure” | “openai” | “elevenlabs”
+- `key_name`: user-friendly name
+- `encrypted_key`: encrypted value
+- `is_active`: true
+6. Create audit log entry
+7. Return API key metadata (never return decrypted key)
+
+**Request:**
+
+```json
+{  "service": "google_cloud",  "key_name": "Production TTS Key",  "api_key": "AIza...",  "settings": {"project_id": "my-project", "region": "us-central1"}}
+```
+
+**Response:**
+
+```json
+{  "data": {    "id": "api_key_uuid",    "client_id": "client_uuid",    "service": "google_cloud",    "key_name": "Production TTS Key",    "is_active": true,    "created_at": "2025-10-19T10:00:00Z"  },  "meta": {"request_id": "req_...", "ts": "2025-10-19T10:00:00Z"}}
+```
+
+**Error Scenarios:**
+- 422 Validation Error: Missing required fields, invalid service name
+- 403 Forbidden: Insufficient permissions
+- 409 Conflict: Duplicate key_name for same service/client
+
+### 0.1) Accounts & Provider Config
+
+### PATCH /api/v1/providers/tts (configure external TTS for client)
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id, permissions (`client_admin` or `agency_admin`)
+2. Validate request body:
+- `provider`: enum [“google”, “aws”, “azure”, “openai”, “elevenlabs”]
+- `api_key`: string (required)
+- `voice_id`: string (optional, provider-specific)
+- `settings`: JSON object (provider-specific: project_id, region, etc.)
+3. Encrypt `api_key` using client-side encryption (Fernet or similar)
+4. Check if API key exists for this client+service:
+- If exists: UPDATE `api_keys` table (encrypted_key, settings, is_active=true, updated_at)
+- If not: INSERT into `api_keys` table
+5. Create audit log: `audit_log(action='update', table_name='api_keys', diff={...})`
+6. If provider is Google/AWS/Azure/OpenAI/ElevenLabs: Call Ultravox API
+- PATCH /accounts/me/tts-api-keys
+- Body: Provider-specific config
+7. Return updated API key metadata
+
+**FE → BE Request:**
+
+```json
+{  "provider": "google",  "api_key": "AIza...",  "voice_id": "en-US-Wavenet-D",  "settings": {    "project_id": "my-project-123",    "region": "us-central1"  }}
+```
+
+**DB Writes:**
+- `api_keys` table:
+- `client_id`: from JWT
+- `service`: “google” (derived from provider)
+- `key_name`: auto-generated or from request
+- `encrypted_key`: encrypted API key
+- `settings`: JSONB with provider-specific settings
+- `is_active`: true
+- `updated_at`: now()
+- `audit_log` table:
+- `action`: ‘update’ or ‘create’
+- `table_name`: ‘api_keys’
+- `record_id`: api_key.id
+- `diff`: JSONB with before/after values
+- `user_id`: from JWT sub
+- `client_id`: from JWT
+
+**Ultravox Call:**
+
+```
+PATCH https://api.ultravox.ai/v1/accounts/me/tts-api-keys
+Headers:
+  Authorization: Bearer {ULTRAVOX_API_KEY}
+  Content-Type: application/json
+Body:
+{
+  "provider": "google",
+  "api_key": "AIza...",
+  "voice_id": "en-US-Wavenet-D",
+  "settings": {
+    "project_id": "my-project-123",
+    "region": "us-central1"
+  }
+}
+```
+
+**Response:**
+
+```json
+{  "data": {    "id": "api_key_uuid",    "client_id": "client_uuid",    "service": "google",    "key_name": "Google TTS Key",    "is_active": true,    "updated_at": "2025-10-19T10:00:00Z"  },  "meta": {"request_id": "req_...", "ts": "2025-10-19T10:00:00Z"}}
+```
+
+**Error Scenarios:**
+- 422 Validation Error: Invalid provider, missing api_key, invalid settings structure
+- 401 Unauthorized: Invalid JWT
+- 403 Forbidden: Insufficient permissions
+- 502 Bad Gateway: Ultravox API failure (with retry logic)
+
+### 1) Voices
+
+### POST /api/v1/voices/files/presign (get S3 presigned URLs for voice samples)
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id, permissions (`client_admin` or `agency_admin`)
+2. Check idempotency key (if present)
+3. Validate request body:
+- `files`: array of objects with `filename`, `content_type`, `file_size`
+- Each file must be: audio format (WAV/MP3), size limit (e.g., 10MB), count limit (3-10 files)
+4. For each file:
+- Generate S3 key: `uploads/client_{client_id}/voices/{voice_id}/sample_{index}.{ext}`
+- Generate presigned PUT URL (expires in 1 hour)
+- Create `knowledge_base_documents` record with status=‘pending_upload’
+5. Return presigned URLs with `doc_id` for each file
+
+**Request:**
+
+```json
+{  "files": [    {"filename": "sample1.wav", "content_type": "audio/wav", "file_size": 524288},    {"filename": "sample2.wav", "content_type": "audio/wav", "file_size": 491520}  ]}
+```
+
+**Response:**
+
+```json
+{  "data": {    "uploads": [      {        "doc_id": "doc_uuid_1",        "url": "https://trudy-uploads.s3.amazonaws.com/uploads/client_123/voices/voice_abc/sample1.wav?X-Amz-Algorithm=...",        "headers": {"Content-Type": "audio/wav"}      },      {        "doc_id": "doc_uuid_2",        "url": "https://trudy-uploads.s3.amazonaws.com/uploads/client_123/voices/voice_abc/sample2.wav?X-Amz-Algorithm=...",        "headers": {"Content-Type": "audio/wav"}      }    ]  },  "meta": {"request_id": "req_...", "ts": "2025-10-19T10:00:00Z"}}
+```
+
+**Error Scenarios:**
+- 422 Validation Error: Too many files, invalid format, file size too large
+- 403 Forbidden: Insufficient permissions
+- 402 Payment Required: Insufficient credits for voice training
+
+### POST /api/v1/voices (clone or reference)
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id, permissions (`client_admin` or `agency_admin`)
+2. Check idempotency key (if present, return cached response)
+3. Validate request body:
+- `name`: string (required, 1-100 chars)
+- `strategy`: enum [“auto”, “native”, “external”] (required)
+- `source`: object (required for native)
+- `type`: “native” | “external”
+- `samples`: array (required for native, 3-10 samples, total duration ≥ 15 seconds)
+- Each sample: `text` (string), `s3_key` (string), `duration_seconds` (number, 3-10s)
+- `provider_overrides`: optional object with `provider`, `voice_id`
+4. **Credit Check:**
+- Query `clients` table: `SELECT credits_balance FROM clients WHERE id = $client_id`
+- Training cost: 50 credits for native clone
+- If `credits_balance < 50`: Return 402 Payment Required
+5. **Create Database Record:**
+- Insert into `voices` table:
+- `id`: new UUID
+- `client_id`: from JWT (validated)
+- `name`: from request
+- `provider`: determined from strategy/provider_overrides (“elevenlabs” default for native)
+- `type`: “custom” (native) or “reference” (external)
+- `language`: “en-US” (default) or from request
+- `status`: “training” (native) or “active” (external)
+- `training_info`: `{"progress": 0, "started_at": "2025-10-19T10:00:00Z"}`
+- `created_at`: now()
+- RLS automatically enforces client_id scope
+6. **Generate Presigned URLs for Ultravox:**
+- For each sample in `source.samples`:
+- Read S3 key from sample object
+- Generate READ-ONLY presigned URL (expires in 24 hours)
+- Format: `https://trudy-uploads.s3.amazonaws.com/{s3_key}?X-Amz-Expires=86400&X-Amz-Signature=...`
+7. **Call Ultravox API:**
+- **If strategy = “native”:**
+- POST https://api.ultravox.ai/v1/voices
+- Headers: `Authorization: Bearer {ULTRAVOX_API_KEY}`
+- Body:
+
+```json
+       {         "name": "My Voice",         "provider": "elevenlabs",         "type": "custom",         "language": "en-US",         "training_samples": [           {             "text": "Hello, this is my voice sample.",             "audio_url": "https://trudy-uploads.s3.amazonaws.com/uploads/client_123/voices/voice_abc/sample1.wav?X-Amz-Expires=86400&X-Amz-Signature=...",             "duration_seconds": 6.1           },           ...         ]       }       ```     - Response: `{"data": {"id": "voice_ultravox_123", "status": "training"}}`   - **If strategy = "external":**     - POST https://api.ultravox.ai/v1/voices     - Body:       ```json       {         "name": "My Voice",         "provider": "elevenlabs",         "type": "reference",         "provider_voice_id": "optional_voice_id"       }       ```     - Response: `{"data": {"id": "voice_ultravox_456", "status": "active"}}`8. **Update Database with Ultravox ID:**   - UPDATE `voices` SET `ultravox_voice_id = 'voice_ultravox_123'` WHERE `id = $voice_id`9. **Debit Credits (if native training):**   - INSERT into `credit_transactions`:     - `client_id`: from JWT     - `type`: "spent"     - `amount`: 50     - `reference_type`: "voice_training"     - `reference_id`: voice.id     - `description`: "Voice training: {name}"   - UPDATE `clients` SET `credits_balance = credits_balance - 50` WHERE `id = $client_id`10. **Trigger Step Function (if native):**    - Call AWS Step Functions API    - Start execution: `sf-voice-clone-native`    - Input:      ```json      {        "voice_id": "voice_uuid",        "ultravox_voice_id": "voice_ultravox_123",        "client_id": "client_uuid"      }      ```11. **Emit Event:**    - Publish to EventBridge: `voice.training.started` (native) or `voice.created` (external)    - Event data: `{voice_id, client_id, ultravox_voice_id, status, timestamp}`12. **Return Response:**    - 202 Accepted (for native training) or 201 Created (for external)    - Include voice object with status**FE → BE Request:**```json{  "name": "My Voice",  "strategy": "native",  "source": {    "type": "native",    "samples": [      {        "text": "Hello, this is my voice sample.",        "s3_key": "uploads/client_123/voices/voice_abc/sample1.wav",        "duration_seconds": 6.1      },      {        "text": "This is sample 2.",        "s3_key": "uploads/client_123/voices/voice_abc/sample2.wav",        "duration_seconds": 5.8      }    ]  },  "provider_overrides": {    "provider": "elevenlabs",    "voice_id": "optional"  }}
+```
+
+**DB Writes (voices table):**
+
+```json
+{  "id": "voice_uuid",  "client_id": "client_uuid",  "name": "My Voice",  "provider": "elevenlabs",  "provider_voice_id": null,  "type": "custom",  "language": "en-US",  "status": "training",  "training_info": {    "progress": 0,    "started_at": "2025-10-19T10:00:00Z",    "estimated_completion": null  },  "ultravox_voice_id": "voice_ultravox_123",  "created_at": "2025-10-19T10:00:00Z",  "updated_at": "2025-10-19T10:00:00Z"}
+```
+
+**DB Writes (credit_transactions table):**
+
+```json
+{  "id": "tx_uuid",  "client_id": "client_uuid",  "type": "spent",  "amount": 50,  "reference_type": "voice_training",  "reference_id": "voice_uuid",  "description": "Voice training: My Voice",  "created_at": "2025-10-19T10:00:00Z"}
+```
+
+**Ultravox Calls:**
+- **Native:** POST /voices with `training_samples` array
+- **External:** POST /voices with `provider_voice_id`
+
+**Response:**
+
+```json
+{  "data": {    "id": "voice_uuid",    "client_id": "client_uuid",    "name": "My Voice",    "provider": "elevenlabs",    "type": "custom",    "language": "en-US",    "status": "training",    "training_info": {      "progress": 0,      "started_at": "2025-10-19T10:00:00Z"    },    "ultravox_voice_id": "voice_ultravox_123",    "created_at": "2025-10-19T10:00:00Z"  },  "meta": {    "request_id": "req_...",    "ts": "2025-10-19T10:00:00Z"  }}
+```
+
+**Error Scenarios:**
+- 422 Validation Error: Invalid strategy, insufficient samples, total duration < 15s, invalid file format
+- 402 Payment Required: Insufficient credits (balance < 50)
+- 403 Forbidden: Insufficient permissions
+- 404 Not Found: S3 file not found (for s3_key in samples)
+- 409 Conflict: Idempotency key already used (return cached response)
+- 502 Bad Gateway: Ultravox API failure (with retry logic)
+
+### GET /api/v1/voices (list voices)
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id
+2. Set Supabase RLS context: `supabase.postgrest.auth.set_auth(jwt_token)`
+3. Query database: `SELECT * FROM voices WHERE client_id = $client_id ORDER BY created_at DESC`
+4. RLS automatically filters: Only returns voices where `client_id = jwt_client_id()` (or all if agency_admin)
+5. Optionally poll Ultravox for any voices with `status='training'`:
+- For each voice with `status='training'`:
+- Call Ultravox: `GET /voices/{ultravox_voice_id}`
+- If status changed: UPDATE `voices` table with new status/progress
+6. Return list of voices
+
+**Response:**
+
+```json
+{  "data": [    {      "id": "voice_uuid_1",      "name": "My Voice",      "provider": "elevenlabs",      "type": "custom",      "status": "active",      "ultravox_voice_id": "voice_ultravox_123",      "created_at": "2025-10-19T10:00:00Z"    },    {      "id": "voice_uuid_2",      "name": "Training Voice",      "provider": "elevenlabs",      "type": "custom",      "status": "training",      "training_info": {"progress": 45, "started_at": "2025-10-19T09:00:00Z"},      "created_at": "2025-10-19T09:00:00Z"    }  ],  "meta": {"request_id": "req_...", "ts": "2025-10-19T10:00:00Z"}}
+```
+
+**Error Scenarios:**
+- 401 Unauthorized: Invalid JWT
+- 403 Forbidden: client_id mismatch
+
+### GET /api/v1/voices/{id} (get single voice)
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id
+2. Set Supabase RLS context
+3. Query database: `SELECT * FROM voices WHERE id = $id`
+4. RLS automatically filters: Only returns if `client_id = jwt_client_id()` (or agency_admin)
+5. If voice not found: Return 404 Not Found
+6. If `status='training'`: Poll Ultravox for latest status:
+- Call Ultravox: `GET /voices/{ultravox_voice_id}`
+- If status changed: UPDATE `voices` table
+7. Return voice object
+
+**Response:**
+
+```json
+{  "data": {    "id": "voice_uuid",    "client_id": "client_uuid",    "name": "My Voice",    "provider": "elevenlabs",    "type": "custom",    "language": "en-US",    "status": "active",    "training_info": null,    "ultravox_voice_id": "voice_ultravox_123",    "created_at": "2025-10-19T10:00:00Z",    "updated_at": "2025-10-19T11:00:00Z"  },  "meta": {"request_id": "req_...", "ts": "2025-10-19T10:00:00Z"}}
+```
+
+**Error Scenarios:**
+- 404 Not Found: Voice not found or doesn’t belong to client
+- 401 Unauthorized: Invalid JWT
+
+**Background: Step Function Monitoring**
+- **Step Function:** `sf-voice-clone-native`
+- **Flow:**
+1. Validate: Check voice_id and ultravox_voice_id exist
+2. Wait: 60 seconds (give Ultravox time to start)
+3. GetVoiceStatus: GET /voices/{ultravox_voice_id} from Ultravox
+4. Choice:
+- If status == “active”: → UpdateDatabase
+- If status == “failed”: → HandleFailure
+- If status == “training”: → Wait (loop back, max 240 attempts = 4 hours)
+5. UpdateDatabase: POST /internal/voices/{voice_id}/update-status
+- Updates `voices` table: status, training_info.progress = 100, training_info.completed_at
+6. EmitEvent: Publish to EventBridge `voice.training.completed` or `voice.training.failed`
+7. Success/Failed: Terminal state
+- **Event Emissions:**
+- `voice.training.completed`: `{voice_id, client_id, ultravox_voice_id, status: "active", completed_at}`
+- `voice.training.failed`: `{voice_id, client_id, ultravox_voice_id, status: "failed", error_message}`
+
+### 2) Agents
+
+### POST /api/v1/agents
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id, permissions (`client_admin` or `agency_admin`)
+2. Check idempotency key (if present, return cached response)
+3. Validate request body:
+- `name`: string (required, 1-100 chars)
+- `description`: string (optional, max 500 chars)
+- `voice_id`: UUID (required, must exist and belong to client)
+- `system_prompt`: string (required, 10-5000 chars)
+- `model`: enum [“fixie-ai/ultravox-v0_4-8k”, “fixie-ai/ultravox-v1_0-8k”] (default: “fixie-ai/ultravox-v0_4-8k”)
+- `tools`: array of objects (optional), each with `tool_id`, `enabled`, `parameters`
+- `knowledge_bases`: array of UUIDs (optional), must exist and belong to client
+4. **Validate Voice:**
+- Query database: `SELECT * FROM voices WHERE id = $voice_id`
+- RLS automatically filters by client_id
+- Check: voice exists → 404 if not found
+- Check: voice.status == “active” → 422 if not active (training/failed)
+- Extract: `ultravox_voice_id`, `provider`, `language` from voice record
+5. **Validate Knowledge Bases (if provided):**
+- For each `kb_uuid` in `knowledge_bases` array:
+- Query: `SELECT * FROM knowledge_documents WHERE id = $kb_uuid`
+- RLS filters by client_id
+- Check: exists → 422 if not found
+- Check: status == “ready” → 422 if not ready (processing/failed)
+- Extract: `ultravox_corpus_id` from each knowledge base
+6. **Validate Tools (if provided):**
+- For each tool in `tools` array:
+- Query: `SELECT * FROM tools WHERE id = $tool_id`
+- RLS filters by client_id
+- Check: exists → 422 if not found
+- Check: status == “active” → 422 if not active
+- Extract: `ultravox_tool_id` from each tool
+7. **Create Database Record:**
+- INSERT into `agents` table:
+- `id`: new UUID
+- `client_id`: from JWT (validated)
+- `name`: from request
+- `description`: from request
+- `voice_id`: from request (FK to voices)
+- `system_prompt`: from request
+- `model`: from request
+- `tools`: JSONB array with `tool_id`, `enabled`, `parameters`, `ultravox_tool_id`
+- `knowledge_bases`: JSONB array of knowledge_base IDs
+- `status`: “creating” (temporary)
+- `created_at`: now()
+- RLS automatically enforces client_id scope
+8. **Call Ultravox API:**
+- POST https://api.ultravox.ai/v1/agents
+- Headers: `Authorization: Bearer {ULTRAVOX_API_KEY}`
+- Body:
+
+```json
+     {       "name": "Support Bot",       "voice": {         "provider": "elevenlabs",         "voice_id": "voice_ultravox_123"       },       "capabilities": {         "speech_to_text": true,         "text_to_speech": true,         "natural_language_processing": true,         "conversation_memory": true,         "tool_integration": true       },       "settings": {         "language": "en-US",         "response_timeout": 30,         "max_conversation_turns": 50,         "personality": "professional",         "greeting": "Hello! I'm your AI assistant."       },       "knowledge_base": {         "corpus_ids": ["corpus_123", "corpus_456"],         "search_enabled": true,         "context_window": 5       },       "tools": [         {           "tool_id": "ultravox_tool_789",           "enabled": true,           "parameters": {             "timeout": 30,             "retry_attempts": 3           }         }       ]     }     ```   - Response: `{"data": {"id": "agt_ultravox_abc123", "status": "active", "created_at": "2025-10-19T10:05:00Z"}}`9. **Update Database with Ultravox ID:**   - UPDATE `agents` SET `ultravox_agent_id = 'agt_ultravox_abc123'`, `status = 'active'` WHERE `id = $agent_id`10. **Emit Event:**    - Publish to EventBridge: `agent.created`    - Event data: `{agent_id, client_id, ultravox_agent_id, status, timestamp}`11. **Return Response:**    - 201 Created    - Include agent object with `ultravox_agent_id` and `status='active'`**FE → BE Request:**```json{  "name": "Support Bot",  "description": "AI support agent for customer inquiries",  "voice_id": "voice_uuid",  "system_prompt": "You are a helpful customer support agent...",  "model": "fixie-ai/ultravox-v0_4-8k",  "tools": [    {"tool_id": "tool_uuid_1", "enabled": true, "parameters": {"timeout": 30}}  ],  "knowledge_bases": ["kb_uuid_1", "kb_uuid_2"]}
+```
+
+**DB Writes (agents table):**
+
+```json
+{  "id": "agent_uuid",  "client_id": "client_uuid",  "ultravox_agent_id": "agt_ultravox_abc123",  "name": "Support Bot",  "description": "AI support agent for customer inquiries",  "system_prompt": "You are a helpful customer support agent...",  "model": "fixie-ai/ultravox-v0_4-8k",  "voice_id": "voice_uuid",  "tools": [    {      "tool_id": "tool_uuid_1",      "ultravox_tool_id": "ultravox_tool_789",      "enabled": true,      "parameters": {"timeout": 30}    }  ],  "knowledge_bases": ["kb_uuid_1", "kb_uuid_2"],  "status": "active",  "created_at": "2025-10-19T10:05:00Z",  "updated_at": "2025-10-19T10:05:00Z"}
+```
+
+**Ultravox Calls:**
+- POST /agents with voice, capabilities, settings, knowledge_base, tools
+
+**Response:**
+
+```json
+{  "data": {    "id": "agent_uuid",    "client_id": "client_uuid",    "ultravox_agent_id": "agt_ultravox_abc123",    "name": "Support Bot",    "description": "AI support agent for customer inquiries",    "voice_id": "voice_uuid",    "system_prompt": "You are a helpful customer support agent...",    "model": "fixie-ai/ultravox-v0_4-8k",    "tools": [...],    "knowledge_bases": ["kb_uuid_1", "kb_uuid_2"],    "status": "active",    "created_at": "2025-10-19T10:05:00Z"  },  "meta": {"request_id": "req_...", "ts": "2025-10-19T10:05:00Z"}}
+```
+
+**Error Scenarios:**
+- 422 Validation Error: Invalid voice_id, voice not active, invalid knowledge_base_id, knowledge base not ready, invalid tool_id, tool not active, invalid model, system_prompt too short/long
+- 404 Not Found: Voice/knowledge base/tool not found (or doesn’t belong to client)
+- 403 Forbidden: Insufficient permissions
+- 409 Conflict: Idempotency key already used (return cached response)
+- 502 Bad Gateway: Ultravox API failure (with retry logic, up to 5 attempts)
+
+### PATCH /api/v1/agents/{id}
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id, permissions (`client_admin` or `agency_admin`)
+2. Check idempotency key (if present)
+3. Query database: `SELECT * FROM agents WHERE id = $id`
+4. RLS automatically filters: Only returns if `client_id = jwt_client_id()` (or agency_admin)
+5. If agent not found: Return 404 Not Found
+6. Validate request body (partial update allowed):
+- `name`: string (optional, 1-100 chars)
+- `description`: string (optional, max 500 chars)
+- `system_prompt`: string (optional, 10-5000 chars)
+- `voice_id`: UUID (optional, must exist and be active)
+- `tools`: array (optional)
+- `knowledge_bases`: array (optional)
+7. If `voice_id` changed: Validate new voice (exists, active, belongs to client)
+8. If `knowledge_bases` changed: Validate all knowledge bases (exist, ready, belong to client)
+9. If `tools` changed: Validate all tools (exist, active, belong to client)
+10. **Update Local Database:**
+- UPDATE `agents` table with provided fields
+- `updated_at`: now()
+11. **Update Ultravox:**
+- PATCH https://api.ultravox.ai/v1/agents/{ultravox_agent_id}
+- Body: Only changed fields (voice, settings, knowledge_base, tools)
+- Retry on 429/5xx (up to 5 attempts with exponential backoff)
+12. **Emit Event:**
+- Publish to EventBridge: `agent.updated`
+- Event data: `{agent_id, client_id, changes, timestamp}`
+13. **Return Response:**
+- 200 OK with updated agent object
+
+**Request:**
+
+```json
+{  "system_prompt": "Updated system prompt...",  "tools": [{"tool_id": "tool_uuid_2", "enabled": true}]}
+```
+
+**Error Scenarios:**
+- 404 Not Found: Agent not found or doesn’t belong to client
+- 422 Validation Error: Invalid voice_id, knowledge_base_id, tool_id, validation failures
+- 403 Forbidden: Insufficient permissions
+- 502 Bad Gateway: Ultravox API failure
+
+### GET /api/v1/agents (list agents)
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id
+2. Set Supabase RLS context
+3. Query database: `SELECT * FROM agents WHERE client_id = $client_id ORDER BY created_at DESC`
+4. RLS automatically filters: Only returns agents where `client_id = jwt_client_id()` (or all if agency_admin)
+5. Optionally enrich with Ultravox status (cached, refresh every 5 minutes):
+- For each agent with `ultravox_agent_id`:
+- Call Ultravox: `GET /agents/{ultravox_agent_id}` (cached)
+- Update `status` if changed
+6. Return list of agents
+
+**Response:**
+
+```json
+{  "data": [    {      "id": "agent_uuid_1",      "name": "Support Bot",      "voice_id": "voice_uuid",      "status": "active",      "ultravox_agent_id": "agt_ultravox_abc123",      "created_at": "2025-10-19T10:05:00Z"    }  ],  "meta": {"request_id": "req_...", "ts": "2025-10-19T10:00:00Z"}}
+```
+
+**Error Scenarios:**
+- 401 Unauthorized: Invalid JWT
+- 403 Forbidden: client_id mismatch
+
+### GET /api/v1/agents/{id} (get single agent)
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id
+2. Set Supabase RLS context
+3. Query database: `SELECT * FROM agents WHERE id = $id`
+4. RLS automatically filters: Only returns if `client_id = jwt_client_id()` (or agency_admin)
+5. If agent not found: Return 404 Not Found
+6. Optionally enrich with Ultravox details (cached):
+- Call Ultravox: `GET /agents/{ultravox_agent_id}` (cached, refresh every 5 minutes)
+- Merge minimal fields (status) into response
+7. Return agent object
+
+**Response:**
+
+```json
+{  "data": {    "id": "agent_uuid",    "client_id": "client_uuid",    "ultravox_agent_id": "agt_ultravox_abc123",    "name": "Support Bot",    "description": "AI support agent...",    "voice_id": "voice_uuid",    "system_prompt": "You are a helpful...",    "model": "fixie-ai/ultravox-v0_4-8k",    "tools": [...],    "knowledge_bases": ["kb_uuid_1", "kb_uuid_2"],    "status": "active",    "created_at": "2025-10-19T10:05:00Z",    "updated_at": "2025-10-19T10:05:00Z"  },  "meta": {"request_id": "req_...", "ts": "2025-10-19T10:00:00Z"}}
+```
+
+**Error Scenarios:**
+- 404 Not Found: Agent not found or doesn’t belong to client
+- 401 Unauthorized: Invalid JWT
+
+### 3) Knowledge Bases
+
+### POST /api/v1/kb
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id, permissions (`client_admin` or `agency_admin`)
+2. Check idempotency key (if present)
+3. Validate request body:
+- `name`: string (required, 1-100 chars)
+- `description`: string (optional, max 500 chars)
+- `language`: string (optional, default “en-US”)
+4. **Create Database Record:**
+- INSERT into `knowledge_documents` table:
+- `id`: new UUID
+- `client_id`: from JWT (validated)
+- `name`: from request
+- `description`: from request
+- `language`: from request or default
+- `status`: “creating” (temporary)
+- `created_at`: now()
+- RLS automatically enforces client_id scope
+5. **Call Ultravox API:**
+- POST https://api.ultravox.ai/v1/corpora
+- Headers: `Authorization: Bearer {ULTRAVOX_API_KEY}`
+- Body:
+`json      {        "name": "Knowledge Base Name",        "language": "en-US"      }`
+- Response: `{"data": {"id": "corpus_ultravox_123", "status": "ready"}}`
+6. **Update Database with Ultravox ID:**
+- UPDATE `knowledge_documents` SET `ultravox_corpus_id = 'corpus_ultravox_123'`, `status = 'ready'` WHERE `id = $kb_id`
+7. **Emit Event:**
+- Publish to EventBridge: `knowledge_base.created`
+- Event data: `{knowledge_base_id, client_id, ultravox_corpus_id, status, timestamp}`
+8. **Return Response:**
+- 201 Created with knowledge base object
+
+**Request:**
+
+```json
+{  "name": "Product FAQ Knowledge Base",  "description": "Contains product FAQs and documentation",  "language": "en-US"}
+```
+
+**DB Writes (knowledge_documents table):**
+
+```json
+{  "id": "kb_uuid",  "client_id": "client_uuid",  "name": "Product FAQ Knowledge Base",  "description": "Contains product FAQs and documentation",  "language": "en-US",  "ultravox_corpus_id": "corpus_ultravox_123",  "status": "ready",  "settings": {},  "created_at": "2025-10-19T10:10:00Z",  "updated_at": "2025-10-19T10:10:00Z"}
+```
+
+**Ultravox Calls:**
+- POST /corpora
+
+**Response:**
+
+```json
+{  "data": {    "id": "kb_uuid",    "client_id": "client_uuid",    "name": "Product FAQ Knowledge Base",    "description": "Contains product FAQs and documentation",    "language": "en-US",    "ultravox_corpus_id": "corpus_ultravox_123",    "status": "ready",    "created_at": "2025-10-19T10:10:00Z"  },  "meta": {"request_id": "req_...", "ts": "2025-10-19T10:10:00Z"}}
+```
+
+**Error Scenarios:**
+- 422 Validation Error: Missing name, invalid language code
+- 403 Forbidden: Insufficient permissions
+- 409 Conflict: Idempotency key already used
+- 502 Bad Gateway: Ultravox API failure (with retry)
+
+### POST /api/v1/kb/{id}/files/presign
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id, permissions (`client_admin` or `agency_admin`)
+2. Query database: `SELECT * FROM knowledge_documents WHERE id = $id`
+3. RLS filters: Only returns if belongs to client
+4. If not found: Return 404 Not Found
+5. Validate request body:
+- `files`: array with `filename`, `content_type`, `file_size`
+- Supported formats: PDF, TXT, DOCX, MD (validate MIME types)
+- Size limit: e.g., 50MB per file
+6. For each file:
+- Generate S3 key: `uploads/client_{client_id}/kb/{kb_id}/file_{index}.{ext}`
+- Generate presigned PUT URL (expires in 1 hour)
+- Create `knowledge_base_documents` record:
+- `id`: new UUID (doc_id)
+- `client_id`: from JWT
+- `knowledge_base_id`: kb_id
+- `s3_key`: generated key
+- `file_type`: from content_type
+- `file_size`: from request
+- `status`: “pending_upload”
+- `created_at`: now()
+7. Return presigned URLs with doc_id for each file
+
+**Request:**
+
+```json
+{  "files": [    {"filename": "faq.pdf", "content_type": "application/pdf", "file_size": 524288},    {"filename": "docs.txt", "content_type": "text/plain", "file_size": 10240}  ]}
+```
+
+**Response:**
+
+```json
+{  "data": {    "documents": [      {        "doc_id": "doc_uuid_1",        "url": "https://trudy-uploads.s3.amazonaws.com/uploads/client_123/kb/kb_123/faq.pdf?X-Amz-Algorithm=...",        "headers": {"Content-Type": "application/pdf"}      },      {        "doc_id": "doc_uuid_2",        "url": "https://trudy-uploads.s3.amazonaws.com/uploads/client_123/kb/kb_123/docs.txt?X-Amz-Algorithm=...",        "headers": {"Content-Type": "text/plain"}      }    ]  },  "meta": {"request_id": "req_...", "ts": "2025-10-19T10:10:00Z"}}
+```
+
+**Error Scenarios:**
+- 404 Not Found: Knowledge base not found
+- 422 Validation Error: Invalid file format, file too large, too many files
+- 403 Forbidden: Insufficient permissions
+
+### POST /api/v1/kb/{id}/files/ingest
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id, permissions (`client_admin` or `agency_admin`)
+2. Query database: `SELECT * FROM knowledge_documents WHERE id = $id`
+3. RLS filters: Only returns if belongs to client
+4. If not found: Return 404 Not Found
+5. Check knowledge base status: Must be “ready” → 422 if not ready
+6. Validate request body:
+- `document_ids`: array of UUIDs (doc_ids from presign step)
+- Each document must exist in `knowledge_base_documents` table with status=“pending_upload” or “uploaded”
+7. For each document:
+- Query: `SELECT * FROM knowledge_base_documents WHERE id = $doc_id AND knowledge_base_id = $kb_id`
+- Verify S3 file exists (HEAD request to S3)
+- If file missing: Mark status=“failed”, continue with next
+- Generate presigned GET URL for Ultravox (expires in 24 hours)
+- Update status=“processing”
+8. **Call Ultravox API:**
+- For each document:
+- POST https://api.ultravox.ai/v1/corpora/{ultravox_corpus_id}/sources
+- Headers: `Authorization: Bearer {ULTRAVOX_API_KEY}`
+- Body:
+`json        {          "type": "file",          "url": "https://trudy-uploads.s3.amazonaws.com/uploads/client_123/kb/kb_123/faq.pdf?X-Amz-Expires=86400&X-Amz-Signature=...",          "metadata": {"fileName": "faq.pdf", "fileType": "application/pdf"}        }`
+- Response: `{"data": {"id": "source_ultravox_789", "status": "processing"}}`
+- Update `knowledge_base_documents` table:
+- `ultravox_source_id`: “source_ultravox_789”
+- `status`: “processing”
+9. **Queue Background Job (optional):**
+- Send message to SQS: `q-artifacts-sync` for status monitoring
+10. **Emit Event:**
+- Publish to EventBridge: `knowledge_base.ingestion.started`
+- Event data: `{knowledge_base_id, client_id, document_ids, timestamp}`
+11. **Return Response:**
+- 202 Accepted with ingestion status for each document
+
+**Request:**
+
+```json
+{  "document_ids": ["doc_uuid_1", "doc_uuid_2"]}
+```
+
+**DB Updates (knowledge_base_documents table):**
+
+```json
+{  "id": "doc_uuid_1",  "client_id": "client_uuid",  "knowledge_base_id": "kb_uuid",  "s3_key": "uploads/client_123/kb/kb_123/faq.pdf",  "file_type": "application/pdf",  "file_size": 524288,  "status": "processing",  "ultravox_source_id": "source_ultravox_789",  "updated_at": "2025-10-19T10:15:00Z"}
+```
+
+**Ultravox Calls:**
+- POST /corpora/{corpus_id}/sources with file URL
+
+**Response:**
+
+```json
+{  "data": {    "documents": [      {        "doc_id": "doc_uuid_1",        "status": "processing",        "ultravox_source_id": "source_ultravox_789"      },      {        "doc_id": "doc_uuid_2",        "status": "processing",        "ultravox_source_id": "source_ultravox_790"      }    ]  },  "meta": {"request_id": "req_...", "ts": "2025-10-19T10:15:00Z"}}
+```
+
+**Background Processing:**
+- Ultravox webhooks or polling will update status:
+- When source is indexed: Update `knowledge_base_documents.status = "indexed"`
+- If failed: Update `status = "failed"`, record error_message
+- Emit events: `knowledge_base.ingestion.completed` or `knowledge_base.ingestion.failed`
+
+**Error Scenarios:**
+- 404 Not Found: Knowledge base or document not found
+- 422 Validation Error: Knowledge base not ready, document not uploaded, invalid document_ids
+- 403 Forbidden: Insufficient permissions
+- 502 Bad Gateway: Ultravox API failure (with retry)
+
+### GET /api/v1/kb/{id}
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id
+2. Set Supabase RLS context
+3. Query database: `SELECT * FROM knowledge_documents WHERE id = $id`
+4. RLS automatically filters: Only returns if `client_id = jwt_client_id()` (or agency_admin)
+5. If not found: Return 404 Not Found
+6. Optionally query related documents:
+- `SELECT * FROM knowledge_base_documents WHERE knowledge_base_id = $id`
+- Include status counts (pending_upload, processing, indexed, failed)
+7. Return knowledge base object with document counts
+
+**Response:**
+
+```json
+{  "data": {    "id": "kb_uuid",    "client_id": "client_uuid",    "name": "Product FAQ Knowledge Base",    "description": "Contains product FAQs",    "language": "en-US",    "ultravox_corpus_id": "corpus_ultravox_123",    "status": "ready",    "document_counts": {      "total": 10,      "indexed": 8,      "processing": 1,      "failed": 1    },    "created_at": "2025-10-19T10:10:00Z"  },  "meta": {"request_id": "req_...", "ts": "2025-10-19T10:00:00Z"}}
+```
+
+**Error Scenarios:**
+- 404 Not Found: Knowledge base not found or doesn’t belong to client
+- 401 Unauthorized: Invalid JWT
+
+### 4) Tools
+
+### POST /api/v1/tools
+
+DB writes (tools)
+- id, client_id, ultravox_tool_id, name, description, category, endpoint, method, authentication, parameters, response_schema, status, created_at
+Ultravox calls
+- POST /tools
+
+### 5) Calls
+
+### POST /api/v1/calls
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id, permissions (`client_admin`, `client_user`, or `agency_admin`)
+2. Check idempotency key (if present, return cached response)
+3. Validate request body:
+- `agent_id`: UUID (required, must exist and belong to client)
+- `phone_number`: string (required, E.164 format: +12125550123)
+- `direction`: enum [“inbound”, “outbound”] (required)
+- `call_settings`: object (optional)
+- `recording_enabled`: boolean (default: true)
+- `transcription_enabled`: boolean (default: true)
+- `greeting`: string (optional)
+- `context`: JSONB object (optional, for custom metadata)
+4. **Validate Agent:**
+- Query database: `SELECT * FROM agents WHERE id = $agent_id`
+- RLS filters by client_id
+- Check: agent exists → 404 if not found
+- Check: agent.status == “active” → 422 if not active
+- Extract: `ultravox_agent_id` from agent record
+5. **Credit Check (for outbound calls):**
+- Query `clients` table: `SELECT credits_balance FROM clients WHERE id = $client_id`
+- Outbound call cost: 1 credit per minute (estimated, charged on completion)
+- Minimum cost: 1 credit
+- If `credits_balance < 1`: Return 402 Payment Required (for outbound)
+6. **Create Database Record:**
+- INSERT into `calls` table:
+- `id`: new UUID
+- `client_id`: from JWT (validated)
+- `agent_id`: from request
+- `phone_number`: from request (normalized to E.164)
+- `direction`: from request
+- `status`: “queued” (initial status)
+- `context`: from request (JSONB)
+- `call_settings`: from request (JSONB)
+- `created_at`: now()
+- RLS automatically enforces client_id scope
+7. **Call Ultravox API:**
+- POST https://api.ultravox.ai/v1/calls
+- Headers: `Authorization: Bearer {ULTRAVOX_API_KEY}`
+- Body:
+`json      {        "agent_id": "agt_ultravox_abc123",        "phone_number": "+12125550123",        "direction": "outbound",        "call_settings": {          "recording_enabled": true,          "transcription_enabled": true,          "greeting": "Hello! I'm calling from..."        },        "context": {          "customer_id": "cust_1",          "campaign_id": "camp_123"        }      }`
+- Response: `{"data": {"id": "call_ultravox_xyz789", "status": "queued"}}`
+- Retry on 429/5xx (up to 5 attempts with exponential backoff)
+8. **Update Database with Ultravox Call ID:**
+- UPDATE `calls` SET `ultravox_call_id = 'call_ultravox_xyz789'`, `status = 'queued'` WHERE `id = $call_id`
+9. **Emit Event:**
+- Publish to EventBridge: `call.created` or `call.queued`
+- Event data: `{call_id, client_id, agent_id, ultravox_call_id, phone_number, direction, status, timestamp}`
+10. **Return Response:**
+- 201 Created with call object
+
+**Request:**
+
+```json
+{  "agent_id": "agent_uuid",  "phone_number": "+12125550123",  "direction": "outbound",  "call_settings": {    "recording_enabled": true,    "transcription_enabled": true,    "greeting": "Hello! I'm calling from..."  },  "context": {    "customer_id": "cust_1",    "campaign_id": "camp_123"  }}
+```
+
+**DB Writes (calls table):**
+
+```json
+{  "id": "call_uuid",  "client_id": "client_uuid",  "agent_id": "agent_uuid",  "ultravox_call_id": "call_ultravox_xyz789",  "phone_number": "+12125550123",  "direction": "outbound",  "status": "queued",  "context": {    "customer_id": "cust_1",    "campaign_id": "camp_123"  },  "call_settings": {    "recording_enabled": true,    "transcription_enabled": true  },  "started_at": null,  "ended_at": null,  "duration_seconds": null,  "cost_usd": null,  "recording_url": null,  "transcript": null,  "created_at": "2025-10-19T10:15:00Z",  "updated_at": "2025-10-19T10:15:00Z"}
+```
+
+**Ultravox Calls:**
+- POST /calls with agent_id, phone_number, direction, call_settings, context
+
+**Response:**
+
+```json
+{  "data": {    "id": "call_uuid",    "client_id": "client_uuid",    "agent_id": "agent_uuid",    "ultravox_call_id": "call_ultravox_xyz789",    "phone_number": "+12125550123",    "direction": "outbound",    "status": "queued",    "created_at": "2025-10-19T10:15:00Z"  },  "meta": {"request_id": "req_...", "ts": "2025-10-19T10:15:00Z"}}
+```
+
+**Error Scenarios:**
+- 422 Validation Error: Invalid phone number format (must be E.164), invalid direction, invalid agent_id
+- 404 Not Found: Agent not found or doesn’t belong to client
+- 402 Payment Required: Insufficient credits for outbound call
+- 403 Forbidden: Insufficient permissions
+- 409 Conflict: Idempotency key already used (return cached response)
+- 502 Bad Gateway: Ultravox API failure (with retry logic)
+
+### GET /api/v1/calls/{id}
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id
+2. Set Supabase RLS context
+3. Query database: `SELECT * FROM calls WHERE id = $id`
+4. RLS automatically filters: Only returns if `client_id = jwt_client_id()` (or agency_admin)
+5. If call not found: Return 404 Not Found
+6. If `status` in [“queued”, “ringing”, “in_progress”]: Optionally refresh from Ultravox:
+- Call Ultravox: `GET /calls/{ultravox_call_id}`
+- If status/duration changed: UPDATE `calls` table
+7. Return call object with current status
+
+**Response:**
+
+```json
+{  "data": {    "id": "call_uuid",    "client_id": "client_uuid",    "agent_id": "agent_uuid",    "ultravox_call_id": "call_ultravox_xyz789",    "phone_number": "+12125550123",    "direction": "outbound",    "status": "completed",    "started_at": "2025-10-19T10:16:00Z",    "ended_at": "2025-10-19T10:21:00Z",    "duration_seconds": 300,    "cost_usd": 0.15,    "recording_url": "https://recordings.s3.amazonaws.com/...",    "created_at": "2025-10-19T10:15:00Z"  },  "meta": {"request_id": "req_...", "ts": "2025-10-19T10:00:00Z"}}
+```
+
+**Error Scenarios:**
+- 404 Not Found: Call not found or doesn’t belong to client
+- 401 Unauthorized: Invalid JWT
+
+### GET /api/v1/calls/{id}/transcript
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id
+2. Query database: `SELECT * FROM calls WHERE id = $id`
+3. RLS filters: Only returns if belongs to client
+4. If call not found: Return 404 Not Found
+5. Check database cache:
+- If `transcript` field is populated: Return cached transcript
+6. If not cached: Fetch from Ultravox:
+- Call Ultravox: `GET /calls/{ultravox_call_id}/transcript`
+- Parse and format transcript JSON
+- UPDATE `calls` table: SET `transcript = $transcript_data`
+7. Return formatted transcript
+
+**Response:**
+
+```json
+{  "data": {    "call_id": "call_uuid",    "transcript": [      {        "speaker": "agent",        "text": "Hello! How can I help you today?",        "timestamp": "2025-10-19T10:16:05Z"      },      {        "speaker": "customer",        "text": "I need help with my order.",        "timestamp": "2025-10-19T10:16:12Z"      }    ],    "summary": "Customer inquiry about order status"  },  "meta": {"request_id": "req_...", "ts": "2025-10-19T10:00:00Z"}}
+```
+
+**Error Scenarios:**
+- 404 Not Found: Call not found or transcript not available
+- 502 Bad Gateway: Ultravox API failure
+
+### GET /api/v1/calls/{id}/recording
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id
+2. Query database: `SELECT * FROM calls WHERE id = $id`
+3. RLS filters: Only returns if belongs to client
+4. If call not found: Return 404 Not Found
+5. Check if recording exists:
+- If `recording_url` in database: Generate presigned GET URL (expires in 1 hour)
+- If not: Fetch from Ultravox, download to S3, update database
+6. Return presigned S3 URL for recording file
+
+**Response:**
+
+```json
+{  "data": {    "call_id": "call_uuid",    "recording_url": "https://trudy-recordings.s3.amazonaws.com/calls/call_uuid/recording.mp3?X-Amz-Expires=3600&X-Amz-Signature=...",    "format": "mp3",    "duration_seconds": 300  },  "meta": {"request_id": "req_...", "ts": "2025-10-19T10:00:00Z"}}
+```
+
+**Error Scenarios:**
+- 404 Not Found: Call not found or recording not available
+- 502 Bad Gateway: Ultravox API failure or S3 upload failure
+
+### 6) Campaigns
+
+### POST /api/v1/campaigns
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id, permissions (`client_admin` or `agency_admin`)
+2. Check idempotency key (if present)
+3. Validate request body:
+- `name`: string (required, 1-100 chars)
+- `agent_id`: UUID (required, must exist and belong to client)
+- `schedule_type`: enum [“immediate”, “scheduled”] (required)
+- `scheduled_at`: ISO 8601 datetime (required if schedule_type=“scheduled”)
+- `timezone`: string (required, IANA timezone: “America/New_York”)
+- `max_concurrent_calls`: integer (optional, default: 10, max: 100)
+4. **Validate Agent:**
+- Query database: `SELECT * FROM agents WHERE id = $agent_id`
+- RLS filters by client_id
+- Check: agent exists → 404 if not found
+- Check: agent.status == “active” → 422 if not active
+- Extract: `ultravox_agent_id`
+5. **Create Database Record:**
+- INSERT into `campaigns` table:
+- `id`: new UUID
+- `client_id`: from JWT (validated)
+- `agent_id`: from request
+- `name`: from request
+- `schedule_type`: from request
+- `scheduled_at`: parsed datetime (if scheduled)
+- `timezone`: from request
+- `max_concurrent_calls`: from request or default
+- `status`: “draft” (not scheduled yet)
+- `stats`: `{"pending": 0, "calling": 0, "completed": 0, "failed": 0}`
+- `created_at`: now()
+- RLS automatically enforces client_id scope
+6. **Emit Event:**
+- Publish to EventBridge: `campaign.created`
+- Event data: `{campaign_id, client_id, agent_id, name, status, timestamp}`
+7. **Return Response:**
+- 201 Created with campaign object
+
+**Request:**
+
+```json
+{  "name": "Q4 Sales Outreach",  "agent_id": "agent_uuid",  "schedule_type": "scheduled",  "scheduled_at": "2025-11-01T09:00:00-05:00",  "timezone": "America/New_York",  "max_concurrent_calls": 10}
+```
+
+**DB Writes (campaigns table):**
+
+```json
+{  "id": "campaign_uuid",  "client_id": "client_uuid",  "agent_id": "agent_uuid",  "name": "Q4 Sales Outreach",  "schedule_type": "scheduled",  "scheduled_at": "2025-11-01T14:00:00Z",  "timezone": "America/New_York",  "max_concurrent_calls": 10,  "status": "draft",  "ultravox_batch_ids": null,  "stats": {    "pending": 0,    "calling": 0,    "completed": 0,    "failed": 0  },  "created_at": "2025-10-19T10:20:00Z",  "updated_at": "2025-10-19T10:20:00Z"}
+```
+
+**Response:**
+
+```json
+{  "data": {    "id": "campaign_uuid",    "client_id": "client_uuid",    "agent_id": "agent_uuid",    "name": "Q4 Sales Outreach",    "schedule_type": "scheduled",    "scheduled_at": "2025-11-01T14:00:00Z",    "timezone": "America/New_York",    "status": "draft",    "stats": {"pending": 0, "calling": 0, "completed": 0, "failed": 0},    "created_at": "2025-10-19T10:20:00Z"  },  "meta": {"request_id": "req_...", "ts": "2025-10-19T10:20:00Z"}}
+```
+
+**Error Scenarios:**
+- 422 Validation Error: Invalid agent_id, invalid schedule_type, missing scheduled_at for scheduled type, invalid timezone
+- 404 Not Found: Agent not found or doesn’t belong to client
+- 403 Forbidden: Insufficient permissions
+- 409 Conflict: Idempotency key already used
+
+### POST /api/v1/campaigns/{id}/contacts/presign
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id, permissions
+2. Query database: `SELECT * FROM campaigns WHERE id = $id`
+3. RLS filters: Only returns if belongs to client
+4. If campaign not found: Return 404 Not Found
+5. Check campaign status: Must be “draft” → 422 if already scheduled/completed
+6. Validate request: `filename` (CSV file, max 100MB)
+7. Generate S3 key: `uploads/client_{client_id}/campaigns/{campaign_id}/contacts.csv`
+8. Generate presigned PUT URL (expires in 1 hour)
+9. Return presigned URL
+
+**Response:**
+
+```json
+{  "data": {    "upload_url": "https://trudy-uploads.s3.amazonaws.com/uploads/client_123/campaigns/campaign_123/contacts.csv?X-Amz-Algorithm=...",    "s3_key": "uploads/client_123/campaigns/campaign_123/contacts.csv",    "headers": {"Content-Type": "text/csv"}  },  "meta": {"request_id": "req_...", "ts": "2025-10-19T10:20:00Z"}}
+```
+
+### POST /api/v1/campaigns/{id}/contacts
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id, permissions (`client_admin` or `agency_admin`)
+2. Query database: `SELECT * FROM campaigns WHERE id = $id`
+3. RLS filters: Only returns if belongs to client
+4. If campaign not found: Return 404 Not Found
+5. Check campaign status: Must be “draft” → 422 if already scheduled
+6. Validate request body:
+- `s3_key`: string (required, CSV file uploaded via presign)
+- Or `contacts`: array of contact objects (direct upload)
+7. **If CSV upload:**
+- Download CSV from S3 using `s3_key`
+- Parse CSV:
+- Required columns: `phone_number` (E.164 format)
+- Optional columns: `first_name`, `last_name`, `email`, custom fields
+- Validate each row:
+- Phone number: E.164 format (+12125550123)
+- No duplicates within campaign
+- Email format (if provided)
+8. **Create Contact Records:**
+- For each contact (from CSV or array):
+- INSERT into `campaign_contacts` table:
+- `id`: new UUID
+- `campaign_id`: campaign.id
+- `phone_number`: normalized to E.164
+- `first_name`: from CSV/array
+- `last_name`: from CSV/array
+- `email`: from CSV/array
+- `custom_fields`: JSONB (remaining columns or custom data)
+- `status`: “pending”
+- `created_at`: now()
+- Batch insert for performance (1000 rows per batch)
+9. **Update Campaign Stats:**
+- UPDATE `campaigns` SET `stats.pending = COUNT(*) FROM campaign_contacts WHERE campaign_id = $id AND status='pending'`
+10. **Emit Event:**
+- Publish to EventBridge: `campaign.contacts.uploaded`
+- Event data: `{campaign_id, client_id, contact_count, timestamp}`
+11. **Return Response:**
+- 201 Created with contact count and stats
+
+**Request (CSV upload):**
+
+```json
+{  "s3_key": "uploads/client_123/campaigns/campaign_123/contacts.csv"}
+```
+
+**Request (Direct array):**
+
+```json
+{  "contacts": [    {      "phone_number": "+12125550123",      "first_name": "Jane",      "last_name": "Smith",      "email": "jane@example.com",      "custom_fields": {"lead_score": 85}    },    {      "phone_number": "+12125550124",      "first_name": "John",      "last_name": "Doe",      "custom_fields": {"lead_score": 72}    }  ]}
+```
+
+**DB Writes (campaign_contacts table):**
+
+```json
+{  "id": "cc_uuid_1",  "campaign_id": "campaign_uuid",  "phone_number": "+12125550123",  "first_name": "Jane",  "last_name": "Smith",  "email": "jane@example.com",  "custom_fields": {"lead_score": 85},  "status": "pending",  "created_at": "2025-10-19T10:21:00Z"}
+```
+
+**Response:**
+
+```json
+{  "data": {    "campaign_id": "campaign_uuid",    "contacts_added": 250,    "contacts_failed": 0,    "stats": {      "pending": 250,      "calling": 0,      "completed": 0,      "failed": 0    }  },  "meta": {"request_id": "req_...", "ts": "2025-10-19T10:21:00Z"}}
+```
+
+**Error Scenarios:**
+- 404 Not Found: Campaign not found
+- 422 Validation Error: Invalid phone numbers, duplicates, invalid CSV format, campaign already scheduled
+- 403 Forbidden: Insufficient permissions
+
+### POST /api/v1/campaigns/{id}/schedule
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id, permissions (`client_admin` or `agency_admin`)
+2. Query database: `SELECT * FROM campaigns WHERE id = $id`
+3. RLS filters: Only returns if belongs to client
+4. If campaign not found: Return 404 Not Found
+5. Check campaign status: Must be “draft” → 422 if already scheduled/completed
+6. **Query Contacts:**
+- SELECT `* FROM campaign_contacts WHERE campaign_id = $id AND status = 'pending'`
+- Check: Must have at least 1 contact → 422 if empty
+7. **Prepare Batch Data:**
+- Group contacts into batches (e.g., 100 contacts per batch for Ultravox API limits)
+- For each batch, create structure:
+- `contacts`: array with phone_number and context (first_name, last_name, custom_fields)
+- `medium`: `{"telnyx": {}}`
+- `schedule`: `{"at": scheduled_at, "timezone": timezone}`
+- `settings`: `{"max_concurrent": max_concurrent_calls, "recording_enabled": true}`
+8. **Call Ultravox Batch API:**
+- POST https://api.ultravox.ai/v1/agents/{ultravox_agent_id}/scheduled-batches
+- Headers: `Authorization: Bearer {ULTRAVOX_API_KEY}`
+- Body:
+`json      {        "batches": [          {            "contacts": [              {                "phone_number": "+12125550123",                "context": {                  "first_name": "Jane",                  "last_name": "Smith",                  "campaign_id": "campaign_uuid",                  "custom_fields": {"lead_score": 85}                }              },              ...            ],            "medium": {"telnyx": {}},            "schedule": {              "at": "2025-11-01T14:00:00Z",              "timezone": "America/New_York"            },            "settings": {              "max_concurrent": 10,              "recording_enabled": true            }          }        ]      }`
+- Response: `{"data": {"batches": [{"batch_id": "ultravox_batch_123", "status": "scheduled"}, ...]}}`
+- Retry on 429/5xx (up to 5 attempts)
+9. **Update Campaign:**
+- UPDATE `campaigns` table:
+- `status`: “scheduled”
+- `ultravox_batch_ids`: array of batch IDs from Ultravox
+- `updated_at`: now()
+10. **Trigger Step Function:**
+- Call AWS Step Functions API
+- Start execution: `sf-campaign-execute-batch`
+- Input:
+`json       {         "campaign_id": "campaign_uuid",         "ultravox_batch_ids": ["ultravox_batch_123", "ultravox_batch_124"],         "agent_id": "agent_uuid",         "ultravox_agent_id": "agt_ultravox_abc123"       }`
+11. **Emit Event:**
+- Publish to EventBridge: `campaign.scheduled`
+- Event data: `{campaign_id, client_id, scheduled_at, contact_count, batch_ids, timestamp}`
+12. **Return Response:**
+- 202 Accepted with campaign object and batch IDs
+
+**Response:**
+
+```json
+{  "data": {    "id": "campaign_uuid",    "status": "scheduled",    "ultravox_batch_ids": ["ultravox_batch_123", "ultravox_batch_124"],    "scheduled_at": "2025-11-01T14:00:00Z",    "stats": {      "pending": 250,      "calling": 0,      "completed": 0,      "failed": 0    }  },  "meta": {"request_id": "req_...", "ts": "2025-10-19T10:25:00Z"}}
+```
+
+**Error Scenarios:**
+- 404 Not Found: Campaign not found
+- 422 Validation Error: No contacts, campaign already scheduled, invalid scheduled_at
+- 403 Forbidden: Insufficient permissions
+- 502 Bad Gateway: Ultravox API failure (with retry)
+
+**Background: Step Function Execution**
+- **Step Function:** `sf-campaign-execute-batch`
+- **Flow:**
+1. WaitUntil: Wait until `scheduled_at` time arrives
+2. Map: Process each batch in parallel
+3. For each batch:
+- Monitor batch status via Ultravox webhooks or polling
+- Update `campaign_contacts` status as calls progress
+- Update `campaigns.stats` in real-time
+4. Complete: Mark campaign as “completed” when all calls finish
+- **Event Emissions:**
+- `campaign.calls.started`: `{campaign_id, batch_id, contact_count}`
+- `campaign.calls.completed`: `{campaign_id, stats}`
+- `campaign.calls.failed`: `{campaign_id, error_message}`
+
+### GET /api/v1/campaigns/{id}
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id
+2. Set Supabase RLS context
+3. Query database: `SELECT * FROM campaigns WHERE id = $id`
+4. RLS automatically filters: Only returns if `client_id = jwt_client_id()` (or agency_admin)
+5. If campaign not found: Return 404 Not Found
+6. **Calculate Stats:**
+- Query `campaign_contacts` table:
+- `SELECT status, COUNT(*) FROM campaign_contacts WHERE campaign_id = $id GROUP BY status`
+- Update `campaigns.stats` if changed
+7. Return campaign object with current stats
+
+**Response:**
+
+```json
+{  "data": {    "id": "campaign_uuid",    "client_id": "client_uuid",    "agent_id": "agent_uuid",    "name": "Q4 Sales Outreach",    "schedule_type": "scheduled",    "scheduled_at": "2025-11-01T14:00:00Z",    "timezone": "America/New_York",    "status": "scheduled",    "ultravox_batch_ids": ["ultravox_batch_123"],    "stats": {      "pending": 100,      "calling": 50,      "completed": 100,      "failed": 0    },    "created_at": "2025-10-19T10:20:00Z"  },  "meta": {"request_id": "req_...", "ts": "2025-10-19T10:00:00Z"}}
+```
+
+**Error Scenarios:**
+- 404 Not Found: Campaign not found or doesn’t belong to client
+- 401 Unauthorized: Invalid JWT
+
+### 7) Webhooks (ingress)
+
+### POST /api/v1/webhooks/ultravox
+
+**Step-by-Step Flow:**
+1. **Verify HMAC Signature:**
+- Extract headers: `X-Ultravox-Signature`, `X-Ultravox-Timestamp`
+- Get request body as raw string (preserve exact format)
+- Get secret key from AWS Secrets Manager: `ultravox_webhook_secret`
+- Reconstruct signature:
+- `message = timestamp + "." + body`
+- `expected_signature = HMAC-SHA256(secret_key, message)`
+- Compare: `received_signature == expected_signature` (constant-time comparison)
+- If mismatch: Return 401 Unauthorized
+2. **Verify Timestamp:**
+- `current_time - timestamp > 5 minutes?` → Return 401 (replay attack protection)
+- `timestamp > current_time + 60 seconds?` → Return 401 (clock skew)
+3. **Parse Event:**
+- Parse JSON body
+- Extract: `event` (string), `call_id` or `voice_id`, `timestamp`, `data` (object)
+4. **Route by Event Type:**
+- **Event: `call.started`**
+- Query: `SELECT * FROM calls WHERE ultravox_call_id = $call_id`
+- If not found: Log warning, return 204 (might be external call)
+- UPDATE `calls` table:
+- `status`: “in_progress”
+- `started_at`: from webhook timestamp
+- Emit EventBridge: `call.started`
+- **Event: `call.completed`**
+- Query: `SELECT * FROM calls WHERE ultravox_call_id = $call_id`
+- UPDATE `calls` table:
+- `status`: “completed”
+- `duration_seconds`: from webhook data
+- `cost_usd`: from webhook data
+- `ended_at`: from webhook timestamp
+- `recording_url`: from webhook data (if available)
+- **Debit Credits:**
+- Calculate cost in credits: `ceil(duration_seconds / 60)` (1 credit per minute)
+- INSERT into `credit_transactions`:
+- `type`: “spent”
+- `amount`: calculated credits
+- `reference_type`: “call”
+- `reference_id`: call.id
+- UPDATE `clients` SET `credits_balance = credits_balance - amount` WHERE `id = $client_id`
+- **Update Campaign Contact (if applicable):**
+- If `context.campaign_id` exists:
+- UPDATE `campaign_contacts` SET `status = 'completed'` WHERE `campaign_id = $campaign_id AND phone_number = $phone_number`
+- UPDATE `campaigns.stats.completed += 1`
+- Emit EventBridge: `call.completed`
+- **Event: `call.failed`**
+- UPDATE `calls` table:
+- `status`: “failed”
+- `ended_at`: from webhook timestamp
+- `error_message`: from webhook data
+- If campaign call: UPDATE `campaign_contacts.status = 'failed'`, `campaigns.stats.failed += 1`
+- Emit EventBridge: `call.failed`
+- **Event: `voice.training.completed`**
+- Query: `SELECT * FROM voices WHERE ultravox_voice_id = $voice_id`
+- UPDATE `voices` table:
+- `status`: “active”
+- `training_info.progress`: 100
+- `training_info.completed_at`: from webhook timestamp
+- Emit EventBridge: `voice.training.completed`
+- **Event: `voice.training.failed`**
+- UPDATE `voices` table:
+- `status`: “failed”
+- `training_info.error_message`: from webhook data
+- Emit EventBridge: `voice.training.failed`
+5. **Trigger Egress Webhooks:**
+- Query `webhook_endpoints` table:
+- `SELECT * FROM webhook_endpoints WHERE client_id = $client_id AND event_type = ANY($event_types) AND enabled = true`
+- For each endpoint:
+- Create delivery task:
+`json        {          "webhook_endpoint_id": "wh_endpoint_uuid",          "url": "https://client-app.com/webhooks/trudy",          "secret": "shared_secret",          "event": {            "type": "call.completed",            "payload": {...webhook data...}          },          "attempt": 1,          "max_attempts": 10        }`
+- Queue in SQS: `q-webhook-egress`
+6. **Return Response:**
+- 204 No Content (success)
+
+**Request Headers:**
+
+```
+POST /api/v1/webhooks/ultravox
+Headers:
+  X-Ultravox-Signature: a3f5b8c9d2e1f4a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0
+  X-Ultravox-Timestamp: 1697824800
+  Content-Type: application/json
+Body:
+{
+  "event": "call.completed",
+  "call_id": "call_ultravox_xyz789",
+  "timestamp": "2025-10-19T10:30:00Z",
+  "data": {
+    "duration_seconds": 300,
+    "status": "completed",
+    "cost_usd": 0.15,
+    "recording_url": "https://recordings.ultravox.ai/..."
+  }
+}
+```
+
+**DB Updates Example (call.completed):**
+
+```json
+{  "calls": {    "status": "completed",    "duration_seconds": 300,    "cost_usd": 0.15,    "ended_at": "2025-10-19T10:30:00Z",    "recording_url": "https://recordings.ultravox.ai/..."  },  "credit_transactions": {    "type": "spent",    "amount": 5,    "reference_type": "call",    "reference_id": "call_uuid",    "description": "Call duration: 5 minutes"  }}
+```
+
+**Error Scenarios:**
+- 401 Unauthorized: Invalid signature, timestamp too old/future
+- 400 Bad Request: Malformed JSON, missing required fields
+- 500 Internal Server Error: Database update failure (logged, retry via DLQ)
+
+### POST /api/v1/webhooks/stripe
+
+**Step-by-Step Flow:**
+1. **Verify Stripe Signature:**
+- Extract header: `Stripe-Signature`
+- Get raw request body
+- Verify using Stripe webhook signing secret (from Secrets Manager)
+- If invalid: Return 401 Unauthorized
+2. **Parse Event:**
+- Parse JSON body
+- Extract: `type` (event type), `data.object` (payment object)
+3. **Route by Event Type:**
+- **Event: `payment_intent.succeeded`**
+- Extract: `amount` (in cents), `client_id` (from metadata or customer)
+- Calculate credits: `amount_cents / 100` (1 credit = $1, or custom rate)
+- INSERT into `credit_transactions`:
+- `type`: “purchased”
+- `amount`: calculated credits
+- `reference_type`: “stripe_payment”
+- `reference_id`: payment_intent.id
+- UPDATE `clients` SET `credits_balance = credits_balance + amount` WHERE `id = $client_id`
+- Emit EventBridge: `credits.purchased`
+- **Event: `invoice.paid`**
+- Similar to payment_intent.succeeded
+- Update subscription status if applicable
+- **Event: `customer.subscription.updated`**
+- UPDATE `clients` SET `subscription_status = $status` WHERE `stripe_customer_id = $customer_id`
+4. **Return Response:**
+- 200 OK (Stripe expects 200)
+
+**Error Scenarios:**
+- 401 Unauthorized: Invalid Stripe signature
+- 400 Bad Request: Malformed event
+
+### POST /api/v1/webhooks/telnyx
+
+**Step-by-Step Flow:**
+1. Verify HMAC signature (similar to Ultravox)
+2. Parse event type
+3. Route by event (number events, call events from Telnyx)
+4. Update relevant database records
+5. Emit EventBridge events
+
+**Note:** Implementation details to be defined based on Telnyx webhook requirements.
+
+### 8) Webhooks (egress)
+
+### POST /api/v1/webhooks (create webhook endpoint)
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id, permissions (`client_admin` or `agency_admin`)
+2. Validate request body:
+- `url`: string (required, valid HTTPS URL)
+- `event_types`: array of strings (required, e.g., [“call.completed”, “call.failed”])
+- `secret`: string (optional, auto-generated if not provided)
+- `enabled`: boolean (default: true)
+- `retry_config`: object (optional, max_attempts, backoff strategy)
+3. Generate secret if not provided (32-byte random hex)
+4. INSERT into `webhook_endpoints` table:
+- `id`: new UUID
+- `client_id`: from JWT
+- `url`: from request
+- `event_types`: from request (array)
+- `secret`: generated or provided
+- `enabled`: from request
+- `retry_config`: from request
+- `created_at`: now()
+5. Return webhook endpoint object (secret returned only once)
+
+**Request:**
+
+```json
+{  "url": "https://client-app.com/webhooks/trudy",  "event_types": ["call.completed", "call.failed", "voice.training.completed"],  "enabled": true,  "retry_config": {    "max_attempts": 10,    "backoff_strategy": "exponential"  }}
+```
+
+**Response:**
+
+```json
+{  "data": {    "id": "wh_endpoint_uuid",    "client_id": "client_uuid",    "url": "https://client-app.com/webhooks/trudy",    "event_types": ["call.completed", "call.failed"],    "secret": "whsec_abc123...",    "enabled": true,    "created_at": "2025-10-19T10:00:00Z"  },  "meta": {"request_id": "req_...", "ts": "2025-10-19T10:00:00Z"}}
+```
+
+### GET /api/v1/webhooks (list webhook endpoints)
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id
+2. Query database: `SELECT * FROM webhook_endpoints WHERE client_id = $client_id`
+3. RLS filters automatically
+4. Return list (secrets NOT included in response)
+
+### DELETE /api/v1/webhooks/{id}
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id, permissions
+2. Query database: `SELECT * FROM webhook_endpoints WHERE id = $id`
+3. RLS filters: Only returns if belongs to client
+4. If not found: Return 404 Not Found
+5. Soft delete or hard delete (based on policy)
+6. Return 204 No Content
+
+**Background: Webhook Delivery System (Lambda + SQS)**
+- **SQS Queue:** `q-webhook-egress`
+- **Lambda Function:** Processes messages from queue
+- **Delivery Flow:**
+1. Receive message from SQS
+2. Extract webhook endpoint and event data
+3. Create HMAC signature:
+- `timestamp = str(int(time.time()))`
+- `message = timestamp + "." + json.dumps(event_payload)`
+- `signature = HMAC-SHA256(secret, message).hexdigest()`
+4. Send HTTP POST to client URL:
+- Headers: `X-Trudy-Timestamp`, `X-Trudy-Signature`, `Content-Type: application/json`
+- Body: Event payload
+5. Check response:
+- If 200-299: Success → DELETE message from SQS, INSERT `webhook_deliveries` with status=“delivered”
+- If 4xx/5xx/timeout: Failure → Calculate retry delay, UPDATE `webhook_deliveries` with status=“failed”, attempt+=1, re-queue with delay
+6. Retry Logic:
+- Exponential backoff: `wait = min(2^(attempt-1) * 1000ms, 10000ms)` (max 10 seconds)
+- Add jitter: `wait = wait * (1 + random(0, 0.3))`
+- Max attempts: 10
+- If max attempts reached: Send to Dead Letter Queue (DLQ), mark as `failed_permanently`
+- **Tracking:**
+- All delivery attempts logged in `webhook_deliveries` table:
+- `webhook_endpoint_id`, `event_type`, `status`, `attempt`, `response_code`, `delivered_at`, `error_message`
+
+**Dead Letter Queue (DLQ):**
+- Failed webhooks after 10 attempts → moved to DLQ
+- Alert sent to monitoring system
+- Manual investigation required
+
+### 4) Tools
+
+### POST /api/v1/tools
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id, permissions (`client_admin` or `agency_admin`)
+2. Validate request body:
+- `name`: string (required)
+- `description`: string (optional)
+- `category`: string (optional)
+- `endpoint`: string (required, valid URL)
+- `method`: enum [“GET”, “POST”, “PUT”, “DELETE”] (required)
+- `authentication`: object (optional, API key, OAuth, etc.)
+- `parameters`: JSON schema (optional)
+- `response_schema`: JSON schema (optional)
+3. **Create Database Record:**
+- INSERT into `tools` table:
+- `id`: new UUID
+- `client_id`: from JWT
+- `name`, `description`, `category`, `endpoint`, `method`, `authentication`, `parameters`, `response_schema`
+- `status`: “creating” (temporary)
+- `created_at`: now()
+4. **Call Ultravox API:**
+- POST https://api.ultravox.ai/v1/tools
+- Body: Tool configuration
+- Response: `{"data": {"id": "ultravox_tool_789", "status": "active"}}`
+5. **Update Database:**
+- UPDATE `tools` SET `ultravox_tool_id = 'ultravox_tool_789'`, `status = 'active'`
+6. **Return Response:**
+- 201 Created with tool object
+
+**Error Scenarios:**
+- 422 Validation Error: Invalid endpoint URL, invalid method, invalid schema
+- 403 Forbidden: Insufficient permissions
+- 502 Bad Gateway: Ultravox API failure
+
+### GET /api/v1/tools
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id
+2. Query database: `SELECT * FROM tools WHERE client_id = $client_id`
+3. RLS filters automatically
+4. Return list of tools
+
+### 9) SIP & Telephony
+
+### GET /api/v1/telephony/config
+
+**Step-by-Step Flow:**
+1. Validate JWT, client_id
+2. Call Ultravox API: `GET /sip/config`
+3. Return SIP configuration (read-only proxy)
+
+**Response:**
+
+```json
+{  "data": {    "sip_endpoint": "sip.ultravox.ai",    "username": "client_123",    "password": "...",    "domain": "ultravox.ai"  },  "meta": {"request_id": "req_...", "ts": "2025-10-19T10:00:00Z"}}
+```
+
+### 10) Error Matrix
+
+**Standard Error Response Format:**
+
+```json
+{  "error": {    "code": "error_code",    "message": "Human-readable error message",    "details": {      "field_name": "Specific field error message",      "hint": "Optional hint for resolution"    },    "request_id": "req_...",    "ts": "2025-10-19T10:00:00Z"  }}
+```
+
+**Error Codes and HTTP Status Mappings:**
+- **validation_error (422)**: Schema validation, provider validation, missing required fields
+- Example: `{"code": "validation_error", "message": "Invalid phone number format", "details": {"phone_number": "Must be E.164 format: +12125550123"}}`
+- Frontend should display field-level errors to user
+- **unauthorized (401)**: JWT invalid/expired, missing Authorization header, invalid signature
+- Example: `{"code": "unauthorized", "message": "Token has expired. Please login again."}`
+- Frontend should redirect to login
+- **forbidden (403)**: client_id mismatch (unless agency_admin), insufficient role permissions
+- Example: `{"code": "forbidden", "message": "You do not have permission to access this resource."}`
+- Frontend should show permission denied message
+- **not_found (404)**: Resource missing (local or upstream)
+- Example: `{"code": "not_found", "message": "Voice with id 'voice_uuid' not found"}`
+- Frontend should show “Resource not found” message
+- **conflict (409)**: Idempotency key already used (return cached response), duplicate resource
+- Example: `{"code": "conflict", "message": "Resource already exists", "details": {"id": "existing_uuid"}}`
+- Frontend should handle gracefully (might be duplicate request)
+- **payment_required (402)**: Insufficient credits for operation
+- Example: `{"code": "payment_required", "message": "Insufficient credits. Required: 50, Available: 20"}`
+- Frontend should redirect to billing page
+- **rate_limit_exceeded (429)**: Upstream API rate limit or local quota exceeded
+- Example: `{"code": "rate_limit_exceeded", "message": "Rate limit exceeded", "details": {"reset_at": "2025-10-19T10:05:00Z", "limit": 100, "remaining": 0}}`
+- Frontend should show rate limit message, retry after reset_at
+- **provider_error (502)**: Upstream provider (Ultravox/Stripe/Telnyx) returned error
+- Example: `{"code": "provider_error", "message": "Ultravox API error", "details": {"provider": "ultravox", "httpStatus": 429, "code": "rate_limit", "retry_after": 10}}`
+- Frontend should show provider error, may retry if retry_after provided
+- **internal_error (500)**: Unexpected server error
+- Example: `{"code": "internal_error", "message": "An internal error occurred", "request_id": "req_..."}`
+- Frontend should show generic error, user can contact support with request_id
+- **Never leak secrets, stack traces, or internal details in response**
+
+**Error Handling Best Practices:**
+- Always include `request_id` for traceability
+- Log all errors with full context (for debugging)
+- Return user-friendly messages (no technical jargon)
+- Include actionable hints where possible
+- Rate limit errors should include `reset_at` timestamp
+
+### 11) Retry & Backoff
+
+**Retry Strategy for Upstream APIs (Ultravox, Telnyx):**
+- **Retry Conditions:** HTTP 429 (rate limit), 500, 502, 503, 504, timeout
+- **Max Attempts:** 5 attempts total
+- **Base Delay:** 500ms
+- **Max Delay:** 10 seconds
+- **Backoff Formula:** `delay = min(base_delay * (2^(attempt-1)), max_delay)`
+- **Jitter:** Random variation 0-30% to prevent thundering herd
+- `final_delay = delay * (1 + random(0, 0.3))`
+- **Example Retry Sequence:**
+- Attempt 1: Wait 500ms ± 150ms (jitter) → retry
+- Attempt 2: Wait 1000ms ± 300ms → retry
+- Attempt 3: Wait 2000ms ± 600ms → retry
+- Attempt 4: Wait 4000ms ± 1200ms → retry
+- Attempt 5: Wait 8000ms ± 2400ms → retry
+- If all fail: Return 502 Bad Gateway with provider error details
+
+**Implementation (Python Example):**
+
+```python
+import time
+import random
+import httpx
+def retry_with_backoff(func, max_attempts=5, base_delay=0.5, max_delay=10):
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return func()
+        except (httpx.HTTPStatusError, httpx.TimeoutException) as e:
+            if attempt == max_attempts:
+                raise            if isinstance(e, httpx.HTTPStatusError):
+                if e.response.status_code not in [429, 500, 502, 503, 504]:
+                    raise  # Don't retry on other errors            delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
+            jitter = delay * random.uniform(0, 0.3)
+            time.sleep(delay + jitter)
+```
+
+**Idempotency:**
+- All POST/PUT operations support `X-Idempotency-Key` header
+- Client provides unique key per request (UUID recommended)
+- Backend stores request hash + response
+- On duplicate: Return cached response (same status code and body)
+
+### 12) Idempotency Storage
+
+**Database Table: `idempotency_keys`**
+
+```sql
+CREATE TABLE idempotency_keys (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  client_id UUID NOT NULL REFERENCES clients(id),
+  key TEXT NOT NULL,
+  request_hash TEXT NOT NULL,  -- SHA256 hash of request body + headers  response_body JSONB NOT NULL,
+  status_code INTEGER NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now() NOT NULL,
+  ttl_at TIMESTAMPTZ NOT NULL,  -- Auto-cleanup after 7 days  UNIQUE(client_id, key, request_hash)
+);
+CREATE INDEX idx_idempotency_lookup ON idempotency_keys(client_id, key, request_hash);
+CREATE INDEX idx_idempotency_ttl ON idempotency_keys(ttl_at);
+```
+
+**Step-by-Step Flow:**
+1. Client sends request with `X-Idempotency-Key` header
+2. Backend calculates request hash:
+- `request_hash = SHA256(method + path + sorted(headers) + body)`
+3. Check idempotency table:
+- `SELECT * FROM idempotency_keys WHERE client_id = $client_id AND key = $key AND request_hash = $hash`
+4. **If match found:**
+- Return cached response (same status_code, same response_body)
+- Skip all processing (no API calls, no DB writes)
+5. **If not found:**
+- Process request normally
+- Store result in idempotency_keys table:
+- `client_id`: from JWT
+- `key`: from header
+- `request_hash`: calculated hash
+- `response_body`: response data
+- `status_code`: HTTP status code
+- `ttl_at`: now() + 7 days
+- Return response
+
+**Cleanup:**
+- Scheduled job (EventBridge rule, daily):
+- DELETE FROM idempotency_keys WHERE ttl_at < now()
+
+**Example:**
+
+```json
+{  "id": "idemp_key_uuid",  "client_id": "client_uuid",  "key": "create-call-abc123",  "request_hash": "sha256:a3f5b8c9d2e1f4a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0",  "response_body": {"data": {"id": "call_uuid", "status": "queued"}},  "status_code": 201,  "created_at": "2025-10-19T10:15:00Z",  "ttl_at": "2025-10-26T10:15:00Z"}
+```
+
+### 13) State Machines (Step Functions)
+
+**Common Patterns:**
+- All Step Functions support retry logic with exponential backoff
+- State data persisted between transitions (no data loss on failure)
+- Execution history logged in CloudWatch
+- Maximum execution time: 4 hours (configurable)
+- Error handling: Failed states route to error handlers with cleanup
+
+### sf-voice-clone-native
+
+**Input:**
+
+```json
+{  "voice_id": "voice_uuid",  "ultravox_voice_id": "voice_ultravox_123",  "client_id": "client_uuid"}
+```
+
+**State Machine Flow:**
+1. **Validate State**
+- Verify input: voice_id, ultravox_voice_id present
+- Call backend: `GET /internal/voices/{voice_id}` (verify exists)
+- If invalid: → Failed state
+- If valid: → Wait state
+
+1. **Wait State**
+    - Wait exactly 60 seconds
+    - Purpose: Give Ultravox time to start downloading samples and begin training
+    - After 60s: → GetVoiceStatus state
+2. **GetVoiceStatus State**
+    - HTTP Task: GET https://api.ultravox.ai/v1/voices/{ultravox_voice_id}
+    - Headers: `Authorization: Bearer {ULTRAVOX_API_KEY}`
+    - Store response in state data
+    - → Choice state
+3. **Choice State (Decision Point)**
+    - Check `response.status`:
+        - If `status == "active"`: → UpdateDatabase state (training complete!)
+        - If `status == "failed"`: → HandleFailure state
+        - If `status == "training"`: → Wait state (loop back, continue polling)
+        - Else: → HandleFailure state (unexpected status)
+4. **UpdateDatabase State**
+    - HTTP Task: POST https://{backend}/internal/voices/{voice_id}/update-status
+    - Body: `{"status": "active", "training_info": {"progress": 100, "completed_at": "..."}}`
+    - → EmitEvent state
+5. **EmitEvent State**
+    - Publish to EventBridge: `voice.training.completed`
+    - Event data: `{voice_id, client_id, ultravox_voice_id, status: "active", completed_at}`
+    - → Success state
+6. **HandleFailure State**
+    - HTTP Task: POST https://{backend}/internal/voices/{voice_id}/update-status
+    - Body: `{"status": "failed", "training_info": {"error_message": "..."}}`
+    - Publish to EventBridge: `voice.training.failed`
+    - → Failed state
+7. **Success / Failed (Terminal States)**
+    - Execution ends
+    - History saved in AWS Console
+
+**Safeguards:**
+- Max execution time: 4 hours
+- Max polling attempts: 240 (240 × 60s = 4 hours)
+- Retry on HTTP errors (5 attempts with backoff)
+
+### sf-voice-clone-external
+
+**Input:**
+
+```json
+{  "voice_id": "voice_uuid",  "provider": "elevenlabs",  "provider_voice_id": "optional_voice_id",  "client_id": "client_uuid"}
+```
+
+**State Machine Flow:**
+1. **Ensure Provider State**
+- Verify provider API key exists in `api_keys` table
+- If missing: → Failed state
+- If exists: → CreateProviderVoice state (if needed) or CreateUltravoxReference state
+
+1. **CreateProviderVoice State (Optional)**
+    - Only if provider_voice_id not provided
+    - Call provider API to create voice
+    - Store provider_voice_id
+    - → CreateUltravoxReference state
+2. **CreateUltravoxReference State**
+    - HTTP Task: POST https://api.ultravox.ai/v1/voices
+    - Body: `{"name": "...", "provider": "...", "type": "reference", "provider_voice_id": "..."}`
+    - Response: `{"data": {"id": "voice_ultravox_456", "status": "active"}}`
+    - Store ultravox_voice_id
+    - → Persist state
+3. **Persist State**
+    - HTTP Task: POST https://{backend}/internal/voices/{voice_id}/update-status
+    - Body: `{"ultravox_voice_id": "voice_ultravox_456", "status": "active"}`
+    - → EmitEvent state
+4. **EmitEvent State**
+    - Publish to EventBridge: `voice.created`
+    - → Success state
+
+### sf-campaign-execute-batch
+
+**Input:**
+
+```json
+{  "campaign_id": "campaign_uuid",  "ultravox_batch_ids": ["ultravox_batch_123", "ultravox_batch_124"],  "agent_id": "agent_uuid",  "ultravox_agent_id": "agt_ultravox_abc123"}
+```
+
+**State Machine Flow:**
+1. **WaitUntil State**
+- Wait until `scheduled_at` time arrives
+- If past scheduled time: Continue immediately
+- → Map state
+
+1. **Map State (Parallel Processing)**
+    - For each batch_id in `ultravox_batch_ids`:
+        - Create parallel execution branch
+        - → MonitorBatch state
+2. **MonitorBatch State (Per Batch)**
+    - Poll Ultravox: GET /batches/{batch_id}
+    - Check batch status:
+        - If “active” (calls in progress): Wait 30s, poll again
+        - If “completed”: → UpdateStats state
+        - If “failed”: → HandleBatchFailure state
+    - Update `campaign_contacts` status as individual calls complete (via webhooks)
+3. **UpdateStats State**
+    - HTTP Task: POST https://{backend}/internal/campaigns/{campaign_id}/update-stats
+    - Calculate stats from `campaign_contacts` table
+    - Update `campaigns.stats` field
+    - → EmitEvent state
+4. **EmitEvent State**
+    - Publish to EventBridge: `campaign.calls.completed`
+    - Event data: `{campaign_id, stats, completed_at}`
+    - → CheckAllBatches state
+5. **CheckAllBatches State**
+    - Check if all batches are complete
+    - If all complete: → CompleteCampaign state
+    - If not: Continue monitoring
+6. **CompleteCampaign State**
+    - UPDATE `campaigns.status = "completed"`
+    - Publish: `campaign.completed`
+    - → Success state
+7. **HandleBatchFailure State**
+    - Log error
+    - Update stats: `campaigns.stats.failed += batch_failed_count`
+    - Continue with other batches
+    - → CheckAllBatches state
+
+**Note:** Campaign call status updates happen via Ultravox webhooks (call.completed, call.failed), not Step Function polling.
+
+### sf-artifacts-backfill
+
+**Purpose:** Background job to sync Ultravox artifacts (transcripts, recordings) to our database/S3
+
+**Input:**
+
+```json
+{  "resource_type": "calls",  "resource_ids": ["call_uuid_1", "call_uuid_2"],  "client_id": "client_uuid"}
+```
+
+**State Machine Flow:**
+1. **List Resources State**
+- Query database: `SELECT * FROM calls WHERE id = ANY($resource_ids) AND client_id = $client_id`
+- Filter: Only resources missing artifacts (transcript=null OR recording_url=null)
+- → Map state
+
+1. **Map State (Parallel Processing)**
+    - For each resource:
+        - → FetchArtifacts state
+2. **FetchArtifacts State (Per Resource)**
+    - Call Ultravox: GET /calls/{ultravox_call_id}/transcript (if missing)
+    - Call Ultravox: GET /calls/{ultravox_call_id}/recording (if missing)
+    - Download recording to S3 (if not already stored)
+    - → StoreArtifacts state
+3. **StoreArtifacts State**
+    - UPDATE `calls` table:
+        - `transcript`: JSONB data
+        - `recording_url`: S3 URL
+    - → Success state
+
+**Scheduled Execution:**
+- EventBridge rule: Run daily for calls from past 24 hours
+- Triggered automatically for completed calls
+
+### 14) OpenAPI Path Inventory
+
+- /me (GET), /clients (GET), /api-keys (POST)
+- /voices (POST, GET), /voices/{id} (GET)
+- /agents (POST, GET), /agents/{id} (GET, PATCH)
+- /kb (POST), /kb/{id} (GET), /kb/{id}/files/presign (POST), /kb/{id}/files/ingest (POST)
+- /tools (POST, GET)
+- /calls (POST), /calls/{id} (GET), /calls/{id}/transcript (GET), /calls/{id}/recording (GET)
+- /campaigns (POST), /campaigns/{id} (GET), /campaigns/{id}/contacts (POST), /campaigns/{id}/schedule (POST)
+- /providers/tts (PATCH)
+- /telephony/config (GET)
+- /webhooks/ultravox (POST), /webhooks/stripe (POST), /webhooks/telnyx (POST)
+- /webhooks (POST, GET), /webhooks/{id} (DELETE)
+
+### 15) Auditing & Compliance
+
+**Audit Logging:**
+- **Database Table:** `audit_log`
+- Columns: `id`, `action` (INSERT/UPDATE/DELETE), `table_name`, `record_id`, `user_id`, `client_id`, `diff` (JSONB before/after), `created_at`
+- Triggers: Automatically log all writes to sensitive tables
+- Tables monitored: `agents`, `voices`, `campaigns`, `calls`, `webhook_endpoints`, `api_keys`, `credit_transactions`
+- **Log Fields:**
+- `action`: “create” | “update” | “delete”
+- `table_name`: Table where change occurred
+- `record_id`: UUID of affected record
+- `user_id`: Auth0 sub from JWT
+- `client_id`: Client making the change
+- `diff`: JSONB with `before` and `after` states (for updates)
+- `ip_address`: Request IP (if available)
+- `user_agent`: Client user agent (if available)
+
+**PII Minimization:**
+- Store minimal customer info: Only phone numbers, email (optional), names (optional)
+- Encrypt secrets: All API keys encrypted at rest using AWS KMS
+- S3 encryption: All objects encrypted (SSE-S3 or SSE-KMS)
+- Data retention:
+- Calls: Retain for 90 days (configurable per client)
+- Transcripts: Retain for 180 days
+- Recordings: Retain for 90 days
+- Audit logs: Retain for 2 years
+- Auto-delete via S3 lifecycle policies and scheduled database cleanup
+
+**GDPR Compliance:**
+- Export endpoint: `GET /admin/users/{user_id}/export` (admin-only)
+- Returns all user data in JSON format
+- Delete endpoint: `DELETE /admin/users/{user_id}` (admin-only)
+- Soft delete: Set `deleted_at` timestamp
+- Anonymize PII: Replace phone numbers, emails with anonymized values
+- Cascade: Delete related calls, campaigns (or anonymize)
+- Hard delete: After 30 days retention period
+
+**Data Retention Policies:**
+- Calls older than retention period: Automatically archived to S3 Glacier
+- Transcripts: Archived after retention period
+- Recordings: Deleted after retention period (or archived)
+- Scheduled job: EventBridge rule runs daily to check and cleanup
+
+### 16) Observability & Logging
+
+**Structured Logging:**
+- All logs use structured JSON format
+- Log levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
+- Standard fields in every log entry:
+- `timestamp`: ISO 8601
+- `level`: Log level
+- `request_id`: Unique request identifier
+- `client_id`: Client making request
+- `user_id`: Auth0 sub
+- `endpoint`: API endpoint path
+- `method`: HTTP method
+- `status_code`: HTTP response code
+- `duration_ms`: Request duration
+- `message`: Human-readable message
+- `context`: Additional context (JSON object)
+
+**Log Examples:**
+
+```json
+{  "timestamp": "2025-10-19T10:15:00Z",  "level": "INFO",  "request_id": "req_abc123",  "client_id": "client_uuid",  "user_id": "auth0|user123",  "endpoint": "/api/v1/voices",  "method": "POST",  "status_code": 202,  "duration_ms": 245,  "message": "Voice creation started",  "context": {    "voice_id": "voice_uuid",    "ultravox_voice_id": "voice_ultravox_123"  }}
+```
+
+**Metrics (CloudWatch):**
+- API metrics: Request count, latency (p50, p95, p99), error rate per endpoint
+- Business metrics:
+- Voice training success rate
+- Call completion rate
+- Campaign success rate
+- Credit transactions per client
+- Webhook delivery success rate
+- Infrastructure metrics:
+- Lambda invocations, duration, errors
+- Step Function executions, success rate
+- SQS queue depth, message age
+- Database connection pool usage
+
+**Tracing (X-Ray):**
+- Distributed tracing for:
+- API Gateway → Lambda → Supabase
+- Lambda → Ultravox API calls
+- Step Function executions
+- SQS message processing
+- Trace ID: Included in response headers (`X-Trace-Id`)
+- Correlate logs with traces using `request_id`
+
+**Alerts (CloudWatch Alarms):**
+- High error rate: > 5% error rate for 5 minutes
+- High latency: P95 latency > 2 seconds for 5 minutes
+- Lambda failures: > 10 failures in 5 minutes
+- Step Function failures: > 5 failed executions in 10 minutes
+- SQS DLQ depth: > 100 messages in DLQ
+- Credit balance low: Client balance < threshold
+- Webhook delivery failures: > 20% failure rate for 10 minutes
+
+**Error Tracking (Sentry):**
+- All exceptions sent to Sentry with full context
+- Grouping: By error type, endpoint, client_id
+- Alert on new error types
+- Include stack traces, request context, user context
+
+**Performance Monitoring:**
+- API response time tracking per endpoint
+- Database query performance (slow query log)
+- External API call latency (Ultravox, Stripe, Telnyx)
+- S3 upload/download performance
+- Real-time dashboard: Grafana or CloudWatch Dashboards
+
+## Appendix A: Full request/response examples (backend ↔︎ frontend)
+
+### POST /api/v1/voices (native clone)
+
+Request
+
+```json
+{  "name": "Test Voice Clone",  "strategy": "native",  "source": {    "type": "native",    "samples": [      {"text": "Hello...", "s3_key": "uploads/client123/voices/s1.wav", "duration_seconds": 5.2},      {"text": "This is sample 2", "s3_key": "uploads/client123/voices/s2.wav", "duration_seconds": 4.9}    ]  }}
+```
+
+Response
+
+```json
+{  "data": {    "id": "1b0f8e63-...",    "name": "Test Voice Clone",    "provider": "elevenlabs",    "type": "custom",    "status": "training",    "ultravox_voice_id": "voice_abc123"  },  "meta": {"request_id":"req_...","ts":"2025-10-19T10:00:00Z"}}
+```
+
+Ultravox request (derived)
+
+```json
+{  "name": "Test Voice Clone",  "provider": "elevenlabs",  "type": "custom",  "language": "en-US",  "training_samples": [    {"text": "Hello...", "audio_url": "https://signed.s3/...?X-Amz-Signature=...", "duration_seconds": 5.2},    {"text": "This is sample 2", "audio_url": "https://signed.s3/...", "duration_seconds": 4.9}  ]}
+```
+
+DB row (voices)
+
+```json
+{  "id": "1b0f8e63-...",  "client_id": "client_123",  "name": "Test Voice Clone",  "provider": "elevenlabs",  "type": "custom",  "language": "en-US",  "status": "training",  "training_info": {"progress": 0, "started_at": "2025-10-19T10:00:00Z"},  "ultravox_voice_id": "voice_abc123",  "created_at": "2025-10-19T10:00:00Z"}
+```
+
+### POST /api/v1/agents
+
+Request
+
+```json
+{  "name": "Support Bot",  "description": "AI support",  "voice_id": "1b0f8e63-...",  "system_prompt": "You are helpful...",  "model": "fixie-ai/ultravox-v0_4-8k",  "tools": [],  "knowledge_bases": []}
+```
+
+Response
+
+```json
+{  "data": {    "id": "c1a23f7e-...",    "ultravox_agent_id": "agt_123",    "name": "Support Bot",    "status": "active"  },  "meta": {"request_id":"req_...","ts":"2025-10-19T10:05:00Z"}}
+```
+
+Ultravox request
+
+```json
+{  "name": "Support Bot",  "voice": {"provider": "elevenlabs", "voice_id": "voice_abc123"},  "settings": {"language": "en-US", "response_timeout": 30}}
+```
+
+DB row (agents)
+
+```json
+{  "id": "c1a23f7e-...",  "client_id": "client_123",  "ultravox_agent_id": "agt_123",  "name": "Support Bot",  "description": "AI support",  "system_prompt": "You are helpful...",  "model": "fixie-ai/ultravox-v0_4-8k",  "voice_id": "1b0f8e63-...",  "tools": [],  "knowledge_bases": [],  "status": "active",  "created_at": "2025-10-19T10:05:00Z"}
+```
+
+### KB presign and ingest
+
+POST /api/v1/kb/{id}/files/presign → Response
+
+```json
+{  "data": {    "documents": [      {"doc_id": "d8e2...", "url": "https://s3/...", "headers": {"Content-Type": "application/pdf"}}    ]  },  "meta": {"request_id": "req_...", "ts": "..."}}
+```
+
+POST /api/v1/kb/{id}/files/ingest → Ultravox
+
+```json
+{  "type": "file",  "url": "https://s3/.../faq.pdf",  "metadata": {"fileName": "faq.pdf"}}
+```
+
+DB (knowledge_base_documents)
+
+```json
+{  "id": "d8e2...",  "client_id": "client_123",  "knowledge_base_id": "kb_123",  "s3_key": "uploads/client123/kb/kb_123/faq.pdf",  "file_type": "application/pdf",  "file_size": 123456,  "status": "processing",  "created_at": "2025-10-19T10:10:00Z"}
+```
+
+### POST /api/v1/calls
+
+Request
+
+```json
+{ "agent_id": "c1a23f7e-...", "phone_number": "+12125550123", "direction": "outbound", "call_settings": {"recording_enabled": true}, "context": {"customer_id": "cust_1"} }
+```
+
+Ultravox request
+
+```json
+{ "agent_id": "agt_123", "phone_number": "+12125550123", "direction": "outbound", "call_settings": {"recording_enabled": true}, "context": {"customer_id": "cust_1"} }
+```
+
+DB (calls)
+
+```json
+{  "id": "call_local_123",  "client_id": "client_123",  "agent_id": "c1a23f7e-...",  "ultravox_call_id": "call_abc123",  "phone_number": "+12125550123",  "direction": "outbound",  "status": "queued",  "context": {"customer_id": "cust_1"},  "created_at": "2025-10-19T10:15:00Z"}
+```
+
+### Campaign scheduled batch
+
+Ultravox request (conceptual per docs)
+
+```json
+{  "contacts": [    {"phone_number": "+12125550123", "context": {"first_name": "Jane"}},    {"phone_number": "+12125550124", "context": {"first_name": "John"}}  ],  "medium": {"telnyx": {}},  "schedule": {"at": "2025-11-01T16:00:00Z", "timezone": "America/Los_Angeles"}}
+```
+
+DB (campaigns)
+
+```json
+{  "id": "camp_123",  "client_id": "client_123",  "agent_id": "c1a23f7e-...",  "name": "Fall Outreach",  "schedule_type": "scheduled",  "scheduled_at": "2025-11-01T16:00:00Z",  "timezone": "America/Los_Angeles",  "status": "scheduled",  "ultravox_batch_id": "batch_abc123",  "stats": {"pending": 200, "calling": 0, "completed": 0, "failed": 0},  "created_at": "2025-10-19T10:20:00Z"}
+```
+
+DB (campaign_contacts)
+
+```json
+{  "id": "cc_1",  "campaign_id": "camp_123",  "phone_number": "+12125550123",  "first_name": "Jane",  "status": "pending",  "created_at": "2025-10-19T10:21:00Z"}
+```
+
+### Webhooks ingress example (Ultravox → Trudy)
+
+Event: call.completed
+
+```json
+{  "event": "call.completed",  "call_id": "call_abc123",  "timestamp": "2025-10-19T10:30:00Z",  "data": {"duration_seconds": 300, "status": "completed", "cost_usd": 0.15}}
+```
+
+DB updates
+
+```json
+{  "calls": {    "status": "completed",    "duration_seconds": 300,    "ended_at": "2025-10-19T10:30:00Z"  },  "credit_transactions": {    "type": "spent",    "amount": 15,    "reference_type": "call",    "reference_id": "call_local_123"  }}
+```
+
+### Errors examples
+
+422 validation_error
+
+```json
+{ "error": { "code": "validation_error", "message": "Invalid phone number", "details": {"phone_number": "Must be E.164"} } }
+```
+
+provider_error from Ultravox
+
+```json
+{ "error": { "code": "provider_error", "message": "Ultravox 429 Too Many Requests", "details": {"provider": "ultravox", "httpStatus": 429, "retry_after": 10} } }
+```
+
+### Idempotency storage example
+
+Row
+
+```json
+{  "client_id": "client_123",  "key": "create-call-abc",  "request_hash": "sha256:...",  "response_body": {"data": {"id": "call_local_123"}},  "status_code": 201,  "created_at": "2025-10-19T10:15:00Z",  "ttl_at": "2025-10-26T10:15:00Z"}
+```
+
+---
+
+## Implementation Summary & Quick Reference
+
+### Critical Implementation Patterns
+
+**1. Request Processing Pattern (All Endpoints):**
+
+```
+1. Extract & Validate JWT
+2. Validate x-client-id header (matches JWT client_id or agency_admin)
+3. Set Supabase RLS context: supabase.postgrest.auth.set_auth(jwt_token)
+4. Check idempotency key (if present)
+5. Validate request body (Pydantic models)
+6. Validate permissions (role-based)
+7. Execute business logic with RLS-filtered queries
+8. Call external APIs (Ultravox/Stripe/Telnyx) with retry logic
+9. Update database (RLS enforces client_id scope automatically)
+10. Emit events (EventBridge)
+11. Return response with {data, meta} envelope
+```
+
+**2. Database Query Pattern:**
+- Always set JWT context before queries: `supabase.postgrest.auth.set_auth(jwt_token)`
+- RLS automatically filters: Queries only return rows where `client_id = jwt_client_id()` (unless agency_admin)
+- Never manually add `WHERE client_id = ?` clauses (RLS handles it)
+- Exception: Aggregation queries may need explicit client_id filter for performance
+
+**3. Error Response Pattern:**
+- Always return `{error: {code, message, details, request_id, ts}}`
+- Use appropriate HTTP status codes (see Error Matrix section)
+- Include `request_id` for traceability
+- Never expose secrets, stack traces, or internal details
+
+**4. External API Call Pattern:**
+- Always use retry logic with exponential backoff (5 attempts, 500ms base, 10s max, jitter)
+- Store API keys in AWS Secrets Manager (never in code or env vars)
+- Handle rate limits (429) gracefully with retry_after
+- Log all external API calls with request_id for debugging
+
+**5. Async Processing Pattern:**
+- Long-running operations: Return 202 Accepted immediately, process async
+- Use Step Functions for multi-step async workflows
+- Use SQS for queue-based async jobs
+- Use EventBridge for event-driven processing
+- Always update database before triggering async jobs
+
+**6. Security Pattern:**
+- JWT validation on every request (cached JWKs for performance)
+- x-client-id header validation (extra security layer)
+- RLS enforces data isolation (defense in depth)
+- HMAC verification for all webhooks (ingress and egress)
+- Secrets in Secrets Manager, encrypted at rest
+
+**7. Credit Management Pattern:**
+- Check credits BEFORE expensive operations (voice training, calls)
+- Debit credits AFTER operation completes (via webhooks)
+- Always create credit_transaction record for audit trail
+- Update clients.credits_balance atomically
+
+### Database Transaction Patterns
+
+**Simple Operations (Single Table):**
+- Use Supabase PostgREST with RLS
+- RLS automatically enforces client_id scope
+- No explicit transactions needed (PostgREST handles it)
+
+**Complex Operations (Multiple Tables):**
+- Use database transactions (BEGIN…COMMIT)
+- Example: Voice creation → credits debit
+`python   BEGIN;     INSERT INTO voices (...);     INSERT INTO credit_transactions (...);     UPDATE clients SET credits_balance = credits_balance - 50;   COMMIT;`
+- Rollback on any error
+
+### Frontend Integration Notes
+
+**Request Headers (All Requests):**
+
+```
+Authorization: Bearer {JWT_TOKEN}
+x-client-id: {CLIENT_ID}
+Content-Type: application/json
+X-Idempotency-Key: {UUID}  (for POST/PUT)
+```
+
+**Response Envelope:**
+- Success: `{data: {...}, meta: {request_id, ts}}`
+- Error: `{error: {code, message, details, request_id, ts}}`
+
+**Polling Strategy:**
+- For async operations (voice training, campaign execution):
+- Frontend polls: `GET /api/v1/voices/{id}` every 10 seconds
+- Backend returns current status
+- Alternative: WebSocket/SSE for real-time updates (faster)
+
+**Idempotency Keys:**
+- Generate UUID for each POST/PUT request
+- Store in request header: `X-Idempotency-Key`
+- Backend returns cached response if key already used
+- Prevents duplicate operations on retry
+
+### Testing Requirements
+
+**Unit Tests:**
+- All validation logic
+- Error handling paths
+- Retry logic
+- HMAC signature generation/verification
+
+**Integration Tests:**
+- End-to-end API flows
+- Database RLS enforcement
+- External API retry logic
+- Step Function state transitions
+
+**Security Tests:**
+- Cross-client data access attempts (must fail)
+- Invalid JWT handling
+- Webhook signature verification
+- Rate limit enforcement
+
+**Load Tests:**
+- Concurrent requests per client
+- Database query performance with RLS
+- External API rate limits
+- SQS queue throughput
+
+### Deployment Checklist
+
+- [ ]  All environment variables set in Secrets Manager
+- [ ]  Supabase RLS policies deployed and tested
+- [ ]  Step Functions state machines deployed
+- [ ]  SQS queues created with DLQs
+- [ ]  EventBridge rules configured
+- [ ]  CloudWatch alarms configured
+- [ ]  Sentry error tracking configured
+- [ ]  API Gateway authorizer configured (JWT validation)
+- [ ]  Rate limits configured per client
+- [ ]  S3 buckets created with encryption enabled
+- [ ]  Lambda functions deployed with proper IAM roles
+- [ ]  Database migrations applied
+- [ ]  OpenAPI spec generated and validated

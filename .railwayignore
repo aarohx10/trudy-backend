@@ -1,0 +1,67 @@
+# Railway ignore file
+# Files/directories to exclude from Railway deployment
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local development files
+.env.local
+.env.development
+
+# Node modules (if any)
+node_modules/
+package.json
+package-lock.json
+
+# Storage (ephemeral on Railway, will be created at runtime)
+storage/
+!storage/.gitkeep
+
+# Logs
+*.log
+logs/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Documentation
+*.md
+!README.md
+
+# Git
+.git/
+.gitignore
+
+# Deployment scripts (not needed on Railway)
+deploy.sh
+start.sh
+start-production.sh
+start-backend.sh
+start-all.sh
+start-all.bat
+start-backend.bat
+start-frontend.bat
+
+# Database migrations (run manually if needed)
+database/migrations/
+
+# Backend context files
+backend-context
+
