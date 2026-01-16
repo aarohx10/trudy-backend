@@ -53,6 +53,7 @@ class Settings(BaseSettings):
         object.__setattr__(self, "CORS_WILDCARD_PATTERNS", [
             r"https://.*\.vercel\.app",  # Vercel preview deployments (regex format)
             r"https://.*\.truedy\.ai",  # Hetzner domain wildcards (regex format)
+            r"https://.*\.closi\.tech",  # Temporary hosting wildcards
         ])
     
     
