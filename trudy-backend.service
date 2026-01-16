@@ -3,7 +3,7 @@ Description=Trudy Backend API Service
 After=network.target
 
 [Service]
-Type=notify
+Type=simple
 User=root
 Group=root
 WorkingDirectory=/opt/backend
