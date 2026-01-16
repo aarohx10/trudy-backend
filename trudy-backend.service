@@ -6,9 +6,9 @@ After=network.target
 Type=notify
 User=root
 Group=root
-WorkingDirectory=/opt/trudy-backend
-Environment="PATH=/opt/trudy-backend/venv/bin:/usr/local/bin:/usr/bin:/bin"
-ExecStart=/opt/trudy-backend/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+WorkingDirectory=/opt/backend
+Environment="PATH=/opt/backend/venv/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/opt/backend/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=10
@@ -21,7 +21,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/trudy-backend /mnt/storage
+ReadWritePaths=/opt/backend /mnt/storage
 
 # Resource limits
 LimitNOFILE=65536
