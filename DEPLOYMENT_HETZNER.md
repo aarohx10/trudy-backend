@@ -191,9 +191,37 @@ ssh-copy-id -i ~/.ssh/hetzner_deploy.pub root@your-server-ip
 cat ~/.ssh/hetzner_deploy
 ```
 
-## Step 7: Verify Deployment
+## Step 7: Fast Updates (The "Sync" Script)
 
-### 7.1 Check Service Status
+To update your backend in one command from your local machine, use the provided sync scripts:
+
+### From Windows (PowerShell):
+```powershell
+# Navigate to z-backend folder
+cd z-backend
+# Run the sync script
+.\sync-server.ps1 "Fixed CORS and domain"
+```
+
+### From Mac/Linux (Bash):
+```bash
+# Navigate to z-backend folder
+cd z-backend
+# Make script executable
+chmod +x sync-server.sh
+# Run the sync script
+./sync-server.sh "Fixed CORS and domain"
+```
+
+These scripts will:
+1. `git push` your changes to GitHub.
+2. `ssh` into your Hetzner server.
+3. `git pull` the latest code.
+4. Run `deploy.sh` to install dependencies, run migrations, and restart the service.
+
+## Step 8: Verify Deployment
+
+### 8.1 Check Service Status
 
 ```bash
 sudo systemctl status trudy-backend
@@ -215,9 +243,9 @@ sudo journalctl -u trudy-backend -n 50
 sudo journalctl -u trudy-backend -f
 ```
 
-## Step 8: Maintenance Commands
+## Step 9: Maintenance Commands
 
-### 8.1 Restart Service
+### 9.1 Restart Service
 
 ```bash
 sudo systemctl restart trudy-backend

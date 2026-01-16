@@ -9,16 +9,20 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+# Get the directory of this script
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+PROJECT_ROOT="$( cd "$SCRIPT_DIR/../.." && pwd )"
+
 echo -e "${GREEN}Running database migrations...${NC}"
 
 # Check if .env file exists
-if [ ! -f "../../.env" ]; then
-    echo -e "${RED}ERROR: .env file not found in project root${NC}"
+if [ ! -f "$PROJECT_ROOT/.env" ]; then
+    echo -e "${RED}ERROR: .env file not found at $PROJECT_ROOT/.env${NC}"
     exit 1
 fi
 
 # Load environment variables
-source ../../.env
+source "$PROJECT_ROOT/.env"
 
 # Check if Supabase URL and key are set
 if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_SERVICE_KEY" ]; then
