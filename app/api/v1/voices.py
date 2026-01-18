@@ -4,6 +4,7 @@ Voice Endpoints
 from fastapi import APIRouter, Header, Depends, Query, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.background import BackgroundTasks
+from starlette.requests import Request
 from typing import Optional, List
 from datetime import datetime
 import uuid
@@ -1281,6 +1282,7 @@ async def sync_voice_with_ultravox(
 async def preview_voice(
     voice_id: str,
     text: Optional[str] = Query(None, description="Text to convert to speech for preview (not used with Ultravox preview)"),
+    request: Request = None,
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
@@ -1289,7 +1291,7 @@ async def preview_voice(
     Works for both custom voices (from DB) and Ultravox voices (direct from Ultravox).
     Uses Ultravox API key - no user credentials required.
     """
-    request_id = getattr(request.state, "request_id", None)
+    request_id = getattr(request.state, "request_id", None) if request else None
     client_id = current_user.get("client_id")
     user_id = current_user.get("user_id")
     
