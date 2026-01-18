@@ -593,8 +593,11 @@ async def list_voices(
         
         logger.info(f"[VOICES] [LIST] Fetched {len(ultravox_voices)} voices from Ultravox | request_id={request_id}")
         
-        # Convert Ultravox voices to our response format
+        # Convert Ultravox voices to our response format and save to database
         voices_data = []
+        db = DatabaseService(current_user["token"])
+        db.set_auth(current_user["token"])
+        
         for uv_voice in ultravox_voices:
             try:
                 # Extract provider_voice_id from definition
@@ -615,9 +618,64 @@ async def list_voices(
                 if not provider_voice_id:
                     continue
                 
+                ultravox_voice_id = uv_voice.get("voiceId")
+                if not ultravox_voice_id:
+                    logger.warning(f"[VOICES] [LIST] Voice missing voiceId, skipping | name={uv_voice.get('name')} | request_id={request_id}")
+                    continue
+                
+                # Check if voice already exists in database (by ultravox_voice_id)
+                existing_voice = db.select_one(
+                    "voices",
+                    {
+                        "ultravox_voice_id": ultravox_voice_id,
+                        "client_id": client_id
+                    }
+                )
+                
+                now = datetime.utcnow()
+                voice_id = None
+                
+                if existing_voice:
+                    # Voice exists - update it with latest info
+                    voice_id = existing_voice.get("id")
+                    update_data = {
+                        "name": uv_voice.get("name", "Untitled Voice"),
+                        "provider": provider_name,
+                        "provider_voice_id": provider_voice_id,
+                        "language": uv_voice.get("primaryLanguage", "en-US") or "en-US",
+                        "status": "active",
+                        "updated_at": now.isoformat(),
+                    }
+                    if uv_voice.get("description"):
+                        update_data["description"] = uv_voice.get("description")
+                    
+                    db.update("voices", {"id": voice_id}, update_data)
+                    logger.debug(f"[VOICES] [LIST] Updated existing voice in DB | voice_id={voice_id} | ultravox_id={ultravox_voice_id} | request_id={request_id}")
+                else:
+                    # Voice doesn't exist - create it in database
+                    voice_id = str(uuid.uuid4())
+                    voice_record = {
+                        "id": voice_id,
+                        "client_id": client_id,
+                        "name": uv_voice.get("name", "Untitled Voice"),
+                        "provider": provider_name,
+                        "type": "reference",
+                        "language": uv_voice.get("primaryLanguage", "en-US") or "en-US",
+                        "status": "active",
+                        "provider_voice_id": provider_voice_id,
+                        "ultravox_voice_id": ultravox_voice_id,  # IMPORTANT: Save the Ultravox ID!
+                        "created_at": now.isoformat(),
+                        "updated_at": now.isoformat(),
+                    }
+                    if uv_voice.get("description"):
+                        voice_record["description"] = uv_voice.get("description")
+                    
+                    db.insert("voices", voice_record)
+                    logger.info(f"[VOICES] [LIST] Saved new voice to DB | voice_id={voice_id} | ultravox_id={ultravox_voice_id} | name={voice_record['name']} | request_id={request_id}")
+                
                 # Map to our VoiceResponse format
                 voice_data = {
-                    "id": uv_voice.get("voiceId"),  # Use Ultravox voice ID as our ID
+                    "id": voice_id,  # Use our database ID
                     "client_id": client_id,
                     "name": uv_voice.get("name", "Untitled Voice"),
                     "provider": provider_name,
@@ -625,9 +683,9 @@ async def list_voices(
                     "language": uv_voice.get("primaryLanguage", "en-US") or "en-US",
                     "status": "active",
                     "provider_voice_id": provider_voice_id,
-                    "ultravox_voice_id": uv_voice.get("voiceId"),
-                    "created_at": datetime.utcnow(),
-                    "updated_at": datetime.utcnow(),
+                    "ultravox_voice_id": ultravox_voice_id,  # Include Ultravox ID in response
+                    "created_at": now,
+                    "updated_at": now,
                 }
                 
                 if uv_voice.get("description"):
@@ -635,7 +693,7 @@ async def list_voices(
                 
                 voices_data.append(VoiceResponse(**voice_data))
             except Exception as e:
-                logger.warning(f"[VOICES] [LIST] Failed to process voice {uv_voice.get('voiceId')}: {e}")
+                logger.warning(f"[VOICES] [LIST] Failed to process voice {uv_voice.get('voiceId')}: {e}", exc_info=True)
                 continue
         
         logger.info(f"[VOICES] [LIST] Returning {len(voices_data)} voices | request_id={request_id}")
