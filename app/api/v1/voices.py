@@ -1038,11 +1038,11 @@ async def get_voice(
     logger.info(f"[VOICES] [GET] Fetching voice | voice_id={voice_id} | client_id={client_id} | request_id={request_id}")
     
     try:
-    db = DatabaseService(current_user["token"])
-    db.set_auth(current_user["token"])
-    
-    voice = db.get_voice(voice_id, current_user["client_id"])
-    if not voice:
+        db = DatabaseService(current_user["token"])
+        db.set_auth(current_user["token"])
+        
+        voice = db.get_voice(voice_id, current_user["client_id"])
+        if not voice:
             error_msg = f"Voice not found: {voice_id}"
             logger.warning(f"[VOICES] [GET] {error_msg} | client_id={client_id} | request_id={request_id}")
             background_tasks.add_task(
@@ -1058,8 +1058,8 @@ async def get_voice(
                 method="GET",
                 status_code=404,
             )
-        raise NotFoundError("voice", voice_id)
-    
+            raise NotFoundError("voice", voice_id)
+        
         logger.info(f"[VOICES] [GET] Voice found | voice_id={voice_id} | name={voice.get('name')} | status={voice.get('status')} | request_id={request_id}")
         
         # Log to database
@@ -1083,13 +1083,13 @@ async def get_voice(
             },
         )
         
-    return {
-        "data": VoiceResponse(**voice),
-        "meta": ResponseMeta(
+        return {
+            "data": VoiceResponse(**voice),
+            "meta": ResponseMeta(
                 request_id=request_id or str(uuid.uuid4()),
-            ts=datetime.utcnow(),
-        ),
-    }
+                ts=datetime.utcnow(),
+            ),
+        }
     except NotFoundError:
         raise
     except Exception as e:
