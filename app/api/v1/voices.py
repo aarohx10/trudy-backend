@@ -485,6 +485,9 @@ async def list_voices(
     client_id = current_user.get("client_id")
     user_id = current_user.get("user_id")
     
+    # Initialize response data
+    voices_data = []
+    
     try:
         # 1. Initialize DB service
         db = DatabaseService(current_user["token"])
@@ -501,11 +504,10 @@ async def list_voices(
                     "client_id": client_id,
                     "type": "custom"
                 },
-                order_by="created_at DESC"
+                order_by="created_at"
             )
             
             # Convert database records to VoiceResponse format
-            voices_data = []
             for voice_record in custom_voices:
                 try:
                     # Parse datetime fields safely

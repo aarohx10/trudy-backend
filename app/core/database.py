@@ -112,7 +112,14 @@ class DatabaseService:
                 query = query.eq(key, value)
         
         if order_by:
-            query = query.order(order_by, desc=True)
+            # Handle "column DESC" or "column ASC" format
+            parts = order_by.split()
+            col = parts[0]
+            descending = True
+            if len(parts) > 1:
+                descending = parts[1].upper() == "DESC"
+            
+            query = query.order(col, desc=descending)
         
         response = query.execute()
         return response.data if response.data else []
@@ -231,7 +238,14 @@ class DatabaseAdminService:
                 query = query.eq(key, value)
         
         if order_by:
-            query = query.order(order_by, desc=True)
+            # Handle "column DESC" or "column ASC" format
+            parts = order_by.split()
+            col = parts[0]
+            descending = True
+            if len(parts) > 1:
+                descending = parts[1].upper() == "DESC"
+            
+            query = query.order(col, desc=descending)
         
         response = query.execute()
         return response.data if response.data else []
