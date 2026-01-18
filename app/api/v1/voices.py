@@ -496,6 +496,94 @@ async def list_voices(
         
         voices = db.select("voices", {"client_id": current_user["client_id"]}, "created_at")
         
+        # Auto-sync if database is empty and Ultravox is configured
+        if len(voices) == 0 and settings.ULTRAVOX_API_KEY:
+            logger.info(f"[VOICES] [LIST] Database empty, attempting auto-sync | client_id={client_id} | request_id={request_id}")
+            # #region agent log
+            try:
+                with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"M","location":"voices.py:340","message":"Auto-sync triggered - database empty","data":{"client_id":client_id},"timestamp":int(__import__("time").time()*1000)})+"\n")
+            except: pass
+            # #endregion
+            try:
+                # Fetch public voices from Ultravox
+                ultravox_voices = await ultravox_client.list_voices(ownership="public")
+                logger.info(f"[VOICES] [LIST] Auto-sync fetched {len(ultravox_voices)} voices from Ultravox | request_id={request_id}")
+                # #region agent log
+                try:
+                    with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"N","location":"voices.py:347","message":"Auto-sync Ultravox response","data":{"ultravox_voices_count":len(ultravox_voices)},"timestamp":int(__import__("time").time()*1000)})+"\n")
+                except: pass
+                # #endregion
+                
+                # Import voices into database
+                imported = 0
+                for uv_voice in ultravox_voices[:10]:  # Limit to first 10 for auto-sync
+                    try:
+                        ultravox_voice_id = uv_voice.get("voiceId")
+                        provider_voice_id = uv_voice.get("provider_voice_id")
+                        provider_name = uv_voice.get("provider", "elevenlabs")
+                        
+                        if not provider_voice_id:
+                            continue
+                        
+                        # Check if already exists
+                        existing = db.select_one(
+                            "voices",
+                            {
+                                "client_id": current_user["client_id"],
+                                "ultravox_voice_id": ultravox_voice_id
+                            }
+                        )
+                        if existing:
+                            continue
+                        
+                        # Import voice
+                        voice_id = str(uuid.uuid4())
+                        now = datetime.utcnow()
+                        voice_record = {
+                            "id": voice_id,
+                            "client_id": current_user["client_id"],
+                            "name": uv_voice.get("name", "Untitled Voice"),
+                            "provider": provider_name,
+                            "type": "reference",
+                            "language": uv_voice.get("primaryLanguage", "en-US") or "en-US",
+                            "status": "active",
+                            "provider_voice_id": provider_voice_id,
+                            "ultravox_voice_id": ultravox_voice_id,
+                            "created_at": now.isoformat(),
+                            "updated_at": now.isoformat(),
+                        }
+                        if uv_voice.get("description"):
+                            voice_record["description"] = uv_voice.get("description")
+                        definition = uv_voice.get("definition", {})
+                        if definition:
+                            voice_record["provider_settings"] = definition
+                        
+                        db.insert("voices", voice_record)
+                        imported += 1
+                    except Exception as e:
+                        logger.error(f"[VOICES] [LIST] Auto-sync failed to import voice: {e}", exc_info=True)
+                
+                logger.info(f"[VOICES] [LIST] Auto-sync imported {imported} voices | request_id={request_id}")
+                # #region agent log
+                try:
+                    with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"O","location":"voices.py:390","message":"Auto-sync import complete","data":{"imported":imported},"timestamp":int(__import__("time").time()*1000)})+"\n")
+                except: pass
+                # #endregion
+                
+                # Re-query database after import
+                voices = db.select("voices", {"client_id": current_user["client_id"]}, "created_at")
+            except Exception as e:
+                logger.error(f"[VOICES] [LIST] Auto-sync failed: {e}", exc_info=True)
+                # #region agent log
+                try:
+                    with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"P","location":"voices.py:395","message":"Auto-sync error","data":{"error":str(e)},"timestamp":int(__import__("time").time()*1000)})+"\n")
+                except: pass
+                # #endregion
+        
         # #region agent log
         try:
             with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:

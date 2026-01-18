@@ -98,6 +98,13 @@ class DatabaseService:
     # Generic CRUD operations
     def select(self, table: str, filters: Optional[Dict[str, Any]] = None, order_by: Optional[str] = None) -> List[Dict[str, Any]]:
         """Select records from table"""
+        # #region agent log
+        import json
+        try:
+            with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"K","location":"database.py:99","message":"Database select called","data":{"table":table,"filters":filters,"order_by":order_by},"timestamp":int(__import__("time").time()*1000)})+"\n")
+        except: pass
+        # #endregion
         query = self.client.table(table).select("*")
         
         if filters:
