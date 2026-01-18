@@ -170,16 +170,19 @@ class LoggingCORSMiddleware(StarletteCORSMiddleware):
         await super().__call__(scope, receive, send_wrapper)
 
 # Middleware order matters! In FastAPI, middleware is applied in REVERSE order of addition.
-# So we add them in reverse order: last added = first executed
-# CORS must be the outer layer to ensure headers are sent even during errors
-# Execution order: RateLimit -> Logging -> RequestID -> CORS (outermost for response headers)
+# To make CORS the OUTERMOST layer (first to receive request, last to send response), 
+# it must be added LAST.
+#
+# Execution order for requests: CORS -> RateLimit -> Logging -> RequestID -> app
+# Execution order for responses: app -> RequestID -> Logging -> RateLimit -> CORS
 
-# Add Middleware in correct execution order
-# CORS is added first (last in execution) to wrap all responses
-app.add_middleware(LoggingCORSMiddleware, **cors_middleware_config)
+# Add Middleware
 app.add_middleware(RequestIDMiddleware)
 app.add_middleware(LoggingMiddleware)
 app.add_middleware(RateLimitMiddleware)
+app.add_middleware(LoggingCORSMiddleware, **cors_middleware_config)
+
+logger.info("✅ Middlewares configured (CORS is outermost)")
 
 
 # Exception Handlers

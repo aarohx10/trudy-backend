@@ -54,6 +54,7 @@ class Settings(BaseSettings):
             r"https://.*\.vercel\.app",  # Vercel preview deployments (regex format)
             r"https://.*\.truedy\.ai",  # Hetzner domain wildcards (regex format)
             r"https://.*\.closi\.tech",  # Temporary hosting wildcards
+            r"https://.*\.sendora\.ai",  # Sendora domain wildcards
         ])
     
     
