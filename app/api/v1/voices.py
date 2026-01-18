@@ -1323,7 +1323,6 @@ async def preview_voice(
             # This means the voice was never successfully created in Ultravox
             error_msg = "Voice does not have an Ultravox ID. The voice may not be ready for preview."
             logger.error(f"[VOICES] [PREVIEW] {error_msg} | voice_id={voice_id} | request_id={request_id}")
-            from fastapi import HTTPException
             raise HTTPException(
                 status_code=400,
                 detail={
