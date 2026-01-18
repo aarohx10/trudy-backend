@@ -53,7 +53,7 @@ class UltravoxClient:
             logger.debug(f"[ULTRAVOX] Request Data: {data}")
         
         async def _make_request():
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
                 response = await client.request(
                     method,
                     url,
@@ -257,7 +257,7 @@ class UltravoxClient:
         logger.info(f"[ULTRAVOX] Getting voice preview | voice_id={voice_id} | url={url}")
         
         async def _make_request():
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
                 response = await client.get(
                     url,
                     headers={

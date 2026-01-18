@@ -2,9 +2,8 @@
 Voice Endpoints
 """
 from fastapi import APIRouter, Header, Depends, Query, Request, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from fastapi.background import BackgroundTasks
-from starlette.requests import Request
 from typing import Optional, List
 from datetime import datetime
 import uuid
@@ -1404,11 +1403,11 @@ async def preview_voice(
         
         logger.info(f"[VOICES] [PREVIEW] Preview audio received | size={len(audio_bytes)} bytes | request_id={request_id}")
         
-        # Return audio stream (Ultravox returns audio/wav)
-        return StreamingResponse(
-            iter([audio_bytes]),
+        # Return audio response (Ultravox returns audio/wav)
+        return Response(
+            content=audio_bytes,
             media_type="audio/wav",
-                headers={
+            headers={
                 "Content-Disposition": f'inline; filename="voice-preview.wav"',
             }
         )
