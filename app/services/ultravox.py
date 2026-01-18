@@ -241,8 +241,80 @@ class UltravoxClient:
     
     async def get_voice(self, voice_id: str) -> Dict[str, Any]:
         """Get voice from Ultravox"""
-        response = await self._request("GET", f"/voices/{voice_id}")
+        response = await self._request("GET", f"/api/voices/{voice_id}")
         return response.get("data", {})
+    
+    async def get_voice_preview(self, voice_id: str) -> bytes:
+        """Get voice preview audio from Ultravox - returns raw audio bytes (audio/wav)"""
+        if not self.api_key:
+            raise ProviderError(
+                provider="ultravox",
+                message="Ultravox API key is not configured",
+                http_status=500,
+            )
+        
+        url = f"{self.base_url}/api/voices/{voice_id}/preview"
+        logger.info(f"[ULTRAVOX] Getting voice preview | voice_id={voice_id} | url={url}")
+        
+        async def _make_request():
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    url,
+                    headers={
+                        "X-API-Key": self.api_key,
+                    },
+                )
+                logger.debug(f"[ULTRAVOX] Preview response received | status_code={response.status_code} | url={url}")
+                if response.status_code >= 400:
+                    error_text = response.text[:500] if response.text else "No response body"
+                    logger.error(f"[ULTRAVOX] Preview Error Response | status={response.status_code} | url={url} | response_preview={error_text}")
+                response.raise_for_status()
+                return response.content  # Return raw bytes, not JSON
+        
+        try:
+            return await retry_with_backoff(_make_request)
+        except httpx.HTTPStatusError as e:
+            error_detail = "Unknown error"
+            error_details = {}
+            try:
+                error_body = e.response.json()
+                if isinstance(error_body, dict):
+                    error_detail = error_body.get("error", {}).get("message", str(e)) if isinstance(error_body.get("error"), dict) else str(e)
+                    error_details = error_body
+                else:
+                    error_detail = str(e)
+                    error_details = {"raw_response": str(error_body)}
+            except:
+                error_text = e.response.text[:1000] if e.response.text else "No response body"
+                error_detail = f"HTTP {e.response.status_code}: {error_text[:200]}"
+                error_details = {
+                    "status_code": e.response.status_code,
+                    "response_body": error_text,
+                    "request_url": str(e.request.url),
+                    "method": e.request.method,
+                }
+            
+            logger.error(f"[ULTRAVOX] Preview HTTP Status Error: {e.response.status_code} - {error_detail[:200]} | url={url}", exc_info=True)
+            raise ProviderError(
+                provider="ultravox",
+                message=f"Ultravox API error: {e.response.status_code} - {error_detail[:200]}",
+                http_status=e.response.status_code,
+                retry_after=int(e.response.headers.get("Retry-After", 0)) if e.response.status_code == 429 else None,
+                details=error_details,
+            )
+        except httpx.RequestError as e:
+            logger.error(f"[ULTRAVOX] Preview Request Error: {e} | url={url}", exc_info=True)
+            raise ProviderError(
+                provider="ultravox",
+                message=f"Ultravox API request failed: {e}",
+                http_status=502,
+                details={
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "request_url": url,
+                    "method": "GET",
+                },
+            )
     
     # Agents
     async def create_agent(self, agent_data: Dict[str, Any]) -> Dict[str, Any]:

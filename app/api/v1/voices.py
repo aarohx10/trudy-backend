@@ -471,17 +471,113 @@ async def list_voices(
     x_client_id: Optional[str] = Header(None),
     background_tasks: BackgroundTasks = BackgroundTasks(),
     ownership: Optional[str] = Query("public", description="Filter by ownership: 'public' or 'private'"),
+    source: Optional[str] = Query(None, description="Filter by source: 'ultravox' (pre-loaded voices) or 'custom' (user-created voices)"),
 ):
     """
-    List voices - fetches directly from Ultravox every time.
-    Simple and straightforward - no database, no sync, just get voices from Ultravox.
+    List voices - supports two sources:
+    - source='ultravox' or not provided: Returns voices from Ultravox API (for Explore tab)
+    - source='custom': Returns custom voices from database (for My Voices tab)
     """
     request_id = getattr(request.state, "request_id", None)
     client_id = current_user.get("client_id")
     user_id = current_user.get("user_id")
     
     try:
-        logger.info(f"[VOICES] [LIST] Fetching voices from Ultravox | client_id={client_id} | ownership={ownership} | request_id={request_id}")
+        # If source is 'custom', fetch from database
+        if source == "custom":
+            logger.info(f"[VOICES] [LIST] Fetching custom voices from database | client_id={client_id} | request_id={request_id}")
+            
+            db = DatabaseService(current_user["token"])
+            db.set_auth(current_user["token"])
+            
+            # Query database for custom voices (type='custom' and client_id matches)
+            custom_voices = db.select(
+                "voices",
+                {
+                    "client_id": client_id,
+                    "type": "custom"
+                },
+                order_by="created_at DESC"
+            )
+            
+            # Convert database records to VoiceResponse format
+            voices_data = []
+            for voice_record in custom_voices:
+                try:
+                    # Parse datetime fields safely
+                    created_at = voice_record.get("created_at")
+                    if isinstance(created_at, str):
+                        try:
+                            created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                        except (ValueError, AttributeError):
+                            created_at = datetime.utcnow()
+                    elif created_at is None:
+                        created_at = datetime.utcnow()
+                    
+                    updated_at = voice_record.get("updated_at")
+                    if isinstance(updated_at, str):
+                        try:
+                            updated_at = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+                        except (ValueError, AttributeError):
+                            updated_at = datetime.utcnow()
+                    elif updated_at is None:
+                        updated_at = datetime.utcnow()
+                    
+                    voice_data = {
+                        "id": voice_record.get("id"),
+                        "client_id": voice_record.get("client_id"),
+                        "name": voice_record.get("name", "Untitled Voice"),
+                        "provider": voice_record.get("provider", "elevenlabs"),
+                        "type": voice_record.get("type", "custom"),
+                        "language": voice_record.get("language", "en-US"),
+                        "status": voice_record.get("status", "active"),
+                        "provider_voice_id": voice_record.get("provider_voice_id"),
+                        "ultravox_voice_id": voice_record.get("ultravox_voice_id"),
+                        "created_at": created_at,
+                        "updated_at": updated_at,
+                    }
+                    
+                    if voice_record.get("description"):
+                        voice_data["description"] = voice_record.get("description")
+                    
+                    if voice_record.get("training_info"):
+                        voice_data["training_info"] = voice_record.get("training_info")
+                    
+                    voices_data.append(VoiceResponse(**voice_data))
+                except Exception as e:
+                    logger.warning(f"[VOICES] [LIST] Failed to process custom voice {voice_record.get('id')}: {e}")
+                    continue
+            
+            logger.info(f"[VOICES] [LIST] Returning {len(voices_data)} custom voices from database | request_id={request_id}")
+            
+            # Log to database
+            background_tasks.add_task(
+                log_to_database,
+                source="backend",
+                level="INFO",
+                category="voices_list",
+                message=f"Listed {len(voices_data)} custom voices from database",
+                request_id=request_id,
+                client_id=client_id,
+                user_id=user_id,
+                endpoint="/api/v1/voices",
+                method="GET",
+                context={
+                    "voice_count": len(voices_data),
+                    "source": "custom",
+                },
+            )
+            
+            return {
+                "data": voices_data,
+                "meta": ResponseMeta(
+                    request_id=request_id or str(uuid.uuid4()),
+                    ts=datetime.utcnow(),
+                ),
+            }
+        
+        # Default: Fetch from Ultravox (for Explore tab)
+        logger.info(f"[VOICES] [LIST] Fetching voices from Ultravox | client_id={client_id} | ownership={ownership} | source={source} | request_id={request_id}")
         
         # Check if Ultravox is configured
         if not settings.ULTRAVOX_API_KEY:
@@ -1184,151 +1280,73 @@ async def sync_voice_with_ultravox(
 @router.get("/{voice_id}/preview")
 async def preview_voice(
     voice_id: str,
-    text: Optional[str] = Query(None, description="Text to convert to speech for preview"),
+    text: Optional[str] = Query(None, description="Text to convert to speech for preview (not used with Ultravox preview)"),
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
     """
-    Preview a voice by generating audio using the provider's TTS API.
-    Currently supports ElevenLabs voices.
+    Preview a voice using Ultravox's preview endpoint.
+    Works for both custom voices (from DB) and Ultravox voices (direct from Ultravox).
+    Uses Ultravox API key - no user credentials required.
     """
+    request_id = getattr(request.state, "request_id", None)
+    client_id = current_user.get("client_id")
+    user_id = current_user.get("user_id")
+    
     db = DatabaseService(current_user["token"])
     db.set_auth(current_user["token"])
     
-    # Get voice from database
-    voice = db.get_voice(voice_id, current_user["client_id"])
-    if not voice:
-        raise NotFoundError("voice", voice_id)
+    # Try to get voice from database first (for custom voices)
+    voice = db.get_voice(voice_id, client_id)
+    ultravox_voice_id = None
     
-    logger.info(f"Voice data retrieved: id={voice_id}, provider={voice.get('provider')}, provider_voice_id={voice.get('provider_voice_id')}, status={voice.get('status')}")
+    if voice:
+        # Voice exists in database - use ultravox_voice_id if available
+        logger.info(f"[VOICES] [PREVIEW] Voice found in database | voice_id={voice_id} | ultravox_voice_id={voice.get('ultravox_voice_id')} | status={voice.get('status')} | request_id={request_id}")
+        
+        # Check if voice is active
+        if voice.get("status") != "active":
+            raise ValidationError("Voice must be active to preview", {"status": voice.get("status")})
+        
+        ultravox_voice_id = voice.get("ultravox_voice_id")
+        if not ultravox_voice_id:
+            # If no ultravox_voice_id, the voice_id itself might be the Ultravox ID
+            # This can happen for voices fetched directly from Ultravox
+            ultravox_voice_id = voice_id
+            logger.info(f"[VOICES] [PREVIEW] No ultravox_voice_id in DB, using voice_id as Ultravox ID | voice_id={voice_id} | request_id={request_id}")
+    else:
+        # Voice not in database - assume voice_id is the Ultravox voice ID
+        # This is the case for voices from Explore tab (Ultravox pre-loaded voices)
+        logger.info(f"[VOICES] [PREVIEW] Voice not in database, using voice_id as Ultravox ID | voice_id={voice_id} | request_id={request_id}")
+        ultravox_voice_id = voice_id
     
-    # Check if voice is active
-    if voice.get("status") != "active":
-        raise ValidationError("Voice must be active to preview", {"status": voice.get("status")})
+    # Check if Ultravox is configured
+    if not settings.ULTRAVOX_API_KEY:
+        error_msg = "Ultravox API key not configured"
+        logger.error(f"[VOICES] [PREVIEW] {error_msg} | voice_id={voice_id} | request_id={request_id}")
+        raise ValidationError(error_msg)
     
-    provider = voice.get("provider", "").lower()
-    provider_voice_id = voice.get("provider_voice_id")
-    
-    logger.info(f"Preview request - Provider: {provider}, Provider Voice ID: {provider_voice_id}")
-    
-    # Only support ElevenLabs for now
-    if provider != "elevenlabs":
-        raise ValidationError(f"Voice preview not supported for provider: {provider}")
-    
-    if not provider_voice_id:
-        raise ValidationError("Voice does not have a provider_voice_id. Cannot generate preview.")
-    
-    # Get ElevenLabs API key from database first
-    api_keys = db.select(
-        "api_keys",
-        {
-            "client_id": current_user["client_id"],
-            "service": "elevenlabs",
-            "is_active": True
-        }
-    )
-    
-    elevenlabs_api_key = None
-    if api_keys:
-        # Get the most recent active key
-        latest_key = sorted(api_keys, key=lambda x: x.get("updated_at", ""), reverse=True)[0]
-        encrypted_key = latest_key.get("encrypted_key")
-        if encrypted_key:
-            elevenlabs_api_key = decrypt_api_key(encrypted_key)
-            logger.info("Using ElevenLabs API key from database")
-    
-    # If no API key in database, try environment variable (for development)
-    if not elevenlabs_api_key:
-        elevenlabs_api_key = settings.ELEVENLABS_API_KEY
-        if elevenlabs_api_key:
-            logger.info("Using ElevenLabs API key from environment variable")
-    
-    # Also try direct os.getenv as fallback (in case settings didn't load it)
-    if not elevenlabs_api_key:
-        elevenlabs_api_key = os.getenv("ELEVENLABS_API_KEY")
-        if elevenlabs_api_key:
-            logger.info("Using ElevenLabs API key from os.getenv")
-    
-    if not elevenlabs_api_key:
-        logger.error(f"ElevenLabs API key not found. Provider voice ID: {provider_voice_id}, Voice ID: {voice_id}")
-        raise ValidationError(
-            "ElevenLabs API key not found. Please configure your API key by either: "
-            "1) Setting ELEVENLABS_API_KEY in your backend .env file (in z-backend directory), or "
-            "2) Using PATCH /api/v1/providers/tts endpoint with provider='elevenlabs'. "
-            "Make sure to restart your backend server after adding the environment variable.",
-            {"error": "missing_api_key", "help": "See backend documentation for API key configuration"}
-        )
-    
-    # Log API key info (without exposing the actual key)
-    api_key_preview = elevenlabs_api_key[:8] + "..." + elevenlabs_api_key[-4:] if elevenlabs_api_key and len(elevenlabs_api_key) > 12 else "N/A"
-    logger.info(f"Using ElevenLabs API key (length: {len(elevenlabs_api_key) if elevenlabs_api_key else 0}, preview: {api_key_preview}) for voice preview")
-    
-    # Use default text if not provided
-    preview_text = text or "Hello, this is a preview of this voice."
-    
-    # Call ElevenLabs TTS API
-    # Don't specify model_id - let ElevenLabs use the default model for the account
-    # This avoids issues with deprecated models on free tier
     try:
-        logger.info(f"Calling ElevenLabs API for voice ID: {provider_voice_id}, text: {preview_text[:50]}...")
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"https://api.elevenlabs.io/v1/text-to-speech/{provider_voice_id}",
-                headers={
-                    "Accept": "audio/mpeg",
-                    "Content-Type": "application/json",
-                    "xi-api-key": elevenlabs_api_key,
-                },
-                json={
-                    "text": preview_text,
-                    # Don't specify model_id - uses account default (works with all tiers)
-                    "voice_settings": {
-                        "stability": 0.5,
-                        "similarity_boost": 0.75,
-                    }
-                },
-            )
-            logger.info(f"ElevenLabs API response status: {response.status_code}")
-            response.raise_for_status()
-            
-            # Return audio stream
-            return StreamingResponse(
-                iter([response.content]),
-                media_type="audio/mpeg",
-                headers={
-                    "Content-Disposition": f'inline; filename="voice-preview.mp3"',
-                }
-            )
-    except httpx.HTTPStatusError as e:
-        logger.error(f"ElevenLabs API error: {e.response.status_code} - {e.response.text}")
+        # Get preview audio from Ultravox
+        logger.info(f"[VOICES] [PREVIEW] Fetching preview from Ultravox | ultravox_voice_id={ultravox_voice_id} | request_id={request_id}")
+        audio_bytes = await ultravox_client.get_voice_preview(ultravox_voice_id)
         
-        # Try to parse error response for better error messages
-        error_detail = None
-        try:
-            error_json = e.response.json()
-            if "detail" in error_json:
-                error_detail = error_json["detail"]
-                if isinstance(error_detail, dict):
-                    error_message = error_detail.get("message", str(error_detail))
-                else:
-                    error_message = str(error_detail)
-            else:
-                error_message = e.response.text
-        except:
-            error_message = e.response.text
+        logger.info(f"[VOICES] [PREVIEW] Preview audio received | size={len(audio_bytes)} bytes | request_id={request_id}")
         
-        if e.response.status_code == 401:
-            if "model_deprecated" in error_message.lower() or "free tier" in error_message.lower():
-                raise ValidationError(
-                    "The ElevenLabs model is not available on your plan. Please upgrade your ElevenLabs subscription or contact support.",
-                    {"error": "model_deprecated", "message": error_message}
-                )
-            raise ValidationError("Invalid ElevenLabs API key", {"error": "invalid_api_key"})
-        elif e.response.status_code == 404:
-            raise ValidationError("Voice not found in ElevenLabs", {"error": "voice_not_found"})
-        else:
-            raise ValidationError(f"Failed to generate voice preview: {error_message}", {"error": "api_error"})
+        # Return audio stream (Ultravox returns audio/wav)
+        return StreamingResponse(
+            iter([audio_bytes]),
+            media_type="audio/wav",
+            headers={
+                "Content-Disposition": f'inline; filename="voice-preview.wav"',
+            }
+        )
+    except ProviderError as e:
+        error_msg = f"Failed to get voice preview from Ultravox: {str(e)}"
+        logger.error(f"[VOICES] [PREVIEW] {error_msg} | ultravox_voice_id={ultravox_voice_id} | request_id={request_id}", exc_info=True)
+        raise ValidationError(error_msg, {"error": "ultravox_api_error", "details": e.details if hasattr(e, "details") else {}})
     except Exception as e:
-        logger.error(f"Error generating voice preview: {e}", exc_info=True)
-        raise ValidationError(f"Failed to generate voice preview: {str(e)}", {"error": "internal_error"})
+        error_msg = f"Failed to generate voice preview: {str(e)}"
+        logger.error(f"[VOICES] [PREVIEW] {error_msg} | ultravox_voice_id={ultravox_voice_id} | request_id={request_id}", exc_info=True)
+        raise ValidationError(error_msg, {"error": "internal_error"})
 
