@@ -55,6 +55,7 @@ class Settings(BaseSettings):
             r"https://.*\.truedy\.ai",  # Hetzner domain wildcards (regex format)
             r"https://.*\.closi\.tech",  # Temporary hosting wildcards
             r"https://.*\.sendora\.ai",  # Sendora domain wildcards
+            r"https://truedy\.sendora\.ai",  # Explicit match for production frontend
         ])
     
     

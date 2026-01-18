@@ -113,8 +113,9 @@ for pattern in settings.CORS_WILDCARD_PATTERNS:
 cors_middleware_config = {
     "allow_origins": settings.CORS_ORIGINS,
     "allow_credentials": True,
-    "allow_methods": ["*"],
+    "allow_methods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     "allow_headers": ["*"],
+    "expose_headers": ["*"],
 }
 
 # Add regex pattern if we have wildcard patterns
