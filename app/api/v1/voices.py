@@ -254,8 +254,9 @@ async def create_voice(
                 "training_samples": training_samples,
             }
             ultravox_response = await ultravox_client.create_voice(ultravox_data)
-            if ultravox_response and ultravox_response.get("id"):
-                ultravox_voice_id = ultravox_response.get("id")
+            # Ultravox returns "voiceId" (camelCase), not "id"
+            ultravox_voice_id = ultravox_response.get("voiceId") or ultravox_response.get("id")
+            if ultravox_voice_id:
                 logger.info(f"[VOICES] [CREATE] Ultravox voice created | voice_id={voice_id} | ultravox_id={ultravox_voice_id} | request_id={request_id}")
             else:
                 error_msg = "Ultravox response missing voice ID"
@@ -272,8 +273,9 @@ async def create_voice(
                 if voice_data.source.provider_voice_id:
                     ultravox_data["provider_voice_id"] = voice_data.source.provider_voice_id
                 ultravox_response = await ultravox_client.create_voice(ultravox_data)
-                if ultravox_response and ultravox_response.get("id"):
-                    ultravox_voice_id = ultravox_response.get("id")
+                # Ultravox returns "voiceId" (camelCase), not "id"
+                ultravox_voice_id = ultravox_response.get("voiceId") or ultravox_response.get("id")
+                if ultravox_voice_id:
                     logger.info(f"[VOICES] [CREATE] Ultravox voice created (reference) | voice_id={voice_id} | ultravox_id={ultravox_voice_id} | request_id={request_id}")
         
         # Step 3: Update record to 'active' with ultravox_id (success path)
@@ -1248,8 +1250,9 @@ async def sync_voice_with_ultravox(
             logger.info(f"Attempting to create voice in Ultravox: {ultravox_voice_data}")
             ultravox_response = await ultravox_client.create_voice(ultravox_voice_data)
             
-            if ultravox_response and ultravox_response.get("id"):
-                ultravox_voice_id = ultravox_response.get("id")
+            # Ultravox returns "voiceId" (camelCase), not "id"
+            ultravox_voice_id = ultravox_response.get("voiceId") or ultravox_response.get("id")
+            if ultravox_voice_id:
                 # Update voice with Ultravox ID
                 db.update(
                     "voices",
