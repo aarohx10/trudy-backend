@@ -624,7 +624,15 @@ async def list_voices(
                 "traceback": traceback.format_exc(),
             },
         )
-        raise
+        
+        # Return empty array instead of raising error - allows frontend to continue working
+        return {
+            "data": [],
+            "meta": ResponseMeta(
+                request_id=request_id or str(uuid.uuid4()),
+                ts=datetime.utcnow(),
+            ),
+        }
 
 
 @router.post("/sync-from-ultravox")
