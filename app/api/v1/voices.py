@@ -4,7 +4,7 @@ Voice Endpoints
 from fastapi import APIRouter, Header, Depends, Query
 from fastapi.responses import StreamingResponse
 from starlette.requests import Request
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 import uuid
 import json
@@ -324,7 +324,7 @@ async def list_voices(
 ):
     """
     List voices - returns what is in the DB immediately.
-    Use /voices/{voice_id}/sync or /voices/sync-all for status reconciliation.
+    Use /voices/{voice_id}/sync or /voices/sync-from-ultravox for syncing with Ultravox.
     """
     db = DatabaseService(current_user["token"])
     db.set_auth(current_user["token"])
@@ -339,6 +339,130 @@ async def list_voices(
             ts=datetime.utcnow(),
         ),
     }
+
+
+@router.post("/sync-from-ultravox")
+async def sync_voices_from_ultravox(
+    current_user: dict = Depends(get_current_user),
+    x_client_id: Optional[str] = Header(None),
+    ownership: Optional[str] = Query("public", description="Filter by ownership: 'public' or 'private'"),
+    provider: Optional[List[str]] = Query(None, description="Filter by provider (e.g., 'eleven_labs', 'cartesia', 'lmnt', 'google')"),
+):
+    """
+    Sync pre-loaded voices from Ultravox into the local database.
+    This imports public voices (pre-loaded voices) that exist in Ultravox but not in your database.
+    """
+    if current_user["role"] not in ["client_admin", "agency_admin"]:
+        raise ForbiddenError("Insufficient permissions")
+    
+    # Check if Ultravox is configured
+    if not settings.ULTRAVOX_API_KEY:
+        raise ValidationError("Ultravox API key not configured. Please set ULTRAVOX_API_KEY environment variable.")
+    
+    db = DatabaseService(current_user["token"])
+    db.set_auth(current_user["token"])
+    
+    try:
+        # Fetch voices from Ultravox (public voices are pre-loaded)
+        ultravox_voices = await ultravox_client.list_voices(
+            ownership=ownership,
+            provider=provider
+        )
+        
+        imported_count = 0
+        skipped_count = 0
+        errors = []
+        
+        for uv_voice in ultravox_voices:
+            try:
+                ultravox_voice_id = uv_voice.get("voiceId")
+                provider_voice_id = uv_voice.get("provider_voice_id")
+                provider_name = uv_voice.get("provider", "elevenlabs")
+                
+                # Skip if no provider_voice_id (can't use generic voices as reference)
+                if not provider_voice_id:
+                    skipped_count += 1
+                    continue
+                
+                # Check if voice already exists (by ultravox_voice_id or provider_voice_id)
+                existing_by_ultravox = db.select_one(
+                    "voices",
+                    {
+                        "client_id": current_user["client_id"],
+                        "ultravox_voice_id": ultravox_voice_id
+                    }
+                )
+                
+                existing_by_provider = None
+                if provider_voice_id:
+                    existing_by_provider = db.select_one(
+                        "voices",
+                        {
+                            "client_id": current_user["client_id"],
+                            "provider_voice_id": provider_voice_id,
+                            "provider": provider_name
+                        }
+                    )
+                
+                if existing_by_ultravox or existing_by_provider:
+                    skipped_count += 1
+                    continue
+                
+                # Import voice into database
+                voice_id = str(uuid.uuid4())
+                now = datetime.utcnow()
+                
+                # Map Ultravox voice to our database structure
+                voice_record = {
+                    "id": voice_id,
+                    "client_id": current_user["client_id"],
+                    "name": uv_voice.get("name", "Untitled Voice"),
+                    "provider": provider_name,
+                    "type": "reference",  # Pre-loaded voices are reference type
+                    "language": uv_voice.get("primaryLanguage", "en-US") or "en-US",
+                    "status": "active",  # Pre-loaded voices are ready to use
+                    "provider_voice_id": provider_voice_id,
+                    "ultravox_voice_id": ultravox_voice_id,
+                    "created_at": now.isoformat(),
+                    "updated_at": now.isoformat(),
+                }
+                
+                # Add description if available
+                if uv_voice.get("description"):
+                    voice_record["description"] = uv_voice.get("description")
+                
+                # Store provider-specific settings in a metadata field if needed
+                definition = uv_voice.get("definition", {})
+                if definition:
+                    voice_record["provider_settings"] = definition
+                
+                db.insert("voices", voice_record)
+                imported_count += 1
+                
+            except Exception as e:
+                logger.error(f"Failed to import voice {uv_voice.get('voiceId')}: {e}", exc_info=True)
+                errors.append({
+                    "voice_id": uv_voice.get("voiceId"),
+                    "name": uv_voice.get("name"),
+                    "error": str(e)
+                })
+        
+        return {
+            "data": {
+                "imported": imported_count,
+                "skipped": skipped_count,
+                "total_fetched": len(ultravox_voices),
+                "errors": errors if errors else None,
+            },
+            "meta": ResponseMeta(
+                request_id=str(uuid.uuid4()),
+                ts=datetime.utcnow(),
+            ),
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to sync voices from Ultravox: {e}", exc_info=True)
+        raise ValidationError(f"Failed to sync voices from Ultravox: {str(e)}", {"error": str(e)})
 
 
 @router.get("/{voice_id}")

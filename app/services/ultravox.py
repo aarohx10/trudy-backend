@@ -97,22 +97,43 @@ class UltravoxClient:
             )
     
     # Voices
-    async def list_voices(self) -> List[Dict[str, Any]]:
+    async def list_voices(self, ownership: Optional[str] = None, provider: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """List all voices from Ultravox with provider-specific IDs"""
-        response = await self._request("GET", "/voices")
-        voices = response.get("data", [])
-        # Ensure each voice includes provider-specific identifiers
+        params = {}
+        if ownership:
+            params["ownership"] = ownership
+        if provider:
+            params["provider"] = provider
+        
+        response = await self._request("GET", "/voices", params=params)
+        voices = response.get("results", [])  # Fixed: use "results" not "data" per Ultravox API docs
+        
+        # Extract provider_voice_id from definition object (per Ultravox API structure)
         for voice in voices:
-            # Extract provider_voice_id from externalVoice if present
-            if "externalVoice" in voice:
-                external_voice = voice["externalVoice"]
-                for provider in ["elevenLabs", "openai", "google", "cartesia", "lmnt", "generic"]:
-                    if provider in external_voice:
-                        provider_data = external_voice[provider]
-                        if "voiceId" in provider_data:
-                            voice["provider_voice_id"] = provider_data["voiceId"]
-                            voice["provider"] = provider
-                            break
+            definition = voice.get("definition", {})
+            provider_name = voice.get("provider", "").lower()
+            
+            # Extract provider_voice_id based on provider type from definition
+            if "elevenLabs" in definition:
+                voice["provider_voice_id"] = definition["elevenLabs"].get("voiceId")
+                voice["provider"] = "elevenlabs"
+            elif "cartesia" in definition:
+                voice["provider_voice_id"] = definition["cartesia"].get("voiceId")
+                voice["provider"] = "cartesia"
+            elif "lmnt" in definition:
+                voice["provider_voice_id"] = definition["lmnt"].get("voiceId")
+                voice["provider"] = "lmnt"
+            elif "google" in definition:
+                voice["provider_voice_id"] = definition["google"].get("voiceId")
+                voice["provider"] = "google"
+            elif "generic" in definition:
+                # Generic voices don't have a provider_voice_id
+                voice["provider"] = "generic"
+            else:
+                # Fallback to provider field if no definition match
+                if not voice.get("provider"):
+                    voice["provider"] = provider_name or "unknown"
+        
         return voices
     
     def reconcile_resource(
