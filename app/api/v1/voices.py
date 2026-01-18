@@ -566,6 +566,41 @@ async def list_voices(
                 ts=datetime.utcnow(),
             ),
         }
+    except ProviderError as e:
+        # Ultravox API error - return empty array instead of failing
+        error_msg = f"Failed to fetch voices from Ultravox: {str(e)}"
+        logger.error(f"[VOICES] [LIST] Ultravox API Error | {error_msg} | client_id={client_id} | request_id={request_id}", exc_info=True)
+        
+        # Log error to database
+        background_tasks.add_task(
+            log_to_database,
+            source="backend",
+            level="ERROR",
+            category="voices_list",
+            message=error_msg,
+            request_id=request_id,
+            client_id=client_id,
+            user_id=user_id,
+            endpoint="/api/v1/voices",
+            method="GET",
+            status_code=e.details.get("httpStatus", 500) if hasattr(e, "details") else 500,
+            error_details={
+                "error_type": "ProviderError",
+                "provider": "ultravox",
+                "error_message": str(e),
+                "details": e.details if hasattr(e, "details") else {},
+                "traceback": traceback.format_exc(),
+            },
+        )
+        
+        # Return empty array instead of raising error - allows frontend to continue working
+        return {
+            "data": [],
+            "meta": ResponseMeta(
+                request_id=request_id or str(uuid.uuid4()),
+                ts=datetime.utcnow(),
+            ),
+        }
     except Exception as e:
         error_msg = f"Failed to list voices: {str(e)}"
         logger.error(f"[VOICES] [LIST] Error | {error_msg} | client_id={client_id} | request_id={request_id}", exc_info=True)
