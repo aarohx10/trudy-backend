@@ -1,7 +1,7 @@
 """
 Voice Endpoints
 """
-from fastapi import APIRouter, Header, Depends, Query, Request
+from fastapi import APIRouter, Header, Depends, Query, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.background import BackgroundTasks
 from typing import Optional, List
@@ -487,9 +487,9 @@ async def list_voices(
         if source == "custom":
             logger.info(f"[VOICES] [LIST] Fetching custom voices from database | client_id={client_id} | request_id={request_id}")
             
-            db = DatabaseService(current_user["token"])
-            db.set_auth(current_user["token"])
-            
+    db = DatabaseService(current_user["token"])
+    db.set_auth(current_user["token"])
+    
             # Query database for custom voices (type='custom' and client_id matches)
             custom_voices = db.select(
                 "voices",
@@ -567,14 +567,14 @@ async def list_voices(
                     "source": "custom",
                 },
             )
-            
-            return {
+    
+    return {
                 "data": voices_data,
-                "meta": ResponseMeta(
+        "meta": ResponseMeta(
                     request_id=request_id or str(uuid.uuid4()),
-                    ts=datetime.utcnow(),
-                ),
-            }
+            ts=datetime.utcnow(),
+        ),
+    }
         
         # Default: Fetch from Ultravox (for Explore tab)
         logger.info(f"[VOICES] [LIST] Fetching voices from Ultravox | client_id={client_id} | ownership={ownership} | source={source} | request_id={request_id}")
@@ -987,11 +987,11 @@ async def get_voice(
     logger.info(f"[VOICES] [GET] Fetching voice | voice_id={voice_id} | client_id={client_id} | request_id={request_id}")
     
     try:
-        db = DatabaseService(current_user["token"])
-        db.set_auth(current_user["token"])
-        
-        voice = db.get_voice(voice_id, current_user["client_id"])
-        if not voice:
+    db = DatabaseService(current_user["token"])
+    db.set_auth(current_user["token"])
+    
+    voice = db.get_voice(voice_id, current_user["client_id"])
+    if not voice:
             error_msg = f"Voice not found: {voice_id}"
             logger.warning(f"[VOICES] [GET] {error_msg} | client_id={client_id} | request_id={request_id}")
             background_tasks.add_task(
@@ -1007,8 +1007,8 @@ async def get_voice(
                 method="GET",
                 status_code=404,
             )
-            raise NotFoundError("voice", voice_id)
-        
+        raise NotFoundError("voice", voice_id)
+    
         logger.info(f"[VOICES] [GET] Voice found | voice_id={voice_id} | name={voice.get('name')} | status={voice.get('status')} | request_id={request_id}")
         
         # Log to database
@@ -1032,13 +1032,13 @@ async def get_voice(
             },
         )
         
-        return {
-            "data": VoiceResponse(**voice),
-            "meta": ResponseMeta(
+    return {
+        "data": VoiceResponse(**voice),
+        "meta": ResponseMeta(
                 request_id=request_id or str(uuid.uuid4()),
-                ts=datetime.utcnow(),
-            ),
-        }
+            ts=datetime.utcnow(),
+        ),
+    }
     except NotFoundError:
         raise
     except Exception as e:
@@ -1319,10 +1319,18 @@ async def preview_voice(
         
         ultravox_voice_id = voice.get("ultravox_voice_id")
         if not ultravox_voice_id:
-            # If no ultravox_voice_id, the voice_id itself might be the Ultravox ID
-            # This can happen for voices fetched directly from Ultravox
-            ultravox_voice_id = voice_id
-            logger.info(f"[VOICES] [PREVIEW] No ultravox_voice_id in DB, using voice_id as Ultravox ID | voice_id={voice_id} | request_id={request_id}")
+            # Custom voice without ultravox_voice_id cannot be previewed
+            # This means the voice was never successfully created in Ultravox
+            error_msg = "Voice does not have an Ultravox ID. The voice may not be ready for preview."
+            logger.error(f"[VOICES] [PREVIEW] {error_msg} | voice_id={voice_id} | request_id={request_id}")
+            from fastapi import HTTPException
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "voice_not_ready",
+                    "message": error_msg
+                }
+            )
     else:
         # Voice not in database - assume voice_id is the Ultravox voice ID
         # This is the case for voices from Explore tab (Ultravox pre-loaded voices)
@@ -1346,7 +1354,7 @@ async def preview_voice(
         return StreamingResponse(
             iter([audio_bytes]),
             media_type="audio/wav",
-            headers={
+                headers={
                 "Content-Disposition": f'inline; filename="voice-preview.wav"',
             }
         )
@@ -1354,19 +1362,24 @@ async def preview_voice(
         error_msg = f"Failed to get voice preview from Ultravox: {str(e)}"
         logger.error(f"[VOICES] [PREVIEW] {error_msg} | ultravox_voice_id={ultravox_voice_id} | request_id={request_id}", exc_info=True)
         # Return proper HTTP error instead of ValidationError for API errors
-        from fastapi import HTTPException
+        http_status = e.http_status if hasattr(e, "http_status") else 500
         raise HTTPException(
-            status_code=e.http_status if hasattr(e, "http_status") else 500,
+            status_code=http_status,
             detail={
                 "error": "ultravox_api_error",
                 "message": error_msg,
                 "details": e.details if hasattr(e, "details") else {}
             }
         )
+    except ValidationError as e:
+        # Re-raise ValidationError as-is (it's already a proper HTTP exception)
+        raise
+    except HTTPException:
+        # Re-raise HTTPException as-is
+        raise
     except Exception as e:
         error_msg = f"Failed to generate voice preview: {str(e)}"
         logger.error(f"[VOICES] [PREVIEW] {error_msg} | ultravox_voice_id={ultravox_voice_id} | request_id={request_id}", exc_info=True)
-        from fastapi import HTTPException
         raise HTTPException(
             status_code=500,
             detail={
