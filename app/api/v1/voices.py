@@ -486,7 +486,22 @@ async def list_voices(
         db.set_auth(current_user["token"])
         
         # Get voices from database - return immediately without polling
+        # #region agent log
+        import json
+        try:
+            with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"voices.py:333","message":"About to query database","data":{"client_id":current_user["client_id"]},"timestamp":int(__import__("time").time()*1000)})+"\n")
+        except: pass
+        # #endregion
+        
         voices = db.select("voices", {"client_id": current_user["client_id"]}, "created_at")
+        
+        # #region agent log
+        try:
+            with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"G","location":"voices.py:335","message":"Database query result","data":{"voice_count":len(voices),"voices_sample":voices[:2] if voices else []},"timestamp":int(__import__("time").time()*1000)})+"\n")
+        except: pass
+        # #endregion
         
         # Log detailed information
         voice_count = len(voices)
@@ -519,13 +534,22 @@ async def list_voices(
             },
         )
         
-        return {
+        response_data = {
             "data": [VoiceResponse(**voice) for voice in voices],
             "meta": ResponseMeta(
                 request_id=request_id or str(uuid.uuid4()),
                 ts=datetime.utcnow(),
             ),
         }
+        
+        # #region agent log
+        try:
+            with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"H","location":"voices.py:341","message":"list_voices response prepared","data":{"response_data_count":len(response_data.get("data",[])),"response_keys":list(response_data.keys())},"timestamp":int(__import__("time").time()*1000)})+"\n")
+        except: pass
+        # #endregion
+        
+        return response_data
     except Exception as e:
         error_msg = f"Failed to list voices: {str(e)}"
         logger.error(f"[VOICES] [LIST] Error | {error_msg} | client_id={client_id} | request_id={request_id}", exc_info=True)
@@ -614,11 +638,26 @@ async def sync_voices_from_ultravox(
     try:
         logger.info(f"[VOICES] [SYNC] Fetching voices from Ultravox | ownership={ownership} | provider={provider} | request_id={request_id}")
         
+        # #region agent log
+        import json
+        try:
+            with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"I","location":"voices.py:475","message":"sync_voices_from_ultravox called","data":{"ownership":ownership,"provider":provider,"client_id":client_id},"timestamp":int(__import__("time").time()*1000)})+"\n")
+        except: pass
+        # #endregion
+        
         # Fetch voices from Ultravox (public voices are pre-loaded)
         ultravox_voices = await ultravox_client.list_voices(
             ownership=ownership,
             provider=provider
         )
+        
+        # #region agent log
+        try:
+            with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"J","location":"voices.py:482","message":"Ultravox voices fetched","data":{"ultravox_voices_count":len(ultravox_voices),"first_voice_sample":ultravox_voices[0] if ultravox_voices else None},"timestamp":int(__import__("time").time()*1000)})+"\n")
+        except: pass
+        # #endregion
         
         logger.info(f"[VOICES] [SYNC] Fetched {len(ultravox_voices)} voices from Ultravox | request_id={request_id}")
         

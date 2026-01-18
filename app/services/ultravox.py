@@ -23,7 +23,7 @@ class UltravoxClient:
         else:
             logger.info(f"✅ Ultravox client initialized with base URL: {self.base_url}")
         self.headers = {
-            "Authorization": f"Bearer {self.api_key}" if self.api_key else "",
+            "X-API-Key": self.api_key if self.api_key else "",
             "Content-Type": "application/json",
         }
     
@@ -99,16 +99,47 @@ class UltravoxClient:
     # Voices
     async def list_voices(self, ownership: Optional[str] = None, provider: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """List all voices from Ultravox with provider-specific IDs"""
+        # #region agent log
+        import json
+        try:
+            with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"ultravox.py:100","message":"list_voices called","data":{"ownership":ownership,"provider":provider,"base_url":self.base_url,"has_api_key":bool(self.api_key)},"timestamp":int(__import__("time").time()*1000)})+"\n")
+        except: pass
+        # #endregion
+        
         params = {}
         if ownership:
             params["ownership"] = ownership
         if provider:
             params["provider"] = provider
         
-        response = await self._request("GET", "/voices", params=params)
+        # #region agent log
+        try:
+            with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"ultravox.py:108","message":"About to call Ultravox API","data":{"url":f"{self.base_url}/voices","params":params,"method":"GET"},"timestamp":int(__import__("time").time()*1000)})+"\n")
+        except: pass
+        # #endregion
+        
+        response = await self._request("GET", "/api/voices", params=params)
+        
+        # #region agent log
+        try:
+            with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"ultravox.py:109","message":"Ultravox API response received","data":{"response_keys":list(response.keys()) if isinstance(response,dict) else "not_dict","has_results":"results" in response if isinstance(response,dict) else False,"results_count":len(response.get("results",[])) if isinstance(response,dict) else 0,"response_sample":str(response)[:500] if isinstance(response,dict) else str(response)[:500]},"timestamp":int(__import__("time").time()*1000)})+"\n")
+        except: pass
+        # #endregion
+        
         voices = response.get("results", [])  # Fixed: use "results" not "data" per Ultravox API docs
         
+        # #region agent log
+        try:
+            with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"ultravox.py:112","message":"Processing voices array","data":{"voices_count":len(voices),"first_voice_keys":list(voices[0].keys()) if voices else []},"timestamp":int(__import__("time").time()*1000)})+"\n")
+        except: pass
+        # #endregion
+        
         # Extract provider_voice_id from definition object (per Ultravox API structure)
+        processed_count = 0
         for voice in voices:
             definition = voice.get("definition", {})
             provider_name = voice.get("provider", "").lower()
@@ -133,6 +164,14 @@ class UltravoxClient:
                 # Fallback to provider field if no definition match
                 if not voice.get("provider"):
                     voice["provider"] = provider_name or "unknown"
+            processed_count += 1
+        
+        # #region agent log
+        try:
+            with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"ultravox.py:137","message":"list_voices returning","data":{"processed_count":processed_count,"return_count":len(voices),"sample_voice":{k:v for k,v in list(voices[0].items())[:5]} if voices else None},"timestamp":int(__import__("time").time()*1000)})+"\n")
+        except: pass
+        # #endregion
         
         return voices
     

@@ -87,7 +87,7 @@ class Settings(BaseSettings):
     
     # External APIs
     ULTRAVOX_API_KEY: str = os.getenv("ULTRAVOX_API_KEY", "")
-    ULTRAVOX_BASE_URL: str = os.getenv("ULTRAVOX_BASE_URL", "https://api.ultravox.ai/v1")
+    ULTRAVOX_BASE_URL: str = os.getenv("ULTRAVOX_BASE_URL", "https://api.ultravox.ai")
     STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "")
     TELNYX_API_KEY: str = os.getenv("TELNYX_API_KEY", "")
     ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")
