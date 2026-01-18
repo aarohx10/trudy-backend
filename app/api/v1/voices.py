@@ -1297,16 +1297,25 @@ async def preview_voice(
     db.set_auth(current_user["token"])
     
     # Try to get voice from database first (for custom voices)
-    voice = db.get_voice(voice_id, client_id)
+    # Use try-except to handle cases where voice might not exist
+    voice = None
     ultravox_voice_id = None
+    
+    try:
+        voice = db.get_voice(voice_id, client_id)
+    except Exception as e:
+        # Voice not found in database - this is OK for Ultravox voices
+        logger.debug(f"[VOICES] [PREVIEW] Voice not found in database (may be Ultravox voice) | voice_id={voice_id} | error={str(e)} | request_id={request_id}")
     
     if voice:
         # Voice exists in database - use ultravox_voice_id if available
         logger.info(f"[VOICES] [PREVIEW] Voice found in database | voice_id={voice_id} | ultravox_voice_id={voice.get('ultravox_voice_id')} | status={voice.get('status')} | request_id={request_id}")
         
-        # Check if voice is active
-        if voice.get("status") != "active":
-            raise ValidationError("Voice must be active to preview", {"status": voice.get("status")})
+        # Check if voice is active (only for custom voices in our DB)
+        # For custom voices, they must be active to preview
+        voice_status = voice.get("status")
+        if voice_status and voice_status != "active":
+            raise ValidationError("Voice must be active to preview", {"status": voice_status})
         
         ultravox_voice_id = voice.get("ultravox_voice_id")
         if not ultravox_voice_id:
@@ -1344,9 +1353,25 @@ async def preview_voice(
     except ProviderError as e:
         error_msg = f"Failed to get voice preview from Ultravox: {str(e)}"
         logger.error(f"[VOICES] [PREVIEW] {error_msg} | ultravox_voice_id={ultravox_voice_id} | request_id={request_id}", exc_info=True)
-        raise ValidationError(error_msg, {"error": "ultravox_api_error", "details": e.details if hasattr(e, "details") else {}})
+        # Return proper HTTP error instead of ValidationError for API errors
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=e.http_status if hasattr(e, "http_status") else 500,
+            detail={
+                "error": "ultravox_api_error",
+                "message": error_msg,
+                "details": e.details if hasattr(e, "details") else {}
+            }
+        )
     except Exception as e:
         error_msg = f"Failed to generate voice preview: {str(e)}"
         logger.error(f"[VOICES] [PREVIEW] {error_msg} | ultravox_voice_id={ultravox_voice_id} | request_id={request_id}", exc_info=True)
-        raise ValidationError(error_msg, {"error": "internal_error"})
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": error_msg
+            }
+        )
 
