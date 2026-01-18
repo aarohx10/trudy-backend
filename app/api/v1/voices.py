@@ -497,8 +497,11 @@ async def list_voices(
         voices = db.select("voices", {"client_id": current_user["client_id"]}, "created_at")
         
         # Auto-sync if database is empty and Ultravox is configured
-        if len(voices) == 0 and settings.ULTRAVOX_API_KEY:
-            logger.info(f"[VOICES] [LIST] Database empty, attempting auto-sync | client_id={client_id} | request_id={request_id}")
+        if len(voices) == 0:
+            if not settings.ULTRAVOX_API_KEY:
+                logger.warning(f"[VOICES] [LIST] Database empty but ULTRAVOX_API_KEY not configured | client_id={client_id} | request_id={request_id}")
+            else:
+                logger.info(f"[VOICES] [LIST] Database empty, attempting auto-sync | client_id={client_id} | request_id={request_id} | has_api_key=True")
             # #region agent log
             try:
                 with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
@@ -576,11 +579,31 @@ async def list_voices(
                 # Re-query database after import
                 voices = db.select("voices", {"client_id": current_user["client_id"]}, "created_at")
             except Exception as e:
-                logger.error(f"[VOICES] [LIST] Auto-sync failed: {e}", exc_info=True)
+                error_msg = f"Auto-sync failed: {str(e)}"
+                logger.error(f"[VOICES] [LIST] {error_msg} | client_id={client_id} | request_id={request_id}", exc_info=True)
+                # Log error to database
+                background_tasks.add_task(
+                    log_to_database,
+                    source="backend",
+                    level="ERROR",
+                    category="voices_auto_sync",
+                    message=error_msg,
+                    request_id=request_id,
+                    client_id=client_id,
+                    user_id=user_id,
+                    endpoint="/api/v1/voices",
+                    method="GET",
+                    status_code=500,
+                    error_details={
+                        "error_type": type(e).__name__,
+                        "error_message": str(e),
+                        "traceback": traceback.format_exc(),
+                    },
+                )
                 # #region agent log
                 try:
                     with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"P","location":"voices.py:395","message":"Auto-sync error","data":{"error":str(e)},"timestamp":int(__import__("time").time()*1000)})+"\n")
+                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"P","location":"voices.py:579","message":"Auto-sync error","data":{"error":str(e),"error_type":type(e).__name__},"timestamp":int(__import__("time").time()*1000)})+"\n")
                 except: pass
                 # #endregion
         
