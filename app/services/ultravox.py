@@ -48,9 +48,9 @@ class UltravoxClient:
             )
         
         url = f"{self.base_url}{endpoint}"
-        logger.info(f"Ultravox API Request: {method} {url}")
+        logger.info(f"[ULTRAVOX] Making request | method={method} | url={url} | params={params}")
         if data:
-            logger.debug(f"Ultravox Request Data: {data}")
+            logger.debug(f"[ULTRAVOX] Request Data: {data}")
         
         async def _make_request():
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -61,9 +61,11 @@ class UltravoxClient:
                     params=params,
                     headers=self.headers,
                 )
-                logger.debug(f"Ultravox API Response: {response.status_code} for {url}")
+                logger.debug(f"[ULTRAVOX] Response received | status_code={response.status_code} | url={url}")
                 if response.status_code >= 400:
-                    logger.error(f"Ultravox API Error Response: Status {response.status_code}, URL: {url}, Headers: {dict(response.headers)}")
+                    # Log full error details for debugging
+                    error_text = response.text[:500] if response.text else "No response body"
+                    logger.error(f"[ULTRAVOX] Error Response | status={response.status_code} | url={url} | response_preview={error_text}")
                 response.raise_for_status()
                 return response.json()
         
@@ -74,6 +76,7 @@ class UltravoxClient:
             error_detail = "Unknown error"
             error_details = {}
             try:
+                # Try to parse as JSON first
                 error_body = e.response.json()
                 if isinstance(error_body, dict):
                     error_detail = error_body.get("error", {}).get("message", str(e)) if isinstance(error_body.get("error"), dict) else str(e)
@@ -83,22 +86,36 @@ class UltravoxClient:
                     error_detail = str(e)
                     error_details = {"raw_response": str(error_body)}
             except:
-                error_detail = e.response.text or str(e)
-                error_details = {"raw_response": error_detail}
+                # Not JSON, likely HTML error page (like 404 Not Found page)
+                error_text = e.response.text[:1000] if e.response.text else "No response body"
+                error_detail = f"HTTP {e.response.status_code}: {error_text[:200]}"
+                error_details = {
+                    "status_code": e.response.status_code,
+                    "response_body": error_text,
+                    "request_url": str(e.request.url),
+                    "method": e.request.method,
+                }
             
-            logger.error(f"Ultravox API error {e.response.status_code} for {method} {endpoint}: {error_detail}")
+            logger.error(f"[ULTRAVOX] HTTP Status Error: {e.response.status_code} - {error_detail[:200]} | url={url}", exc_info=True)
             raise ProviderError(
                 provider="ultravox",
-                message=f"Ultravox API error: {e.response.status_code} - {error_detail}",
+                message=f"Ultravox API error: {e.response.status_code} - {error_detail[:200]}",
                 http_status=e.response.status_code,
                 retry_after=int(e.response.headers.get("Retry-After", 0)) if e.response.status_code == 429 else None,
                 details=error_details,
             )
         except httpx.RequestError as e:
+            logger.error(f"[ULTRAVOX] Request Error: {e} | url={url}", exc_info=True)
             raise ProviderError(
                 provider="ultravox",
-                message=f"Failed to connect to Ultravox: {str(e)}",
+                message=f"Ultravox API request failed: {e}",
                 http_status=502,
+                details={
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "request_url": url,
+                    "method": method,
+                },
             )
     
     # Voices
