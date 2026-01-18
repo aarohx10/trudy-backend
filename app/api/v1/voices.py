@@ -15,7 +15,7 @@ import os
 from app.core.auth import get_current_user
 from app.core.database import DatabaseService
 from app.core.storage import generate_presigned_url, check_object_exists
-from app.core.exceptions import NotFoundError, ValidationError, PaymentRequiredError, ForbiddenError
+from app.core.exceptions import NotFoundError, ValidationError, PaymentRequiredError, ForbiddenError, ProviderError
 from app.core.idempotency import check_idempotency_key, store_idempotency_response
 from app.core.events import emit_voice_training_started, emit_voice_created
 from app.core.encryption import decrypt_api_key
@@ -48,11 +48,11 @@ async def presign_voice_files(
     uploads = []
     for i, file in enumerate(request_data.files):
         doc_id = str(uuid.uuid4())
-        s3_key = f"uploads/client_{current_user['client_id']}/voices/{doc_id}/sample_{i}.{file.filename.split('.')[-1]}"
+        storage_key = f"uploads/client_{current_user['client_id']}/voices/{doc_id}/sample_{i}.{file.filename.split('.')[-1]}"
         
         url = generate_presigned_url(
-            bucket=settings.S3_BUCKET_UPLOADS,
-            key=s3_key,
+            bucket=settings.STORAGE_BUCKET_UPLOADS,
+            key=storage_key,
             operation="put_object",
             expires_in=3600,
             content_type=file.content_type,
@@ -60,7 +60,7 @@ async def presign_voice_files(
         
         uploads.append({
             "doc_id": doc_id,
-            "s3_key": s3_key,
+            "storage_key": storage_key,
             "url": url,
             "headers": {"Content-Type": file.content_type},
         })
@@ -179,13 +179,13 @@ async def create_voice(
         if voice_data.strategy == "native" and voice_data.source.samples:
             for sample in voice_data.source.samples:
                 # Check storage file exists
-                if not check_object_exists(settings.S3_BUCKET_UPLOADS, sample.s3_key):
-                    raise NotFoundError("voice sample", sample.s3_key)
+                if not check_object_exists(settings.STORAGE_BUCKET_UPLOADS, sample.storage_key):
+                    raise NotFoundError("voice sample", sample.storage_key)
                 
                 # Generate read-only presigned URL
                 audio_url = generate_presigned_url(
-                    bucket=settings.S3_BUCKET_UPLOADS,
-                    key=sample.s3_key,
+                    bucket=settings.STORAGE_BUCKET_UPLOADS,
+                    key=sample.storage_key,
                     operation="get_object",
                     expires_in=86400,
                 )

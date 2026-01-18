@@ -1,6 +1,6 @@
 """
 Local File Storage Service (Hetzner VPS)
-Replaces AWS S3 with local file system storage
+Local file system storage for uploads and recordings
 """
 import os
 import hashlib
@@ -24,12 +24,12 @@ def get_storage_path(bucket_type: str) -> str:
     Get storage path for bucket type
     
     Args:
-        bucket_type: "uploads" or "recordings" (or legacy S3 bucket name)
+        bucket_type: "uploads" or "recordings"
     
     Returns:
         Full path to storage directory
     """
-    # Normalize bucket type (handle both new and legacy names)
+    # Normalize bucket type
     bucket_lower = bucket_type.lower()
     
     if bucket_lower == "uploads" or "uploads" in bucket_lower:
@@ -58,7 +58,7 @@ def generate_presigned_url(
     content_type: Optional[str] = None,
 ) -> str:
     """
-    Generate signed URL for file access (replaces S3 presigned URLs)
+    Generate signed URL for file access
     
     Args:
         bucket: Bucket name (maps to "uploads" or "recordings")
@@ -71,7 +71,7 @@ def generate_presigned_url(
         Signed URL
     """
     try:
-        # Map bucket to bucket type (handle legacy S3 bucket names)
+        # Map bucket to bucket type
         bucket_lower = bucket.lower()
         if "uploads" in bucket_lower:
             bucket_type = "uploads"
@@ -113,7 +113,7 @@ def generate_presigned_url(
 
 def check_object_exists(bucket: str, key: str) -> bool:
     """
-    Check if file exists (replaces S3 head_object)
+    Check if file exists in storage
     
     Args:
         bucket: Bucket name

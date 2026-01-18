@@ -364,22 +364,22 @@ async def get_call_recording(
             
             # Generate storage key: recordings/client_id/calls/call_id/recording.{ext}
             client_id = current_user["client_id"]
-            s3_key = f"recordings/{client_id}/calls/{call_id}/recording.{file_ext}"
+            storage_key = f"recordings/{client_id}/calls/{call_id}/recording.{file_ext}"
             
             # Upload recording
-            logger.info(f"Uploading call recording: {s3_key} ({len(recording_data)} bytes)")
-            s3_url = upload_bytes(
-                bucket=settings.S3_BUCKET_RECORDINGS,
-                key=s3_key,
+            logger.info(f"Uploading call recording: {storage_key} ({len(recording_data)} bytes)")
+            storage_url = upload_bytes(
+                bucket=settings.STORAGE_BUCKET_RECORDINGS,
+                key=storage_key,
                 data=recording_data,
                 content_type=content_type,
             )
             
             # Update database with storage URL
-            db.update("calls", {"id": call_id}, {"recording_url": s3_url})
-            logger.info(f"Call recording uploaded to storage and database updated: {s3_url}")
+            db.update("calls", {"id": call_id}, {"recording_url": storage_url})
+            logger.info(f"Call recording uploaded to storage and database updated: {storage_url}")
             
-            recording_url = s3_url
+            recording_url = storage_url
         except httpx.HTTPError as e:
             logger.error(f"Failed to download recording from Ultravox: {e}")
             raise NotFoundError("recording")

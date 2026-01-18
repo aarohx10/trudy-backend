@@ -1,9 +1,9 @@
 """
 Admin API Routes
 """
-from fastapi import APIRouter, Header, Depends, HTTPException
+from fastapi import APIRouter, Header, Depends, HTTPException, Query
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timedelta
 import uuid
 import logging
 
@@ -281,6 +281,150 @@ async def get_global_stats(
             "total_clients": total_clients,
             "active_subscriptions": active_subscriptions,
             "tier_distribution": tier_distribution,
+        },
+        "meta": ResponseMeta(
+            request_id=str(uuid.uuid4()),
+            ts=datetime.utcnow(),
+        ),
+    }
+
+
+# ============================================
+# Application Logs (Admin)
+# ============================================
+
+@router.get("/logs")
+async def get_logs(
+    current_user: dict = Depends(require_admin_role),
+    source: Optional[str] = Query(None, description="Filter by source: 'frontend' or 'backend'"),
+    level: Optional[str] = Query(None, description="Filter by level: 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'"),
+    category: Optional[str] = Query(None, description="Filter by category"),
+    client_id: Optional[str] = Query(None, description="Filter by client_id"),
+    request_id: Optional[str] = Query(None, description="Filter by request_id"),
+    endpoint: Optional[str] = Query(None, description="Filter by endpoint"),
+    start_date: Optional[datetime] = Query(None, description="Start date (ISO format)"),
+    end_date: Optional[datetime] = Query(None, description="End date (ISO format)"),
+    search: Optional[str] = Query(None, description="Search in message text"),
+    limit: int = Query(100, ge=1, le=1000, description="Number of logs to return"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
+):
+    """
+    Get application logs with filtering and pagination (admin only)
+    """
+    db = DatabaseAdminService()
+    
+    # Build query
+    query = db.client.table("application_logs").select("*", count="exact")
+    
+    # Apply filters
+    if source:
+        query = query.eq("source", source)
+    if level:
+        query = query.eq("level", level)
+    if category:
+        query = query.eq("category", category)
+    if client_id:
+        query = query.eq("client_id", client_id)
+    if request_id:
+        query = query.eq("request_id", request_id)
+    if endpoint:
+        query = query.ilike("endpoint", f"%{endpoint}%")
+    if start_date:
+        query = query.gte("created_at", start_date.isoformat())
+    if end_date:
+        query = query.lte("created_at", end_date.isoformat())
+    if search:
+        query = query.ilike("message", f"%{search}%")
+    
+    # Order by created_at descending (newest first)
+    query = query.order("created_at", desc=True)
+    
+    # Apply pagination
+    query = query.range(offset, offset + limit - 1)
+    
+    # Execute query
+    response = query.execute()
+    
+    logs = response.data if response.data else []
+    total_count = response.count if response.count else 0
+    
+    return {
+        "data": logs,
+        "meta": {
+            "total": total_count,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(logs) < total_count,
+        },
+    }
+
+
+@router.get("/logs/statistics")
+async def get_log_statistics(
+    current_user: dict = Depends(require_admin_role),
+    start_date: Optional[datetime] = Query(None, description="Start date (ISO format)"),
+    end_date: Optional[datetime] = Query(None, description="End date (ISO format)"),
+):
+    """
+    Get log statistics (admin only)
+    """
+    db = DatabaseAdminService()
+    
+    # Default to last 24 hours if not specified
+    if not start_date:
+        start_date = datetime.utcnow() - timedelta(days=1)
+    if not end_date:
+        end_date = datetime.utcnow()
+    
+    # Call the database function
+    stats_response = db.client.rpc(
+        "get_log_statistics",
+        {
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+        }
+    ).execute()
+    
+    stats = stats_response.data[0] if stats_response.data else {}
+    
+    return {
+        "data": stats,
+        "meta": ResponseMeta(
+            request_id=str(uuid.uuid4()),
+            ts=datetime.utcnow(),
+        ),
+    }
+
+
+@router.get("/logs/{log_id}")
+async def get_log_detail(
+    log_id: str,
+    current_user: dict = Depends(require_admin_role),
+):
+    """
+    Get detailed log entry by ID (admin only)
+    """
+    db = DatabaseAdminService()
+    
+    log_entry = db.select_one("application_logs", {"id": log_id})
+    if not log_entry:
+        raise NotFoundError("log", log_id)
+    
+    # Get related logs (same request_id)
+    related_logs = []
+    if log_entry.get("request_id"):
+        related_logs = db.select(
+            "application_logs",
+            {"request_id": log_entry["request_id"]},
+            order_by="created_at"
+        )
+        # Exclude the current log
+        related_logs = [log for log in related_logs if log["id"] != log_id]
+    
+    return {
+        "data": {
+            "log": log_entry,
+            "related_logs": related_logs,
         },
         "meta": ResponseMeta(
             request_id=str(uuid.uuid4()),

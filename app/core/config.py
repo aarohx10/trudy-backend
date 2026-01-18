@@ -73,15 +73,15 @@ class Settings(BaseSettings):
     CLERK_ISSUER: str = "https://clerk.truedy.sendora.ai"
     CLERK_WEBHOOK_SECRET: str = os.getenv("CLERK_WEBHOOK_SECRET", "")
     
-    # File Storage (Hetzner VPS - replaces AWS S3)
+    # File Storage (Hetzner VPS)
     # Default to mounted storage path for Hetzner deployment
     FILE_STORAGE_PATH: str = os.getenv("FILE_STORAGE_PATH", "/mnt/storage")
     FILE_SERVER_URL: str = os.getenv("FILE_SERVER_URL", "https://api.truedy.ai")
-    # Legacy S3 bucket names (for backward compatibility in code)
-    S3_BUCKET_UPLOADS: str = os.getenv("S3_BUCKET_UPLOADS", "trudy-uploads")
-    S3_BUCKET_RECORDINGS: str = os.getenv("S3_BUCKET_RECORDINGS", "trudy-recordings")
+    # Storage bucket names for uploads and recordings
+    STORAGE_BUCKET_UPLOADS: str = os.getenv("STORAGE_BUCKET_UPLOADS", "trudy-uploads")
+    STORAGE_BUCKET_RECORDINGS: str = os.getenv("STORAGE_BUCKET_RECORDINGS", "trudy-recordings")
     
-    # Encryption (Hetzner VPS - replaces AWS KMS)
+    # Encryption (Hetzner VPS - local encryption)
     ENCRYPTION_KEY: str = os.getenv("ENCRYPTION_KEY", "")  # 32-byte key or passphrase (will be hashed)
     
     # External APIs
@@ -106,6 +106,8 @@ class Settings(BaseSettings):
     # Logging
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
     ENABLE_DEBUG_LOGGING: bool = os.getenv("ENABLE_DEBUG_LOGGING", "true").lower() == "true"
+    ENABLE_DB_LOGGING: bool = os.getenv("ENABLE_DB_LOGGING", "true").lower() == "true"
+    LOG_RETENTION_DAYS: int = int(os.getenv("LOG_RETENTION_DAYS", "30"))
     
     # Rate Limiting
     RATE_LIMIT_ENABLED: bool = os.getenv("RATE_LIMIT_ENABLED", "true").lower() == "true"

@@ -140,10 +140,10 @@ async def presign_contacts_csv(
     if campaign.get("status") != "draft":
         raise ValidationError("Campaign must be in draft status")
     
-    s3_key = f"uploads/client_{current_user['client_id']}/campaigns/{campaign_id}/contacts.csv"
+    storage_key = f"uploads/client_{current_user['client_id']}/campaigns/{campaign_id}/contacts.csv"
     url = generate_presigned_url(
-        bucket=settings.S3_BUCKET_UPLOADS,
-        key=s3_key,
+        bucket=settings.STORAGE_BUCKET_UPLOADS,
+        key=storage_key,
         operation="put_object",
         expires_in=3600,
         content_type="text/csv",
@@ -152,7 +152,7 @@ async def presign_contacts_csv(
     return {
         "data": {
             "upload_url": url,
-            "s3_key": s3_key,
+            "storage_key": storage_key,
             "headers": {"Content-Type": "text/csv"},
         },
         "meta": ResponseMeta(
@@ -185,11 +185,11 @@ async def upload_campaign_contacts(
     
     contacts = []
     
-    if contacts_data.s3_key:
+    if contacts_data.storage_key:
         # Parse CSV from local storage
         from app.core.storage import get_file_path
         try:
-            file_path = get_file_path("uploads", contacts_data.s3_key)
+            file_path = get_file_path("uploads", contacts_data.storage_key)
             with open(file_path, 'r', encoding='utf-8') as f:
                 csv_content = f.read()
             reader = csv.DictReader(io.StringIO(csv_content))

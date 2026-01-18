@@ -157,11 +157,11 @@ async def presign_kb_files(
     documents = []
     for i, file in enumerate(request_data.files):
         doc_id = str(uuid.uuid4())
-        s3_key = f"uploads/client_{current_user['client_id']}/kb/{kb_id}/file_{i}.{file.filename.split('.')[-1]}"
+        storage_key = f"uploads/client_{current_user['client_id']}/kb/{kb_id}/file_{i}.{file.filename.split('.')[-1]}"
         
         url = generate_presigned_url(
-            bucket=settings.S3_BUCKET_UPLOADS,
-            key=s3_key,
+            bucket=settings.STORAGE_BUCKET_UPLOADS,
+            key=storage_key,
             operation="put_object",
             expires_in=3600,
             content_type=file.content_type,
@@ -174,7 +174,7 @@ async def presign_kb_files(
                 "id": doc_id,
                 "client_id": current_user["client_id"],
                 "knowledge_base_id": kb_id,
-                "s3_key": s3_key,
+                "s3_key": storage_key,  # Database column name remains s3_key for backward compatibility
                 "file_type": file.content_type,
                 "file_size": file.file_size,
                 "status": "pending_upload",
@@ -275,7 +275,8 @@ async def ingest_kb_files(
             continue
         
         # Check storage file exists
-        if not check_object_exists(settings.S3_BUCKET_UPLOADS, doc["s3_key"]):
+        storage_key = doc.get("s3_key")  # Database column name remains s3_key for backward compatibility
+        if not check_object_exists(settings.STORAGE_BUCKET_UPLOADS, storage_key):
             db.update(
                 "knowledge_base_documents",
                 {"id": doc_id},
@@ -297,7 +298,7 @@ async def ingest_kb_files(
         
         try:
             # Get file path
-            file_path = get_file_path("uploads", doc["s3_key"])
+            file_path = get_file_path("uploads", storage_key)
             
             # Extract text from file
             extracted_text = await extract_text_from_file(file_path, doc.get("file_type", ""))

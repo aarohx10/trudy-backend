@@ -107,7 +107,7 @@ class ApiKeyResponse(BaseModel):
 
 
 class TTSProviderUpdate(BaseModel):
-    provider: str = Field(..., description="Provider: google, aws, azure, openai, elevenlabs")
+    provider: str = Field(..., description="Provider: google, azure, openai, elevenlabs")
     api_key: str = Field(..., description="Provider API key")
     voice_id: Optional[str] = None
     settings: Optional[Dict[str, Any]] = Field(default={})
@@ -119,7 +119,7 @@ class TTSProviderUpdate(BaseModel):
 
 class VoiceSample(BaseModel):
     text: str
-    s3_key: str
+    storage_key: str
     duration_seconds: float = Field(..., ge=3.0, le=10.0)
 
 
@@ -174,7 +174,7 @@ class PresignFileRequest(BaseModel):
 
 class PresignResponse(BaseModel):
     doc_id: str
-    s3_key: str
+    storage_key: str
     url: str
     headers: Dict[str, str]
 
@@ -484,13 +484,13 @@ class CampaignContact(BaseModel):
 
 
 class CampaignContactsUpload(BaseModel):
-    s3_key: Optional[str] = None
+    storage_key: Optional[str] = None
     contacts: Optional[List[CampaignContact]] = None
     
-    @validator("s3_key", "contacts")
+    @validator("storage_key", "contacts")
     def validate_upload_source(cls, v, values):
-        if not values.get("s3_key") and not values.get("contacts"):
-            raise ValueError("Either s3_key or contacts must be provided")
+        if not values.get("storage_key") and not values.get("contacts"):
+            raise ValueError("Either storage_key or contacts must be provided")
         return v
 
 

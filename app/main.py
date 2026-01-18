@@ -18,6 +18,7 @@ from app.core.logging import setup_logging
 from app.core.rate_limiting import RateLimitMiddleware
 from app.core.middleware import RequestIDMiddleware, LoggingMiddleware
 from app.core.debug_logging import debug_logger
+from app.core.db_logging import log_error
 from app.api.v1 import api_router
 from app.api.internal import routes as internal_routes
 from app.api.admin import routes as admin_routes
@@ -183,8 +184,19 @@ app.add_middleware(RateLimitMiddleware)
 
 # Exception Handlers
 @app.exception_handler(TrudyException)
-async def trudy_exception_handler(request, exc: TrudyException):
+async def trudy_exception_handler(request: Request, exc: TrudyException):
     """Handle Trudy-specific exceptions"""
+    # Log error to database
+    log_error(
+        request,
+        exc,
+        None,  # No background tasks in exception handler
+        additional_context={
+            "error_code": exc.code,
+            "error_details": exc.details,
+        },
+    )
+    
     return JSONResponse(
         status_code=exc.status_code,
         content={
@@ -204,6 +216,16 @@ async def general_exception_handler(request: Request, exc: Exception):
     """Handle general exceptions and ensure CORS headers are present"""
     logger.exception(f"Unhandled exception: {exc}")
     request_id = getattr(request.state, "request_id", None)
+    
+    # Log error to database with full stack trace
+    log_error(
+        request,
+        exc,
+        None,  # No background tasks in exception handler
+        additional_context={
+            "error_type": "unhandled_exception",
+        },
+    )
     
     # Extract origin from request to mirror it back for CORS compliance
     origin = request.headers.get("origin")
