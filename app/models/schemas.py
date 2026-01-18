@@ -593,6 +593,23 @@ class ToolResponse(BaseModel):
     updated_at: Optional[datetime] = None
 
 
+class ToolTestRequest(BaseModel):
+    url: str
+    method: str
+    headers: Optional[Dict[str, str]] = None
+    body: Optional[Dict[str, Any]] = None
+    test_parameters: Optional[Dict[str, Any]] = None
+
+
+class ToolTestResponse(BaseModel):
+    success: bool
+    status_code: Optional[int] = None
+    response_body: Optional[Any] = None
+    response_body_snippet: Optional[str] = None
+    response_time_ms: Optional[int] = None
+    error_message: Optional[str] = None
+
+
 # ============================================
 # Subscription Tier Models
 # ============================================
