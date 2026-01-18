@@ -9,16 +9,22 @@ import uuid
 import json
 
 from app.core.auth import get_current_user
-from app.core.database import DatabaseService
-from app.core.exceptions import NotFoundError, ForbiddenError
+from app.core.database import DatabaseService, DatabaseAdminService
+from app.core.exceptions import NotFoundError, ForbiddenError, ValidationError
 from app.core.idempotency import check_idempotency_key, store_idempotency_response
 from app.services.ultravox import ultravox_client
+from app.services.tool_executor import execute_tool_test, validate_ultravox_schema, log_tool_execution
 from app.models.schemas import (
     ToolCreate,
     ToolUpdate,
     ToolResponse,
+    ToolTestRequest,
+    ToolTestResponse,
     ResponseMeta,
 )
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -54,7 +60,13 @@ async def create_tool(
     db = DatabaseService(current_user["token"])
     db.set_auth(current_user["token"])
     
-    # Create tool record
+    # Validate Ultravox schema before proceeding
+    if tool_data.parameters:
+        is_valid, error_msg = validate_ultravox_schema(tool_data.parameters)
+        if not is_valid:
+            raise ValidationError(f"Invalid Ultravox parameter schema: {error_msg}")
+    
+    # Create tool record (unverified by default)
     tool_id = str(uuid.uuid4())
     tool_record = {
         "id": tool_id,
@@ -68,6 +80,7 @@ async def create_tool(
         "parameters": tool_data.parameters or {},
         "response_schema": tool_data.response_schema or {},
         "status": "creating",
+        "is_verified": False,  # Must be verified before use
     }
     
     db.insert("tools", tool_record)
@@ -201,6 +214,18 @@ async def update_tool(
             ),
         }
     
+    # Validate Ultravox schema if parameters are being updated
+    if "parameters" in update_data and update_data["parameters"]:
+        is_valid, error_msg = validate_ultravox_schema(update_data["parameters"])
+        if not is_valid:
+            raise ValidationError(f"Invalid Ultravox parameter schema: {error_msg}")
+    
+    # Reset verification if endpoint, method, authentication, or parameters changed
+    verification_reset_fields = ["endpoint", "method", "authentication", "parameters"]
+    if any(field in update_data for field in verification_reset_fields):
+        update_data["is_verified"] = False
+        update_data["verification_error"] = None
+    
     # Update local database
     update_data["updated_at"] = datetime.utcnow().isoformat()
     db.update("tools", {"id": tool_id}, update_data)
@@ -236,6 +261,151 @@ async def update_tool(
     }
 
 
+@router.post("/test")
+async def test_tool(
+    test_request: ToolTestRequest,
+    current_user: dict = Depends(get_current_user),
+    x_client_id: Optional[str] = Header(None),
+):
+    """
+    Test a tool endpoint with sandbox execution.
+    Performs actual HTTP call and returns status code and response snippet.
+    """
+    if current_user["role"] not in ["client_admin", "agency_admin"]:
+        raise ForbiddenError("Insufficient permissions")
+    
+    # Execute the test
+    result = await execute_tool_test(
+        url=test_request.url,
+        method=test_request.method,
+        headers=test_request.headers,
+        body=test_request.body or test_request.test_parameters,
+    )
+    
+    return {
+        "data": ToolTestResponse(**result),
+        "meta": ResponseMeta(
+            request_id=str(uuid.uuid4()),
+            ts=datetime.utcnow(),
+        ),
+    }
+
+
+@router.post("/{tool_id}/verify")
+async def verify_tool(
+    tool_id: str,
+    test_request: Optional[ToolTestRequest] = None,
+    current_user: dict = Depends(get_current_user),
+    x_client_id: Optional[str] = Header(None),
+):
+    """
+    Verify a tool by testing it and updating is_verified status.
+    If test_request is provided, uses those values. Otherwise uses tool's stored values.
+    """
+    if current_user["role"] not in ["client_admin", "agency_admin"]:
+        raise ForbiddenError("Insufficient permissions")
+    
+    db = DatabaseService(current_user["token"])
+    db.set_auth(current_user["token"])
+    
+    # Get tool
+    tool = db.select_one("tools", {"id": tool_id, "client_id": current_user["client_id"]})
+    if not tool:
+        raise NotFoundError("tool", tool_id)
+    
+    # Use provided test values or tool's stored values
+    if test_request:
+        url = test_request.url
+        method = test_request.method
+        headers = test_request.headers
+        body = test_request.body or test_request.test_parameters
+    else:
+        url = tool["endpoint"]
+        method = tool["method"]
+        headers = {}
+        if tool.get("authentication"):
+            # Apply authentication headers
+            auth = tool["authentication"]
+            if auth.get("type") == "api_key":
+                header_name = auth.get("header_name", "X-API-Key")
+                headers[header_name] = auth.get("api_key", "")
+            elif auth.get("type") == "bearer":
+                headers["Authorization"] = f"Bearer {auth.get('token', '')}"
+        body = None
+    
+    # Execute test
+    result = await execute_tool_test(
+        url=url,
+        method=method,
+        headers=headers,
+        body=body,
+    )
+    
+    # Update tool verification status
+    update_data = {
+        "is_verified": result["success"],
+        "verification_error": result.get("error_message") if not result["success"] else None,
+    }
+    db.update("tools", {"id": tool_id}, update_data)
+    
+    return {
+        "data": {
+            "tool_id": tool_id,
+            "is_verified": result["success"],
+            "test_result": ToolTestResponse(**result),
+        },
+        "meta": ResponseMeta(
+            request_id=str(uuid.uuid4()),
+            ts=datetime.utcnow(),
+        ),
+    }
+
+
+@router.get("/{tool_id}/logs")
+async def get_tool_logs(
+    tool_id: str,
+    session_id: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    current_user: dict = Depends(get_current_user),
+    x_client_id: Optional[str] = Header(None),
+):
+    """Get tool execution logs for debugging"""
+    db = DatabaseService(current_user["token"])
+    db.set_auth(current_user["token"])
+    
+    # Verify tool belongs to user
+    tool = db.select_one("tools", {"id": tool_id, "client_id": current_user["client_id"]})
+    if not tool:
+        raise NotFoundError("tool", tool_id)
+    
+    # Use admin DB to query logs (RLS will filter by tool ownership)
+    admin_db = DatabaseAdminService()
+    filters = {"tool_id": tool_id}
+    if session_id:
+        filters["session_id"] = session_id
+    
+    logs = admin_db.select("tool_logs", filters, order_by="created_at")
+    
+    # Apply pagination
+    total = len(logs)
+    paginated_logs = logs[offset:offset + limit]
+    
+    return {
+        "data": paginated_logs,
+        "meta": ResponseMeta(
+            request_id=str(uuid.uuid4()),
+            ts=datetime.utcnow(),
+        ),
+        "pagination": {
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + limit < total,
+        },
+    }
+
+
 @router.delete("/{tool_id}")
 async def delete_tool(
     tool_id: str,
@@ -259,9 +429,6 @@ async def delete_tool(
         try:
             await ultravox_client.delete_tool(tool["ultravox_tool_id"])
         except Exception as e:
-            # Log error but continue with deletion
-            import logging
-            logger = logging.getLogger(__name__)
             logger.error(f"Failed to delete tool from Ultravox: {e}")
     
     # Delete from database

@@ -12,7 +12,7 @@ import logging
 import time
 
 from app.core.auth import get_current_user
-from app.core.database import DatabaseService
+from app.core.database import DatabaseService, DatabaseAdminService
 from app.core.config import settings
 from app.core.webhooks import verify_ultravox_signature, verify_timestamp, verify_stripe_signature, verify_telnyx_signature, deliver_webhook
 from app.core.events import (
@@ -24,6 +24,8 @@ from app.core.events import (
     emit_credits_purchased,
 )
 from app.core.exceptions import UnauthorizedError, ForbiddenError, NotFoundError, ValidationError
+from app.services.webhook_handlers import EVENT_HANDLERS
+import time
 
 logger = logging.getLogger(__name__)
 from app.models.schemas import (
@@ -47,211 +49,118 @@ async def ultravox_webhook(
     x_ultravox_signature: Optional[str] = Header(None),
     x_ultravox_timestamp: Optional[str] = Header(None),
 ):
-    """Receive webhook from Ultravox"""
+    """
+    Centralized Ultravox webhook orchestrator.
+    Uses Strategy Pattern to route events to appropriate handlers.
+    """
+    start_time = time.time()
+    admin_db = DatabaseAdminService()
+    
     # Get raw body
     body = await request.body()
     body_str = body.decode("utf-8")
     
+    # Get request headers for logging
+    headers_dict = dict(request.headers)
+    
     # Verify signature
-    if not x_ultravox_signature or not x_ultravox_timestamp:
+    signature_valid = False
+    if x_ultravox_signature and x_ultravox_timestamp:
+        signature_valid = verify_ultravox_signature(
+            x_ultravox_signature,
+            x_ultravox_timestamp,
+            body_str,
+            settings.ULTRAVOX_WEBHOOK_SECRET,
+        )
+        
+        if not signature_valid:
+            logger.error("Invalid Ultravox webhook signature")
+            raise UnauthorizedError("Invalid signature")
+        
+        if not verify_timestamp(x_ultravox_timestamp):
+            logger.error("Ultravox webhook timestamp verification failed")
+            raise UnauthorizedError("Timestamp verification failed")
+    else:
+        logger.error("Missing Ultravox webhook signature or timestamp")
         raise UnauthorizedError("Missing signature or timestamp")
     
-    if not verify_ultravox_signature(
-        x_ultravox_signature,
-        x_ultravox_timestamp,
-        body_str,
-        settings.ULTRAVOX_WEBHOOK_SECRET,
-    ):
-        raise UnauthorizedError("Invalid signature")
-    
-    if not verify_timestamp(x_ultravox_timestamp):
-        raise UnauthorizedError("Timestamp verification failed")
-    
     # Parse event
-    event_data = json.loads(body_str)
-    event_type = event_data.get("event")
+    try:
+        event_data = json.loads(body_str)
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse Ultravox webhook JSON: {e}")
+        raise ValidationError("Invalid JSON payload")
     
+    event_type = event_data.get("event") or event_data.get("eventType")
+    event_id = event_data.get("id") or event_data.get("event_id")
+    
+    if not event_type:
+        logger.error("Ultravox webhook missing event type")
+        raise ValidationError("Missing event type")
+    
+    # Log webhook event
+    try:
+        admin_db.insert(
+            "webhook_logs",
+            {
+                "provider": "ultravox",
+                "event_type": event_type,
+                "event_id": event_id,
+                "payload": event_data,
+                "headers": headers_dict,
+                "signature_valid": signature_valid,
+                "processing_status": "pending",
+            },
+        )
+    except Exception as e:
+        logger.error(f"Failed to log webhook event: {e}", exc_info=True)
+        # Continue processing even if logging fails
+    
+    # Route to appropriate handler (Strategy Pattern)
     db = DatabaseService()
-    
-    # Track client_id for webhook triggering
     client_id_for_webhook = None
+    processing_error = None
     
-    # Route by event type
-    if event_type == "call.started":
-        # Update call status
-        ultravox_call_id = event_data.get("call_id")
-        call = db.select_one("calls", {"ultravox_call_id": ultravox_call_id})
-        
-        if call:
-            client_id_for_webhook = call["client_id"]
-            db.update(
-                "calls",
-                {"id": call["id"]},
-                {
-                    "status": "in_progress",
-                    "started_at": event_data.get("timestamp"),
-                },
-            )
-            
-            # Emit event
-            await emit_call_started(call_id=call["id"], client_id=client_id_for_webhook)
+    try:
+        handler = EVENT_HANDLERS.get(event_type)
+        if handler:
+            client_id_for_webhook = await handler(event_data, db)
+            logger.info(f"Processed Ultravox webhook: {event_type} (client_id: {client_id_for_webhook})")
+        else:
+            logger.warning(f"Unknown Ultravox webhook event type: {event_type}")
+            # Log but don't fail - new event types may be added by Ultravox
+    except Exception as e:
+        processing_error = str(e)
+        logger.error(f"Error processing Ultravox webhook {event_type}: {e}", exc_info=True)
+        # Don't raise - we want to return 200 to Ultravox even if processing fails
+        # This prevents Ultravox from retrying
     
-    elif event_type == "call.completed":
-        # Update call status
-        ultravox_call_id = event_data.get("call_id")
-        call = db.select_one("calls", {"ultravox_call_id": ultravox_call_id})
-        
-        if call:
-            client_id_for_webhook = call["client_id"]
-            duration = event_data.get("data", {}).get("duration_seconds", 0)
-            cost = event_data.get("data", {}).get("cost_usd", 0)
-            
-            # Debit credits
-            credits = max(1, (duration + 59) // 60)  # Round up to minutes
-            db.insert(
-                "credit_transactions",
-                {
-                    "client_id": call["client_id"],
-                    "type": "spent",
-                    "amount": credits,
-                    "reference_type": "call",
-                    "reference_id": call["id"],
-                    "description": f"Call duration: {credits} minutes",
-                },
-            )
-            
-            client = db.get_client(call["client_id"])
-            if client:
-                db.update(
-                    "clients",
-                    {"id": call["client_id"]},
-                    {"credits_balance": client["credits_balance"] - credits},
-                )
-            
-            # Update call
-            db.update(
-                "calls",
-                {"id": call["id"]},
-                {
-                    "status": "completed",
-                    "duration_seconds": duration,
-                    "cost_usd": cost,
-                    "ended_at": event_data.get("timestamp"),
-                    "recording_url": event_data.get("data", {}).get("recording_url"),
-                },
-            )
-            
-            # Emit event
-            await emit_call_completed(
-                call_id=call["id"],
-                client_id=call["client_id"],
-                duration_seconds=duration,
-                cost_usd=cost,
-            )
-            
-            # Update campaign contact if applicable
-            if call.get("context", {}).get("campaign_id"):
-                campaign_id = call["context"]["campaign_id"]
-                phone_number = call["phone_number"]
-                db.update(
-                    "campaign_contacts",
-                    {"campaign_id": campaign_id, "phone_number": phone_number},
-                    {"status": "completed", "call_id": call["id"]},
-                )
-                db.update_campaign_stats(campaign_id)
-    
-    elif event_type == "call.failed":
-        # Update call status
-        ultravox_call_id = event_data.get("call_id")
-        call = db.select_one("calls", {"ultravox_call_id": ultravox_call_id})
-        
-        if call:
-            client_id_for_webhook = call["client_id"]
-            error_message = event_data.get("data", {}).get("error_message", "Call failed")
-            db.update(
-                "calls",
-                {"id": call["id"]},
-                {
-                    "status": "failed",
-                    "ended_at": event_data.get("timestamp"),
-                    "error_message": error_message,
-                },
-            )
-            
-            # Emit event
-            await emit_call_failed(call_id=call["id"], client_id=client_id_for_webhook, error_message=error_message)
-            
-            # Update campaign contact if applicable
-            if call.get("context", {}).get("campaign_id"):
-                campaign_id = call["context"]["campaign_id"]
-                phone_number = call["phone_number"]
-                db.update(
-                    "campaign_contacts",
-                    {"campaign_id": campaign_id, "phone_number": phone_number},
-                    {"status": "failed"},
-                )
-                db.update_campaign_stats(campaign_id)
-    
-    elif event_type == "voice.training.completed":
-        # Update voice status
-        ultravox_voice_id = event_data.get("voice_id")
-        voice = db.select_one("voices", {"ultravox_voice_id": ultravox_voice_id})
-        
-        if voice:
-            client_id_for_webhook = voice["client_id"]
-            db.update(
-                "voices",
-                {"id": voice["id"]},
-                {
-                    "status": "active",
-                    "training_info": {
-                        "progress": 100,
-                        "completed_at": event_data.get("timestamp"),
-                    },
-                },
-            )
-            
-            # Emit event
-            await emit_voice_training_completed(
-                voice_id=voice["id"],
-                client_id=client_id_for_webhook,
-                ultravox_voice_id=ultravox_voice_id,
-            )
-    
-    elif event_type == "voice.training.failed":
-        # Update voice status
-        ultravox_voice_id = event_data.get("voice_id")
-        voice = db.select_one("voices", {"ultravox_voice_id": ultravox_voice_id})
-        
-        if voice:
-            client_id_for_webhook = voice["client_id"]
-            error_message = event_data.get("error_message", "Voice training failed")
-            db.update(
-                "voices",
-                {"id": voice["id"]},
-                {
-                    "status": "failed",
-                    "training_info": {
-                        "error_message": error_message,
-                    },
-                },
-            )
-            
-            # Emit event
-            await emit_voice_training_failed(
-                voice_id=voice["id"],
-                client_id=client_id_for_webhook,
-                ultravox_voice_id=ultravox_voice_id,
-                error_message=error_message,
-            )
+    # Update webhook log with processing result
+    processing_time_ms = int((time.time() - start_time) * 1000)
+    try:
+        admin_db.update(
+            "webhook_logs",
+            {"event_id": event_id, "event_type": event_type, "provider": "ultravox"},
+            {
+                "processing_status": "processed" if not processing_error else "failed",
+                "error_message": processing_error,
+                "processing_time_ms": processing_time_ms,
+            },
+        )
+    except Exception as e:
+        logger.error(f"Failed to update webhook log: {e}", exc_info=True)
     
     # Trigger egress webhooks
     if client_id_for_webhook:
-        await trigger_egress_webhooks(
-            client_id=client_id_for_webhook,
-            event_type=event_type,
-            event_data=event_data,
-        )
+        try:
+            await trigger_egress_webhooks(
+                client_id=client_id_for_webhook,
+                event_type=event_type,
+                event_data=event_data,
+            )
+        except Exception as e:
+            logger.error(f"Failed to trigger egress webhooks: {e}", exc_info=True)
+            # Don't fail the webhook - egress is secondary
     
     return {"status": "ok"}
 

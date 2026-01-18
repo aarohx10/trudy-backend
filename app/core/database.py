@@ -258,4 +258,44 @@ class DatabaseAdminService:
         
         response = query.execute()
         return len(response.data) > 0
+    
+    def insert_chunks_batch(self, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Batch insert knowledge base chunks (bypasses RLS)"""
+        if not chunks:
+            return []
+        
+        # Supabase has a limit on batch inserts, so we'll do it in smaller batches
+        batch_size = 100
+        all_results = []
+        
+        for i in range(0, len(chunks), batch_size):
+            batch = chunks[i:i + batch_size]
+            response = self.client.table("knowledge_base_chunks").insert(batch).execute()
+            if response.data:
+                all_results.extend(response.data)
+        
+        return all_results
+    
+    def match_kb_documents(
+        self,
+        query_embedding: List[float],
+        kb_id: str,
+        match_threshold: float = 0.7,
+        match_count: int = 3,
+    ) -> List[Dict[str, Any]]:
+        """
+        Call the match_kb_documents RPC function to perform similarity search.
+        Returns top matching chunks with similarity scores.
+        """
+        response = self.client.rpc(
+            "match_kb_documents",
+            {
+                "query_embedding": query_embedding,
+                "target_kb_id": kb_id,
+                "match_threshold": match_threshold,
+                "match_count": match_count,
+            }
+        ).execute()
+        
+        return response.data if response.data else []
 

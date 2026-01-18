@@ -183,6 +183,16 @@ def build_call_template_from_agent_data(
                 "toolName": tool_dict.get("tool_name", tool_dict.get("tool_id")),
             })
     
+    # Auto-load Knowledge Base tools if agent has linked KBs
+    # Note: This requires knowledge_bases to be passed to this function
+    # The caller should pass it from agent_data.knowledge_bases
+    if hasattr(agent_data, 'knowledge_bases') and agent_data.knowledge_bases:
+        # Import here to avoid circular dependency
+        from app.core.database import DatabaseService
+        # Note: We need db and current_user context - this will be handled by the caller
+        # For now, we'll add a placeholder that the caller can populate
+        pass  # Will be handled by caller with proper DB context
+    
     # Convert maxConversationDuration to maxDuration string format
     max_duration = None
     if agent_data.maxConversationDuration is not None:
@@ -735,6 +745,7 @@ def build_call_template_from_agent_dict(
             })
         if selected_tools:
             call_template["selectedTools"] = selected_tools
+    # Note: KB tools are added by the caller after this function returns
     
     return call_template
 
@@ -869,12 +880,30 @@ async def create_agent(
             if kb.get("status") != "ready":
                 raise ValidationError("Knowledge base must be ready", {"kb_id": kb_id, "kb_status": kb.get("status")})
     
-    # Create agent record
+    # Validate tools - check if they are verified
+    if agent_data.tools:
+        unverified_tools = []
+        for tool in agent_data.tools:
+            tool_dict = tool.dict() if hasattr(tool, 'dict') else tool
+            tool_id = tool_dict.get("tool_id")
+            if tool_id:
+                tool_record = db.select_one("tools", {"id": tool_id, "client_id": current_user["client_id"]})
+                if not tool_record:
+                    raise NotFoundError("tool", tool_id)
+                if not tool_record.get("is_verified", False):
+                    unverified_tools.append(tool_record.get("name", tool_id))
+        
+        if unverified_tools:
+            raise ValidationError(
+                f"Tools must be verified before attaching to agents. Unverified tools: {', '.join(unverified_tools)}",
+                {"unverified_tools": unverified_tools}
+            )
+    
+    # ATOMIC RESOURCE CREATION (Saga Pattern)
+    # Step 1: Insert record with status='creating' (temporary state)
     agent_id = str(uuid.uuid4())
     now = datetime.utcnow()
     
-    # Prepare agent record for database (use ISO strings for storage)
-    # Use None instead of empty string for voice_id
     # Use selectedLLM if provided, otherwise use model field
     model_value = agent_data.selectedLLM if agent_data.selectedLLM is not None else agent_data.model
     agent_db_record = {
@@ -886,7 +915,11 @@ async def create_agent(
         "model": model_value,
         "tools": [tool.dict() for tool in agent_data.tools] if agent_data.tools else [],
         "knowledge_bases": agent_data.knowledge_bases or [],
-        "status": "creating",
+        "status": "creating",  # Temporary status - will be updated after Ultravox call
+        "success_criteria": agent_data.success_criteria,
+        "extraction_schema": agent_data.extraction_schema or {},
+        "crm_webhook_url": agent_data.crm_webhook_url,
+        "crm_webhook_secret": agent_data.crm_webhook_secret,
         "created_at": now.isoformat(),
         "updated_at": now.isoformat(),
     }
@@ -895,18 +928,15 @@ async def create_agent(
     if voice_id:
         agent_db_record["voice_id"] = voice_id
     
+    # Insert temporary record
     db.insert("agents", agent_db_record)
     
-    # Prepare agent record for response (use datetime objects for Pydantic)
-    agent_record = agent_db_record.copy()
-    agent_record["created_at"] = now
-    agent_record["updated_at"] = now
-    agent_record["ultravox_agent_id"] = None  # Initialize as None, will be set if Ultravox integration succeeds
-    
-    # Call Ultravox API (optional - agent can exist without Ultravox for development)
+    # Step 2: Call Ultravox API (if voice is provided and has ultravox_voice_id)
     ultravox_agent_id = None
-    if voice and voice.get("ultravox_voice_id"):
-        try:
+    provider_error_details = None
+    
+    try:
+        if voice and voice.get("ultravox_voice_id"):
             from app.core.config import settings
             if settings.ULTRAVOX_API_KEY:
                 # Get knowledge base corpus IDs
@@ -939,6 +969,37 @@ async def create_agent(
                     mapped_language=mapped_language,
                 )
                 
+                # Auto-load Knowledge Base tools if agent has linked KBs
+                if agent_data.knowledge_bases:
+                    kb_tools_added = []
+                    kb_names = []
+                    for kb_id in agent_data.knowledge_bases:
+                        kb = db.get_knowledge_base(kb_id, current_user["client_id"])
+                        if kb and kb.get("ultravox_tool_id"):
+                            # Add KB tool to selectedTools
+                            if "selectedTools" not in call_template:
+                                call_template["selectedTools"] = []
+                            call_template["selectedTools"].append({
+                                "toolId": kb["ultravox_tool_id"],
+                                "toolName": f"search_kb_{kb_id}",
+                            })
+                            kb_tools_added.append(kb_id)
+                            kb_names.append(kb.get("name", kb_id))
+                    
+                    # Update systemPrompt to mention KB access
+                    if kb_tools_added:
+                        kb_mention = f"You have access to {len(kb_tools_added)} knowledge base(s): {', '.join(kb_names)}. Use the search_kb_* tool(s) to find relevant information and answer questions accurately."
+                        original_prompt = call_template.get("systemPrompt", "")
+                        if kb_mention not in original_prompt:
+                            call_template["systemPrompt"] = f"{original_prompt}\n\n{kb_mention}".strip()
+                        
+                        # Add authTokens for KB tool authentication
+                        from app.core.config import settings
+                        if settings.ULTRAVOX_TOOL_SECRET:
+                            call_template["authTokens"] = {
+                                "toolSecret": settings.ULTRAVOX_TOOL_SECRET
+                            }
+                
                 # Build ultravox_data with new callTemplate structure
                 ultravox_data = {
                     "name": agent_data.name,
@@ -956,59 +1017,54 @@ async def create_agent(
                 if ultravox_response and ultravox_response.get("id"):
                     ultravox_agent_id = ultravox_response.get("id")
                     logger.info(f"Successfully created agent in Ultravox. Agent ID: {agent_id}, Ultravox Agent ID: {ultravox_agent_id}")
-                    # Update with Ultravox ID
-                    db.update(
-                        "agents",
-                        {"id": agent_id},
-                        {
-                            "ultravox_agent_id": ultravox_agent_id,
-                            "status": "active",
-                        },
-                    )
-                    agent_record["ultravox_agent_id"] = ultravox_agent_id
-                    agent_record["status"] = "active"
                 else:
-                    logger.warning(f"Ultravox response missing agent ID for agent {agent_id}. Response: {ultravox_response}")
-                    # Update database to active status
-                    db.update(
-                        "agents",
-                        {"id": agent_id},
-                        {"status": "active"},
-                    )
-                    agent_record["status"] = "active"  # Still mark as active even without Ultravox
-            else:
-                logger.warning("Ultravox API key not configured. Creating agent without Ultravox integration.")
-                # Update database to active status
-                db.update(
-                    "agents",
-                    {"id": agent_id},
-                    {"status": "active"},
-                )
-                agent_record["status"] = "active"
-        except Exception as e:
-            # Log error but don't fail agent creation - allow agent to exist without Ultravox
-            logger.error(f"Failed to create agent {agent_id} in Ultravox (non-critical): {e}", exc_info=True)
-            logger.error(f"Agent data that failed: {ultravox_data if 'ultravox_data' in locals() else 'N/A'}")
-            # Update database to active status
-            db.update(
-                "agents",
-                {"id": agent_id},
-                {"status": "active"},
+                    raise ValueError("Ultravox response missing agent ID")
+        
+        # Step 3: Update record to 'active' with ultravox_id (success path)
+        update_data = {
+            "status": "active",
+            "updated_at": now.isoformat(),
+        }
+        if ultravox_agent_id:
+            update_data["ultravox_agent_id"] = ultravox_agent_id
+        
+        db.update("agents", {"id": agent_id}, update_data)
+        agent_db_record.update(update_data)
+        
+    except Exception as e:
+        # Step 4: Rollback - delete the temporary record and return error
+        logger.error(f"Failed to create agent in Ultravox: {e}", exc_info=True)
+        
+        # Extract error details if it's a ProviderError
+        if isinstance(e, ProviderError):
+            provider_error_details = e.details.get("provider_details", {})
+            # Delete the temporary record
+            db.delete("agents", {"id": agent_id, "client_id": current_user["client_id"]})
+            # Re-raise with full error details
+            raise ProviderError(
+                provider="ultravox",
+                message=str(e),
+                http_status=e.details.get("httpStatus", 500),
+                details=provider_error_details,
             )
-            agent_record["status"] = "active"  # Still mark as active
-    else:
-        # No voice provided or voice doesn't have ultravox_voice_id - agent can still be created without Ultravox
-        if voice_id:
-            logger.warning(f"Voice {voice_id} doesn't have ultravox_voice_id. Creating agent without Ultravox integration.")
         else:
-            logger.info(f"Creating agent without voice. Agent will be created without Ultravox integration.")
-        # Update database to active status
-        db.update(
-            "agents",
-            {"id": agent_id},
-            {"status": "active"},
-        )
-        agent_record["status"] = "active"
+            # Delete the temporary record
+            db.delete("agents", {"id": agent_id, "client_id": current_user["client_id"]})
+            # Raise appropriate error
+            error_msg = str(e)
+            raise ProviderError(
+                provider="ultravox",
+                message=f"Failed to create agent in Ultravox: {error_msg}",
+                http_status=500,
+                details={"error": error_msg},
+            )
+    
+    # Prepare agent record for response (use datetime objects for Pydantic)
+    agent_record = agent_db_record.copy()
+    agent_record["created_at"] = now
+    agent_record["updated_at"] = now
+    if ultravox_agent_id:
+        agent_record["ultravox_agent_id"] = ultravox_agent_id
     
     response_data = {
         "data": AgentResponse(**agent_record),
@@ -1223,118 +1279,16 @@ async def list_agents(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """List agents - syncs status from Ultravox for creating agents"""
+    """
+    List agents - returns what is in the DB immediately.
+    Use /agents/{agent_id}/sync or /agents/sync-all for status reconciliation.
+    """
     db = DatabaseService(current_user["token"])
     db.set_auth(current_user["token"])
     
-    # Get agents from database
+    # Get agents from database - return immediately without polling
     agents = db.select("agents", {"client_id": current_user["client_id"]}, "created_at")
     logger.info(f"Found {len(agents)} agents in database for client_id {current_user['client_id']}")
-    
-    # Automatically sync agents with Ultravox if they don't have ultravox_agent_id
-    for agent in agents:
-        # Check and update agents with "creating" status
-        if agent.get("status") == "creating":
-            # If agent has ultravox_agent_id, check Ultravox status
-            if agent.get("ultravox_agent_id"):
-                try:
-                    from app.core.config import settings
-                    if settings.ULTRAVOX_API_KEY:
-                        ultravox_agent = await ultravox_client.get_agent(agent["ultravox_agent_id"])
-                        ultravox_status = ultravox_agent.get("status", "").lower()
-                        
-                        # If Ultravox says it's active/ready, update our status
-                        if ultravox_status in ["active", "ready", "completed"]:
-                            db.update(
-                                "agents",
-                                {"id": agent["id"]},
-                                {
-                                    "status": "active",
-                                    "updated_at": datetime.utcnow().isoformat(),
-                                },
-                            )
-                            agent["status"] = "active"
-                except Exception as e:
-                    # Log error but don't fail the request
-                    logger.warning(f"Failed to sync agent {agent['id']} from Ultravox: {e}")
-            else:
-                # Agent doesn't have ultravox_agent_id - it was created without Ultravox
-                # Mark it as active since creation should have completed
-                db.update(
-                    "agents",
-                    {"id": agent["id"]},
-                    {
-                        "status": "active",
-                        "updated_at": datetime.utcnow().isoformat(),
-                    },
-                )
-                agent["status"] = "active"
-        
-        # Automatically sync agents without ultravox_agent_id (if Ultravox is configured)
-        elif agent.get("status") == "active" and not agent.get("ultravox_agent_id"):
-            try:
-                from app.core.config import settings
-                if settings.ULTRAVOX_API_KEY:
-                    # Skip if agent doesn't have a voice_id
-                    if not agent.get("voice_id"):
-                        continue
-                    # Get voice
-                    voice = db.get_voice(agent["voice_id"], current_user["client_id"])
-                    if voice and voice.get("status") == "active":
-                        # DISABLED: Auto-sync is disabled to prevent excessive API calls
-                        # Use the manual /voices/{voice_id}/sync endpoint to sync voices with Ultravox
-                        pass
-                        
-                        # If voice has ultravox_voice_id, try to sync agent
-                        if voice.get("ultravox_voice_id"):
-                            try:
-                                # Get knowledge base corpus IDs
-                                corpus_ids = []
-                                if agent.get("knowledge_bases"):
-                                    for kb_id in agent["knowledge_bases"]:
-                                        kb = db.get_knowledge_base(kb_id, current_user["client_id"])
-                                        if kb and kb.get("ultravox_corpus_id"):
-                                            corpus_ids.append(kb["ultravox_corpus_id"])
-                                
-                                # Map language
-                                mapped_language = voice.get("language", "en-US")
-                                
-                                # Build callTemplate from agent dict
-                                call_template = build_call_template_from_agent_dict(
-                                    agent=agent,
-                                    voice=voice,
-                                    corpus_ids=corpus_ids,
-                                    mapped_language=mapped_language,
-                                )
-                                
-                                # Build ultravox_data with new callTemplate structure
-                                ultravox_data = {
-                                    "name": agent["name"],
-                                    "callTemplate": call_template,
-                                }
-                                
-                                # Add description if available
-                                if agent.get("description"):
-                                    ultravox_data["description"] = agent["description"]
-                                
-                                ultravox_response = await ultravox_client.create_agent(ultravox_data)
-                                if ultravox_response and ultravox_response.get("id"):
-                                    db.update(
-                                        "agents",
-                                        {"id": agent["id"]},
-                                        {
-                                            "ultravox_agent_id": ultravox_response.get("id"),
-                                            "updated_at": datetime.utcnow().isoformat(),
-                                        },
-                                    )
-                                    agent["ultravox_agent_id"] = ultravox_response.get("id")
-                                    logger.info(f"Auto-synced agent {agent['id']} with Ultravox")
-                            except Exception as e:
-                                # Log but don't fail - agent can exist without Ultravox
-                                logger.warning(f"Failed to auto-sync agent {agent['id']} with Ultravox: {e}")
-            except Exception as e:
-                # Log but don't fail the request
-                logger.warning(f"Error during auto-sync for agent {agent['id']}: {e}")
     
     # Convert agents to response format, handling any validation errors
     agent_responses = []
@@ -1452,6 +1406,36 @@ async def sync_agent_with_ultravox(
             corpus_ids=corpus_ids,
             mapped_language=mapped_language,
         )
+        
+        # Auto-load Knowledge Base tools if agent has linked KBs
+        if agent.get("knowledge_bases"):
+            kb_tools_added = []
+            kb_names = []
+            for kb_id in agent["knowledge_bases"]:
+                kb = db.get_knowledge_base(kb_id, current_user["client_id"])
+                if kb and kb.get("ultravox_tool_id"):
+                    # Add KB tool to selectedTools
+                    if "selectedTools" not in call_template:
+                        call_template["selectedTools"] = []
+                    call_template["selectedTools"].append({
+                        "toolId": kb["ultravox_tool_id"],
+                        "toolName": f"search_kb_{kb_id}",
+                    })
+                    kb_tools_added.append(kb_id)
+                    kb_names.append(kb.get("name", kb_id))
+            
+            # Update systemPrompt to mention KB access
+            if kb_tools_added:
+                kb_mention = f"You have access to {len(kb_tools_added)} knowledge base(s): {', '.join(kb_names)}. Use the search_kb_* tool(s) to find relevant information and answer questions accurately."
+                original_prompt = call_template.get("systemPrompt", "")
+                if kb_mention not in original_prompt:
+                    call_template["systemPrompt"] = f"{original_prompt}\n\n{kb_mention}".strip()
+                
+                # Add authTokens for KB tool authentication
+                if settings.ULTRAVOX_TOOL_SECRET:
+                    call_template["authTokens"] = {
+                        "toolSecret": settings.ULTRAVOX_TOOL_SECRET
+                    }
         
         # Build ultravox_data with new callTemplate structure
         ultravox_data = {
@@ -1613,6 +1597,106 @@ async def bulk_delete_agents(
             ts=datetime.utcnow(),
         ),
     }
+
+
+@router.post("/{agent_id}/test")
+async def test_agent_webrtc(
+    agent_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+    x_client_id: Optional[str] = Header(None),
+):
+    """
+    Create a WebRTC test call for agent testing.
+    Returns joinUrl for browser WebRTC session initialization.
+    This bypasses PSTN billing and allows testing in the browser.
+    
+    Optional request body:
+    {
+        "context": {
+            "custom_field": "value"
+        }
+    }
+    """
+    if current_user["role"] not in ["client_admin", "agency_admin"]:
+        raise ForbiddenError("Insufficient permissions")
+    
+    db = DatabaseService(current_user["token"])
+    db.set_auth(current_user["token"])
+    
+    # Validate agent exists and is active
+    agent = db.get_agent(agent_id, current_user["client_id"])
+    if not agent:
+        raise NotFoundError("agent", agent_id)
+    
+    if agent.get("status") != "active":
+        raise ValidationError("Agent must be active to test", {"agent_status": agent.get("status")})
+    
+    # Check if agent has ultravox_agent_id
+    ultravox_agent_id = agent.get("ultravox_agent_id")
+    if not ultravox_agent_id:
+        raise ValidationError(
+            "Agent must be synced with Ultravox to test. Use /agents/{agent_id}/sync first.",
+            {"agent_id": agent_id}
+        )
+    
+    # Check if Ultravox is configured
+    from app.core.config import settings
+    if not settings.ULTRAVOX_API_KEY:
+        raise ValidationError("Ultravox API key is not configured")
+    
+    try:
+        # Parse request body for context (optional)
+        context = {}
+        try:
+            if request.method == "POST":
+                body = await request.json()
+                context = body.get("context", {})
+        except (json.JSONDecodeError, ValueError):
+            # No body or invalid JSON - use empty context
+            pass
+        
+        # Create WebRTC test call via Ultravox
+        test_call_data = await ultravox_client.create_test_call(
+            agent_id=ultravox_agent_id,
+            context={
+                **context,
+                "is_test": True,
+                "client_id": current_user["client_id"],
+                "agent_id": agent_id,
+            },
+        )
+        
+        # Extract joinUrl from response
+        join_url = test_call_data.get("joinUrl") or test_call_data.get("join_url")
+        if not join_url:
+            raise ValidationError("Ultravox did not return a joinUrl for WebRTC test call")
+        
+        # Generate session ID for tool logging
+        session_id = f"test_{agent_id}_{uuid.uuid4().hex[:8]}"
+        
+        return {
+            "data": {
+                "agent_id": agent_id,
+                "ultravox_agent_id": ultravox_agent_id,
+                "call_id": test_call_data.get("id"),
+                "joinUrl": join_url,
+                "test_mode": True,
+                "session_id": session_id,  # For tool logging correlation
+            },
+            "meta": ResponseMeta(
+                request_id=str(uuid.uuid4()),
+                ts=datetime.utcnow(),
+            ),
+        }
+    except Exception as e:
+        logger.error(f"Failed to create WebRTC test call for agent {agent_id}: {e}", exc_info=True)
+        if isinstance(e, (ValidationError, NotFoundError, ForbiddenError)):
+            raise
+        from app.core.exceptions import ProviderError
+        if isinstance(e, ProviderError):
+            raise
+        raise ValidationError(f"Failed to create test call: {str(e)}", {"error": str(e)})
 
 
 @router.delete("/{agent_id}")

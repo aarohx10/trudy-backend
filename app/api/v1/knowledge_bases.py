@@ -1,20 +1,24 @@
 """
 Knowledge Base Endpoints
 """
-from fastapi import APIRouter, Header, Depends
+from fastapi import APIRouter, Header, Depends, Request, HTTPException
 from starlette.requests import Request
-from typing import Optional
+from typing import Optional, Dict, Any
 from datetime import datetime
 import uuid
 import json
+import logging
+import os
 
-from app.core.auth import get_current_user
-from app.core.database import DatabaseService
-from app.core.storage import generate_presigned_url, check_object_exists
+from app.core.auth import get_current_user, verify_ultravox_signature
+from app.core.database import DatabaseService, DatabaseAdminService
+from app.core.storage import generate_presigned_url, check_object_exists, get_file_path
 from app.core.exceptions import NotFoundError, ForbiddenError, ValidationError
 from app.core.idempotency import check_idempotency_key, store_idempotency_response
 from app.core.events import emit_knowledge_base_created, emit_knowledge_base_ingestion_started
 from app.services.ultravox import ultravox_client
+from app.services.embeddings import generate_embeddings_batch
+from app.services.text_extraction import extract_text_from_file, chunk_text
 from app.models.schemas import (
     KnowledgeBaseCreate,
     KnowledgeBaseUpdate,
@@ -25,6 +29,8 @@ from app.models.schemas import (
     ResponseMeta,
 )
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -197,12 +203,16 @@ async def ingest_kb_files(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """Ingest uploaded files into knowledge base"""
+    """
+    Ingest uploaded files into knowledge base using Proxy Knowledge Base system.
+    Extracts text, chunks it, generates embeddings, and stores in Supabase pgvector.
+    """
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
     db = DatabaseService(current_user["token"])
     db.set_auth(current_user["token"])
+    admin_db = DatabaseAdminService()  # For batch inserts
     
     kb = db.get_knowledge_base(kb_id, current_user["client_id"])
     if not kb:
@@ -210,6 +220,53 @@ async def ingest_kb_files(
     
     if kb.get("status") != "ready":
         raise ValidationError("Knowledge base must be ready", {"kb_status": kb.get("status")})
+    
+    # Check if tool already exists, if not create it
+    tool_name = f"search_kb_{kb_id}"
+    ultravox_tool_id = kb.get("ultravox_tool_id")
+    
+    if not ultravox_tool_id:
+        # Create durable tool in Ultravox
+        try:
+            backend_url = settings.FILE_SERVER_URL or "https://api.truedy.ai"
+            tool_endpoint = f"{backend_url}/api/v1/kb/query"
+            
+            tool_data = await ultravox_client.create_durable_tool(
+                name=tool_name,
+                description=f"Search the knowledge base '{kb.get('name', kb_id)}' for relevant information to answer questions accurately.",
+                endpoint=tool_endpoint,
+                http_method="POST",
+                dynamic_parameters=[
+                    {
+                        "name": "query",
+                        "location": "PARAMETER_LOCATION_BODY",
+                        "schema": {
+                            "type": "string",
+                            "description": "The search query to find relevant information in the knowledge base",
+                        },
+                        "required": True,
+                    }
+                ],
+                static_parameters=[
+                    {
+                        "name": "kb_id",
+                        "location": "PARAMETER_LOCATION_BODY",
+                        "value": kb_id,
+                    }
+                ],
+            )
+            
+            ultravox_tool_id = tool_data.get("toolId")
+            if ultravox_tool_id:
+                db.update(
+                    "knowledge_documents",
+                    {"id": kb_id},
+                    {"ultravox_tool_id": ultravox_tool_id},
+                )
+                kb["ultravox_tool_id"] = ultravox_tool_id
+        except Exception as e:
+            logger.error(f"Failed to create Ultravox tool for KB {kb_id}: {e}", exc_info=True)
+            raise ValidationError(f"Failed to register knowledge base tool: {str(e)}")
     
     results = []
     for doc_id in request_data.document_ids:
@@ -224,15 +281,12 @@ async def ingest_kb_files(
                 {"id": doc_id},
                 {"status": "failed", "error_message": "File not found in storage"},
             )
+            results.append({
+                "doc_id": doc_id,
+                "status": "failed",
+                "error_message": "File not found in storage",
+            })
             continue
-        
-        # Generate presigned URL for Ultravox
-        file_url = generate_presigned_url(
-            bucket=settings.S3_BUCKET_UPLOADS,
-            key=doc["s3_key"],
-            operation="get_object",
-            expires_in=86400,
-        )
         
         # Update status
         db.update(
@@ -241,33 +295,60 @@ async def ingest_kb_files(
             {"status": "processing"},
         )
         
-        # Call Ultravox API
         try:
-            ultravox_data = {
-                "type": "file",
-                "url": file_url,
-                "metadata": {
-                    "fileName": doc["s3_key"].split("/")[-1],
-                    "fileType": doc["file_type"],
-                },
-            }
-            ultravox_response = await ultravox_client.add_corpus_source(kb["ultravox_corpus_id"], ultravox_data)
+            # Get file path
+            file_path = get_file_path("uploads", doc["s3_key"])
             
+            # Extract text from file
+            extracted_text = await extract_text_from_file(file_path, doc.get("file_type", ""))
+            
+            if not extracted_text or not extracted_text.strip():
+                raise ValidationError(f"Could not extract text from file {doc_id}")
+            
+            # Chunk text (1000 chars with 200 overlap)
+            chunks = chunk_text(extracted_text, chunk_size=1000, overlap=200)
+            
+            if not chunks:
+                raise ValidationError(f"No chunks generated from file {doc_id}")
+            
+            # Generate embeddings for all chunks
+            logger.info(f"Generating embeddings for {len(chunks)} chunks from document {doc_id}")
+            embeddings = await generate_embeddings_batch(chunks, batch_size=100)
+            
+            if len(embeddings) != len(chunks):
+                raise ValidationError(f"Embedding count mismatch: {len(embeddings)} != {len(chunks)}")
+            
+            # Prepare chunks for batch insert
+            chunk_records = []
+            for i, (chunk_content, embedding) in enumerate(zip(chunks, embeddings)):
+                chunk_records.append({
+                    "kb_id": kb_id,
+                    "content": chunk_content,
+                    "embedding": embedding,
+                })
+            
+            # Batch insert chunks
+            logger.info(f"Inserting {len(chunk_records)} chunks into database")
+            admin_db.insert_chunks_batch(chunk_records)
+            
+            # Update document status
             db.update(
                 "knowledge_base_documents",
                 {"id": doc_id},
                 {
-                    "ultravox_source_id": ultravox_response.get("id"),
-                    "status": "processing",
+                    "status": "indexed",
+                    "chunk_count": len(chunks),
                 },
             )
             
             results.append({
                 "doc_id": doc_id,
-                "status": "processing",
-                "ultravox_source_id": ultravox_response.get("id"),
+                "status": "indexed",
+                "chunk_count": len(chunks),
             })
+            
         except Exception as e:
+            logger.error(f"Failed to ingest document {doc_id}: {e}", exc_info=True)
             db.update(
                 "knowledge_base_documents",
                 {"id": doc_id},
@@ -410,6 +491,66 @@ async def update_knowledge_base(
             ts=datetime.utcnow(),
         ),
     }
+
+
+@router.post("/kb/query")
+async def query_knowledge_base(
+    request: Request,
+    authenticated: bool = Depends(verify_ultravox_signature),
+):
+    """
+    Public endpoint for Ultravox to query knowledge bases.
+    Bypasses Clerk auth but requires X-Tool-Secret header for security.
+    """
+    
+    try:
+        body = await request.json()
+        kb_id = body.get("kb_id")
+        query_text = body.get("query")
+        
+        if not kb_id or not query_text:
+            raise HTTPException(status_code=400, detail="Missing required fields: kb_id and query")
+        
+        # Use admin DB to bypass RLS
+        admin_db = DatabaseAdminService()
+        
+        # Generate embedding for query
+        from app.services.embeddings import generate_embedding
+        query_embedding = await generate_embedding(query_text)
+        
+        # Search for matching documents
+        matches = admin_db.match_kb_documents(
+            query_embedding=query_embedding,
+            kb_id=kb_id,
+            match_threshold=0.7,
+            match_count=3,
+        )
+        
+        # Combine top 3 snippets into a single string
+        if not matches:
+            return {
+                "data": {
+                    "result": "No relevant information found in the knowledge base.",
+                },
+            }
+        
+        # Combine chunks with their content
+        combined_result = "\n\n".join([
+            f"[Relevance: {match.get('similarity', 0):.2%}]\n{match.get('content', '')}"
+            for match in matches
+        ])
+        
+        return {
+            "data": {
+                "result": combined_result,
+                "matches_count": len(matches),
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to query knowledge base: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @router.delete("/{kb_id}")

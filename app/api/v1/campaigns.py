@@ -255,7 +255,11 @@ async def schedule_campaign(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """Schedule campaign"""
+    """
+    Schedule campaign with atomic pre-flight checks.
+    Validates agent and credits before calling Ultravox.
+    Rolls back to draft status if Ultravox returns an error.
+    """
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
@@ -276,24 +280,65 @@ async def schedule_campaign(
     if not pending_contacts:
         raise ValidationError("No pending contacts found")
     
-    # Get agent
+    # PRE-FLIGHT CHECK 1: Verify agent has valid ultravox_agent_id
     agent = db.get_agent(campaign["agent_id"], current_user["client_id"])
+    if not agent:
+        raise NotFoundError("agent", campaign["agent_id"])
     
-    # Prepare batch data
-    batch_contacts = []
-    for contact in pending_contacts:
-        batch_contacts.append({
-            "phone_number": contact["phone_number"],
-            "context": {
-                "first_name": contact.get("first_name"),
-                "last_name": contact.get("last_name"),
-                "campaign_id": campaign_id,
-                "custom_fields": contact.get("custom_fields", {}),
-            },
-        })
+    if agent.get("status") != "active":
+        raise ValidationError("Agent must be active", {"agent_status": agent.get("status")})
     
-    # Call Ultravox API
+    ultravox_agent_id = agent.get("ultravox_agent_id")
+    if not ultravox_agent_id:
+        raise ValidationError(
+            "Agent must be synced with Ultravox to schedule campaigns. Use /agents/{agent_id}/sync first.",
+            {"agent_id": campaign["agent_id"]}
+        )
+    
+    # PRE-FLIGHT CHECK 2: Verify client has enough credits
+    # Estimate: 1 credit per contact
+    required_credits = len(pending_contacts)
+    client = db.get_client(current_user["client_id"])
+    if not client:
+        raise NotFoundError("client", current_user["client_id"])
+    
+    available_credits = client.get("credits_balance", 0)
+    if available_credits < required_credits:
+        from app.core.exceptions import PaymentRequiredError
+        raise PaymentRequiredError(
+            f"Insufficient credits for campaign. Required: {required_credits}, Available: {available_credits}",
+            {
+                "required": required_credits,
+                "available": available_credits,
+                "contacts_count": len(pending_contacts),
+            }
+        )
+    
+    # Check if Ultravox is configured
+    if not settings.ULTRAVOX_API_KEY:
+        raise ValidationError("Ultravox API key is not configured")
+    
+    # ATOMIC OPERATION: Update status to 'scheduling' (temporary)
+    db.update(
+        "campaigns",
+        {"id": campaign_id},
+        {"status": "scheduling"},  # Temporary status
+    )
+    
     try:
+        # Prepare batch data
+        batch_contacts = []
+        for contact in pending_contacts:
+            batch_contacts.append({
+                "phone_number": contact["phone_number"],
+                "context": {
+                    "first_name": contact.get("first_name"),
+                    "last_name": contact.get("last_name"),
+                    "campaign_id": campaign_id,
+                    "custom_fields": contact.get("custom_fields", {}),
+                },
+            })
+        
         batch_data = {
             "batches": [{
                 "contacts": batch_contacts,
@@ -309,20 +354,25 @@ async def schedule_campaign(
             }],
         }
         
+        # Call Ultravox API
         ultravox_response = await ultravox_client.create_scheduled_batch(
-            agent.get("ultravox_agent_id"),
+            ultravox_agent_id,
             batch_data,
         )
         
         batch_ids = [b.get("batch_id") for b in ultravox_response.get("batches", [])]
         
-        # Update campaign
+        if not batch_ids:
+            raise ValidationError("Ultravox did not return batch IDs", {"response": ultravox_response})
+        
+        # SUCCESS: Update campaign to scheduled with batch IDs
         db.update(
             "campaigns",
             {"id": campaign_id},
             {
                 "status": "scheduled",
                 "ultravox_batch_ids": batch_ids,
+                "updated_at": datetime.utcnow().isoformat(),
             },
         )
         
@@ -336,12 +386,43 @@ async def schedule_campaign(
         )
         
     except Exception as e:
+        # ROLLBACK: Revert to draft status and return specific error
+        logger.error(f"Failed to schedule campaign {campaign_id}: {e}", exc_info=True)
+        
         db.update(
             "campaigns",
             {"id": campaign_id},
-            {"status": "failed"},
+            {
+                "status": "draft",  # Rollback to draft
+                "updated_at": datetime.utcnow().isoformat(),
+            },
         )
-        raise
+        
+        # Extract error details if it's a ProviderError
+        if isinstance(e, ProviderError):
+            provider_error_details = e.details.get("provider_details", {})
+            error_message = str(e)
+            
+            # Check for common Ultravox errors
+            if "Invalid Telephony Config" in error_message or "telephony" in error_message.lower():
+                error_message = "Invalid telephony configuration. Please check your SIP/telephony settings in Ultravox."
+            elif "401" in error_message or "403" in error_message:
+                error_message = "Ultravox API authentication failed. Please check your API key."
+            
+            raise ValidationError(
+                f"Failed to schedule campaign: {error_message}",
+                {
+                    "error": error_message,
+                    "provider_details": provider_error_details,
+                    "campaign_id": campaign_id,
+                }
+            )
+        else:
+            # Generic error
+            raise ValidationError(
+                f"Failed to schedule campaign: {str(e)}",
+                {"error": str(e), "campaign_id": campaign_id}
+            )
     
     updated_campaign = db.get_campaign(campaign_id, current_user["client_id"])
     
@@ -363,7 +444,10 @@ async def list_campaigns(
     limit: int = 50,
     offset: int = 0,
 ):
-    """List campaigns with filtering and pagination"""
+    """
+    List campaigns with filtering and pagination.
+    Campaigns in scheduled/active status are reconciled with Ultravox for live stats.
+    """
     db = DatabaseService(current_user["token"])
     db.set_auth(current_user["token"])
     
@@ -381,9 +465,73 @@ async def list_campaigns(
     total = len(all_campaigns)
     paginated_campaigns = all_campaigns[offset:offset + limit]
     
-    # Update stats for each campaign
-    for campaign in paginated_campaigns:
-        db.update_campaign_stats(campaign["id"])
+    # Background reconciliation for active/scheduled campaigns
+    from app.core.config import settings
+    if settings.ULTRAVOX_API_KEY:
+        for campaign in paginated_campaigns:
+            campaign_status = campaign.get("status", "").lower()
+            if campaign_status in ["scheduled", "active"] and campaign.get("ultravox_batch_ids"):
+                try:
+                    batch_ids = campaign.get("ultravox_batch_ids", [])
+                    ultravox_stats = {
+                        "pending": 0,
+                        "calling": 0,
+                        "completed": 0,
+                        "failed": 0,
+                    }
+                    all_completed = True
+                    
+                    # Get agent_id from campaign for batch lookup
+                    agent_id = campaign.get("agent_id")
+                    agent = db.get_agent(agent_id, current_user["client_id"]) if agent_id else None
+                    ultravox_agent_id = agent.get("ultravox_agent_id") if agent else None
+                    
+                    if ultravox_agent_id:
+                        for batch_id in batch_ids:
+                            try:
+                                batch_data = await ultravox_client.get_batch(ultravox_agent_id, batch_id)
+                                
+                                # Map Ultravox batch stats
+                                total_count = batch_data.get("totalCount", 0)
+                                completed_count = batch_data.get("completedCount", 0)
+                                ultravox_stats["completed"] += completed_count
+                                ultravox_stats["pending"] += batch_data.get("pendingCount", 0) or max(0, total_count - completed_count)
+                                # Failed is typically total - completed (if failedCount not explicitly provided)
+                                ultravox_stats["failed"] += max(0, total_count - completed_count - ultravox_stats["pending"])
+                                
+                                # Check if batch is completed
+                                if completed_count >= total_count and total_count > 0:
+                                    pass  # Batch completed
+                                else:
+                                    all_completed = False
+                            except Exception as e:
+                                logger.warning(f"Failed to fetch batch {batch_id} for campaign {campaign['id']}: {e}")
+                                all_completed = False
+                    else:
+                        logger.warning(f"Cannot reconcile campaign {campaign['id']}: agent {agent_id} has no ultravox_agent_id")
+                    
+                    # Update stats
+                    db.update(
+                        "campaigns",
+                        {"id": campaign["id"]},
+                        {"stats": ultravox_stats},
+                    )
+                    
+                    # Update status if all batches completed
+                    if all_completed and campaign_status != "completed":
+                        db.update(
+                            "campaigns",
+                            {"id": campaign["id"]},
+                            {
+                                "status": "completed",
+                                "updated_at": datetime.utcnow().isoformat(),
+                            },
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to reconcile campaign {campaign['id']}: {e}")
+            else:
+                # For non-active campaigns, just update local stats
+                db.update_campaign_stats(campaign["id"])
     
     # Refresh campaigns after stats update
     paginated_campaigns = [db.get_campaign(c["id"], current_user["client_id"]) for c in paginated_campaigns]
@@ -409,7 +557,10 @@ async def get_campaign(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """Get campaign"""
+    """
+    Get campaign with live reconciliation from Ultravox.
+    When campaign is scheduled or active, fetches real-time stats from Ultravox batches.
+    """
     db = DatabaseService(current_user["token"])
     db.set_auth(current_user["token"])
     
@@ -417,9 +568,81 @@ async def get_campaign(
     if not campaign:
         raise NotFoundError("campaign", campaign_id)
     
-    # Update stats
-    db.update_campaign_stats(campaign_id)
-    campaign = db.get_campaign(campaign_id, current_user["client_id"])
+    # Background reconciliation: If campaign is scheduled or active, sync with Ultravox
+    campaign_status = campaign.get("status", "").lower()
+    if campaign_status in ["scheduled", "active"] and campaign.get("ultravox_batch_ids"):
+        try:
+            from app.core.config import settings
+            if settings.ULTRAVOX_API_KEY:
+                batch_ids = campaign.get("ultravox_batch_ids", [])
+                if batch_ids:
+                    # Fetch latest batch stats from Ultravox
+                    ultravox_stats = {
+                        "pending": 0,
+                        "calling": 0,
+                        "completed": 0,
+                        "failed": 0,
+                    }
+                    all_completed = True
+                    
+                    # Get agent_id from campaign for batch lookup
+                    agent_id = campaign.get("agent_id")
+                    agent = db.get_agent(agent_id, current_user["client_id"]) if agent_id else None
+                    ultravox_agent_id = agent.get("ultravox_agent_id") if agent else None
+                    
+                    if not ultravox_agent_id:
+                        logger.warning(f"Cannot reconcile campaign {campaign_id}: agent {agent_id} has no ultravox_agent_id")
+                    else:
+                        for batch_id in batch_ids:
+                            try:
+                                batch_data = await ultravox_client.get_batch(ultravox_agent_id, batch_id)
+                                
+                                # Map Ultravox batch stats to our stats format
+                                # Ultravox provides: completedCount, totalCount, etc.
+                                ultravox_stats["completed"] += batch_data.get("completedCount", 0)
+                                # Calculate failed as total - completed (if failedCount not available)
+                                total_count = batch_data.get("totalCount", 0)
+                                completed_count = batch_data.get("completedCount", 0)
+                                ultravox_stats["failed"] += max(0, total_count - completed_count - batch_data.get("pendingCount", 0))
+                                ultravox_stats["pending"] += batch_data.get("pendingCount", 0) or (total_count - completed_count)
+                                
+                                # Check if batch is completed (all calls finished)
+                                if completed_count >= total_count and total_count > 0:
+                                    # All calls in batch are completed
+                                    pass
+                                else:
+                                    all_completed = False
+                            except Exception as e:
+                                logger.warning(f"Failed to fetch batch {batch_id} from Ultravox: {e}")
+                                all_completed = False
+                    
+                    # Update campaign stats with live Ultravox data
+                    db.update(
+                        "campaigns",
+                        {"id": campaign_id},
+                        {"stats": ultravox_stats},
+                    )
+                    
+                    # If all batches are completed, update campaign status
+                    if all_completed and campaign_status != "completed":
+                        db.update(
+                            "campaigns",
+                            {"id": campaign_id},
+                            {
+                                "status": "completed",
+                                "updated_at": datetime.utcnow().isoformat(),
+                            },
+                        )
+                        campaign["status"] = "completed"
+                    
+                    campaign["stats"] = ultravox_stats
+        except Exception as e:
+            # Log error but don't fail the request - return cached stats
+            logger.warning(f"Failed to reconcile campaign {campaign_id} with Ultravox: {e}")
+    else:
+        # For non-active campaigns, just update local stats
+        db.update_campaign_stats(campaign_id)
+        campaign = db.get_campaign(campaign_id, current_user["client_id"])
     
     return {
         "data": CampaignResponse(**campaign),

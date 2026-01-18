@@ -3,9 +3,10 @@ JWT Authentication and Authorization - Clerk ONLY
 """
 import jwt  # PyJWT library
 from typing import Optional, Dict, Any
-from fastapi import Header, HTTPException
+from fastapi import Header, HTTPException, Request
 import httpx
 import logging
+import secrets
 from app.core.config import settings
 from app.core.exceptions import UnauthorizedError, ForbiddenError
 from app.core.debug_logging import debug_logger
@@ -299,4 +300,40 @@ def require_role(required_roles: list[str]):
             return await func(*args, **kwargs)
         return wrapper
     return decorator
+
+
+async def verify_ultravox_signature(request: Request) -> bool:
+    """
+    Verify X-Tool-Secret header for Ultravox tool callbacks.
+    Uses secrets.compare_digest to prevent timing attacks.
+    
+    Raises HTTPException(403) if verification fails.
+    """
+    tool_secret = request.headers.get("X-Tool-Secret")
+    
+    if not tool_secret:
+        logger.warning("Missing X-Tool-Secret header in tool callback request")
+        raise HTTPException(
+            status_code=403,
+            detail="Missing X-Tool-Secret header"
+        )
+    
+    expected_secret = settings.ULTRAVOX_TOOL_SECRET
+    
+    if not expected_secret:
+        logger.error("ULTRAVOX_TOOL_SECRET not configured in settings")
+        raise HTTPException(
+            status_code=500,
+            detail="Tool secret not configured"
+        )
+    
+    # Use secrets.compare_digest to prevent timing attacks
+    if not secrets.compare_digest(tool_secret, expected_secret):
+        logger.warning("Invalid X-Tool-Secret header in tool callback request")
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid X-Tool-Secret header"
+        )
+    
+    return True
 

@@ -97,6 +97,18 @@ async def get_dashboard_stats(
     completed_calls = sum(1 for c in filtered_calls if c.get("status") == "completed")
     failed_calls = sum(1 for c in filtered_calls if c.get("status") == "failed")
     
+    # Calculate success rate (only for completed calls with analysis)
+    completed_with_analysis = [c for c in filtered_calls if c.get("status") == "completed" and c.get("analysis_status") == "completed"]
+    successful_calls = sum(1 for c in completed_with_analysis if c.get("is_success") is True)
+    success_rate = (successful_calls / len(completed_with_analysis) * 100) if completed_with_analysis else 0
+    
+    # Calculate sentiment distribution
+    sentiment_counts = {
+        "positive": sum(1 for c in completed_with_analysis if c.get("sentiment") == "positive"),
+        "neutral": sum(1 for c in completed_with_analysis if c.get("sentiment") == "neutral"),
+        "negative": sum(1 for c in completed_with_analysis if c.get("sentiment") == "negative"),
+    }
+    
     # Calculate duration statistics
     durations = [c.get("duration_seconds") for c in filtered_calls if c.get("duration_seconds") is not None]
     average_duration_seconds = sum(durations) / len(durations) if durations else 0
@@ -165,6 +177,9 @@ async def get_dashboard_stats(
             "completed": completed_calls,
             "failed": failed_calls,
             "average_duration_seconds": int(average_duration_seconds),
+            "success_rate": round(success_rate, 2),  # Success rate percentage
+            "successful_calls": successful_calls,
+            "sentiment": sentiment_counts,
         },
         "campaigns": {
             "total": total_campaigns,

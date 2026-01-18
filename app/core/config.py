@@ -90,12 +90,18 @@ class Settings(BaseSettings):
     STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "")
     TELNYX_API_KEY: str = os.getenv("TELNYX_API_KEY", "")
     ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+    
+    # Knowledge Base Proxy Settings
+    KB_QUERY_SECRET: str = os.getenv("KB_QUERY_SECRET", "")  # Legacy: Secret key for /kb/query endpoint (bypasses Clerk)
+    ULTRAVOX_TOOL_SECRET: str = os.getenv("ULTRAVOX_TOOL_SECRET", "")  # Secret for Ultravox tool callbacks (X-Tool-Secret header)
     
     # Webhooks
     ULTRAVOX_WEBHOOK_SECRET: str = os.getenv("ULTRAVOX_WEBHOOK_SECRET", "")
     STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")
     TELNYX_WEBHOOK_SECRET: str = os.getenv("TELNYX_WEBHOOK_SECRET", "")
     WEBHOOK_SIGNING_SECRET: str = os.getenv("WEBHOOK_SIGNING_SECRET", "")
+    WEBHOOK_BASE_URL: str = os.getenv("WEBHOOK_BASE_URL", "")  # Base URL for webhook endpoints (e.g., https://api.truedy.ai)
     
     # Logging
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")

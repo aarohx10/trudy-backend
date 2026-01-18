@@ -87,11 +87,15 @@ class ProviderError(TrudyException):
         message: str,
         http_status: Optional[int] = None,
         retry_after: Optional[int] = None,
+        details: Optional[Dict[str, Any]] = None,
     ):
-        details = {"provider": provider}
+        error_details = {"provider": provider}
         if http_status:
-            details["httpStatus"] = http_status
+            error_details["httpStatus"] = http_status
         if retry_after:
-            details["retry_after"] = retry_after
-        super().__init__("provider_error", message, 502, details)
+            error_details["retry_after"] = retry_after
+        # Include raw provider response details if provided
+        if details:
+            error_details["provider_details"] = details
+        super().__init__("provider_error", message, 502, error_details)
 

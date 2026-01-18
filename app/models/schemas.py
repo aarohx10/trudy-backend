@@ -592,3 +592,53 @@ class ToolResponse(BaseModel):
     created_at: datetime
     updated_at: Optional[datetime] = None
 
+
+# ============================================
+# Subscription Tier Models
+# ============================================
+
+class SubscriptionTierCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=50, pattern=r"^[a-z0-9_]+$")
+    display_name: str = Field(..., min_length=1, max_length=100)
+    description: Optional[str] = Field(None, max_length=500)
+    price_usd: float = Field(..., gt=0)
+    price_cents: int = Field(..., gt=0)
+    minutes_allowance: int = Field(..., ge=0)
+    initial_credits: int = Field(default=0, ge=0)
+    stripe_price_id: Optional[str] = None
+    stripe_product_id: Optional[str] = None
+    is_active: bool = Field(default=True)
+    display_order: int = Field(default=0)
+    features: Optional[List[str]] = Field(default=[])
+
+
+class SubscriptionTierUpdate(BaseModel):
+    display_name: Optional[str] = Field(None, min_length=1, max_length=100)
+    description: Optional[str] = Field(None, max_length=500)
+    price_usd: Optional[float] = Field(None, gt=0)
+    price_cents: Optional[int] = Field(None, gt=0)
+    minutes_allowance: Optional[int] = Field(None, ge=0)
+    initial_credits: Optional[int] = Field(None, ge=0)
+    stripe_price_id: Optional[str] = None
+    stripe_product_id: Optional[str] = None
+    is_active: Optional[bool] = None
+    display_order: Optional[int] = None
+    features: Optional[List[str]] = None
+
+
+class SubscriptionTierResponse(BaseModel):
+    id: str
+    name: str
+    display_name: str
+    description: Optional[str] = None
+    price_usd: float
+    price_cents: int
+    minutes_allowance: int
+    initial_credits: int
+    stripe_price_id: Optional[str] = None
+    stripe_product_id: Optional[str] = None
+    is_active: bool
+    display_order: int
+    features: List[str]
+    created_at: datetime
+    updated_at: datetime

@@ -62,6 +62,21 @@ async def lifespan(app: FastAPI):
             "base_url": settings.ULTRAVOX_BASE_URL,
             "key_length": len(settings.ULTRAVOX_API_KEY)
         })
+        
+        # Auto-register webhook with Ultravox
+        if settings.WEBHOOK_BASE_URL and settings.ULTRAVOX_WEBHOOK_SECRET:
+            try:
+                from app.services.ultravox import ultravox_client
+                webhook_id = await ultravox_client.ensure_webhook_registration()
+                if webhook_id:
+                    logger.info(f"✅ Webhook registered with Ultravox: {webhook_id}")
+                    debug_logger.log_step("WEBHOOK_REGISTRATION", "Webhook registered", {"webhook_id": webhook_id})
+                else:
+                    logger.warning("⚠️  Failed to register webhook with Ultravox")
+            except Exception as e:
+                logger.error(f"⚠️  Error during webhook registration: {e}", exc_info=True)
+        else:
+            logger.warning("⚠️  WEBHOOK_BASE_URL or ULTRAVOX_WEBHOOK_SECRET not configured - webhooks will not be auto-registered")
     else:
         logger.warning("⚠️  Ultravox API Key: NOT CONFIGURED - Voice and Agent syncing will be disabled")
         logger.warning("⚠️  Please set ULTRAVOX_API_KEY in your .env file")
@@ -281,6 +296,46 @@ async def cors_debug():
     
     debug_logger.log_response("GET", "/api/v1/debug/cors", 200, context=debug_info)
     return debug_info
+
+
+# Real-time Event Streaming (WebSocket/SSE placeholder)
+# TODO: Implement full WebSocket or SSE support for streaming Ultravox tool-use events
+@app.get("/api/v1/streams/calls/{call_id}")
+async def stream_call_events(
+    call_id: str,
+    current_user: dict = None,  # TODO: Add authentication dependency
+):
+    """
+    Placeholder for real-time event streaming.
+    
+    Future implementation should:
+    1. Stream incoming Ultravox tool-use events (from webhooks) to the frontend
+    2. Allow frontend to show "Agent is thinking..." or "Agent is calling Tool X" in real-time
+    3. Support WebSocket or Server-Sent Events (SSE)
+    
+    Current status: Returns a placeholder response indicating the feature is planned.
+    """
+    from fastapi.responses import JSONResponse
+    
+    return JSONResponse(
+        status_code=501,  # Not Implemented
+        content={
+            "error": {
+                "code": "not_implemented",
+                "message": "Real-time event streaming is planned but not yet implemented",
+                "details": {
+                    "call_id": call_id,
+                    "feature": "WebSocket/SSE streaming for Ultravox tool-use events",
+                    "planned_features": [
+                        "Stream tool-use events in real-time",
+                        "Show agent thinking status",
+                        "Display tool execution progress",
+                        "Webhook-to-WebSocket bridge",
+                    ],
+                },
+            }
+        },
+    )
 
 
 # Include API routes
