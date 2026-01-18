@@ -470,161 +470,76 @@ async def list_voices(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
     background_tasks: BackgroundTasks = BackgroundTasks(),
+    ownership: Optional[str] = Query("public", description="Filter by ownership: 'public' or 'private'"),
 ):
     """
-    List voices - returns what is in the DB immediately.
-    Use /voices/{voice_id}/sync or /voices/sync-from-ultravox for syncing with Ultravox.
+    List voices - fetches directly from Ultravox every time.
+    Simple and straightforward - no database, no sync, just get voices from Ultravox.
     """
     request_id = getattr(request.state, "request_id", None)
     client_id = current_user.get("client_id")
     user_id = current_user.get("user_id")
     
     try:
-        logger.info(f"[VOICES] [LIST] Starting voice list request | client_id={client_id} | user_id={user_id} | request_id={request_id}")
+        logger.info(f"[VOICES] [LIST] Fetching voices from Ultravox | client_id={client_id} | ownership={ownership} | request_id={request_id}")
         
-        db = DatabaseService(current_user["token"])
-        db.set_auth(current_user["token"])
+        # Check if Ultravox is configured
+        if not settings.ULTRAVOX_API_KEY:
+            error_msg = "Ultravox API key not configured"
+            logger.error(f"[VOICES] [LIST] {error_msg} | client_id={client_id} | request_id={request_id}")
+            raise ValidationError(error_msg)
         
-        # Get voices from database - return immediately without polling
-        # #region agent log
-        import json
-        try:
-            with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
-                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"voices.py:333","message":"About to query database","data":{"client_id":current_user["client_id"]},"timestamp":int(__import__("time").time()*1000)})+"\n")
-        except: pass
-        # #endregion
+        # Fetch voices directly from Ultravox - SIMPLE!
+        ultravox_voices = await ultravox_client.list_voices(ownership=ownership)
         
-        voices = db.select("voices", {"client_id": current_user["client_id"]}, "created_at")
+        logger.info(f"[VOICES] [LIST] Fetched {len(ultravox_voices)} voices from Ultravox | request_id={request_id}")
         
-        # Auto-sync if database is empty and Ultravox is configured
-        if len(voices) == 0:
-            if not settings.ULTRAVOX_API_KEY:
-                logger.warning(f"[VOICES] [LIST] Database empty but ULTRAVOX_API_KEY not configured | client_id={client_id} | request_id={request_id}")
-            else:
-                logger.info(f"[VOICES] [LIST] Database empty, attempting auto-sync | client_id={client_id} | request_id={request_id} | has_api_key=True")
-            # #region agent log
+        # Convert Ultravox voices to our response format
+        voices_data = []
+        for uv_voice in ultravox_voices:
             try:
-                with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
-                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"M","location":"voices.py:340","message":"Auto-sync triggered - database empty","data":{"client_id":client_id},"timestamp":int(__import__("time").time()*1000)})+"\n")
-            except: pass
-            # #endregion
-            try:
-                # Fetch public voices from Ultravox
-                ultravox_voices = await ultravox_client.list_voices(ownership="public")
-                logger.info(f"[VOICES] [LIST] Auto-sync fetched {len(ultravox_voices)} voices from Ultravox | request_id={request_id}")
-                # #region agent log
-                try:
-                    with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"N","location":"voices.py:347","message":"Auto-sync Ultravox response","data":{"ultravox_voices_count":len(ultravox_voices)},"timestamp":int(__import__("time").time()*1000)})+"\n")
-                except: pass
-                # #endregion
+                # Extract provider_voice_id from definition
+                definition = uv_voice.get("definition", {})
+                provider_voice_id = None
+                provider_name = uv_voice.get("provider", "elevenlabs").lower()
                 
-                # Import voices into database
-                imported = 0
-                for uv_voice in ultravox_voices[:10]:  # Limit to first 10 for auto-sync
-                    try:
-                        ultravox_voice_id = uv_voice.get("voiceId")
-                        provider_voice_id = uv_voice.get("provider_voice_id")
-                        provider_name = uv_voice.get("provider", "elevenlabs")
-                        
-                        if not provider_voice_id:
-                            continue
-                        
-                        # Check if already exists
-                        existing = db.select_one(
-                            "voices",
-                            {
-                                "client_id": current_user["client_id"],
-                                "ultravox_voice_id": ultravox_voice_id
-                            }
-                        )
-                        if existing:
-                            continue
-                        
-                        # Import voice
-                        voice_id = str(uuid.uuid4())
-                        now = datetime.utcnow()
-                        voice_record = {
-                            "id": voice_id,
-                            "client_id": current_user["client_id"],
-                            "name": uv_voice.get("name", "Untitled Voice"),
-                            "provider": provider_name,
-                            "type": "reference",
-                            "language": uv_voice.get("primaryLanguage", "en-US") or "en-US",
-                            "status": "active",
-                            "provider_voice_id": provider_voice_id,
-                            "ultravox_voice_id": ultravox_voice_id,
-                            "created_at": now.isoformat(),
-                            "updated_at": now.isoformat(),
-                        }
-                        if uv_voice.get("description"):
-                            voice_record["description"] = uv_voice.get("description")
-                        definition = uv_voice.get("definition", {})
-                        if definition:
-                            voice_record["provider_settings"] = definition
-                        
-                        db.insert("voices", voice_record)
-                        imported += 1
-                    except Exception as e:
-                        logger.error(f"[VOICES] [LIST] Auto-sync failed to import voice: {e}", exc_info=True)
+                if "elevenLabs" in definition:
+                    provider_voice_id = definition["elevenLabs"].get("voiceId")
+                elif "cartesia" in definition:
+                    provider_voice_id = definition["cartesia"].get("voiceId")
+                elif "lmnt" in definition:
+                    provider_voice_id = definition["lmnt"].get("voiceId")
+                elif "google" in definition:
+                    provider_voice_id = definition["google"].get("voiceId")
                 
-                logger.info(f"[VOICES] [LIST] Auto-sync imported {imported} voices | request_id={request_id}")
-                # #region agent log
-                try:
-                    with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"O","location":"voices.py:390","message":"Auto-sync import complete","data":{"imported":imported},"timestamp":int(__import__("time").time()*1000)})+"\n")
-                except: pass
-                # #endregion
+                # Skip if no provider_voice_id (generic voices)
+                if not provider_voice_id:
+                    continue
                 
-                # Re-query database after import
-                voices = db.select("voices", {"client_id": current_user["client_id"]}, "created_at")
+                # Map to our VoiceResponse format
+                voice_data = {
+                    "id": uv_voice.get("voiceId"),  # Use Ultravox voice ID as our ID
+                    "client_id": client_id,
+                    "name": uv_voice.get("name", "Untitled Voice"),
+                    "provider": provider_name,
+                    "type": "reference",
+                    "language": uv_voice.get("primaryLanguage", "en-US") or "en-US",
+                    "status": "active",
+                    "provider_voice_id": provider_voice_id,
+                    "ultravox_voice_id": uv_voice.get("voiceId"),
+                    "created_at": datetime.utcnow(),
+                    "updated_at": datetime.utcnow(),
+                }
+                
+                if uv_voice.get("description"):
+                    voice_data["description"] = uv_voice.get("description")
+                
+                voices_data.append(VoiceResponse(**voice_data))
             except Exception as e:
-                error_msg = f"Auto-sync failed: {str(e)}"
-                logger.error(f"[VOICES] [LIST] {error_msg} | client_id={client_id} | request_id={request_id}", exc_info=True)
-                # Log error to database
-                background_tasks.add_task(
-                    log_to_database,
-                    source="backend",
-                    level="ERROR",
-                    category="voices_auto_sync",
-                    message=error_msg,
-                    request_id=request_id,
-                    client_id=client_id,
-                    user_id=user_id,
-                    endpoint="/api/v1/voices",
-                    method="GET",
-                    status_code=500,
-                    error_details={
-                        "error_type": type(e).__name__,
-                        "error_message": str(e),
-                        "traceback": traceback.format_exc(),
-                    },
-                )
-                # #region agent log
-                try:
-                    with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"P","location":"voices.py:579","message":"Auto-sync error","data":{"error":str(e),"error_type":type(e).__name__},"timestamp":int(__import__("time").time()*1000)})+"\n")
-                except: pass
-                # #endregion
+                logger.warning(f"[VOICES] [LIST] Failed to process voice {uv_voice.get('voiceId')}: {e}")
+                continue
         
-        # #region agent log
-        try:
-            with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
-                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"G","location":"voices.py:335","message":"Database query result","data":{"voice_count":len(voices),"voices_sample":voices[:2] if voices else []},"timestamp":int(__import__("time").time()*1000)})+"\n")
-        except: pass
-        # #endregion
-        
-        # Log detailed information
-        voice_count = len(voices)
-        voice_statuses = {}
-        voice_providers = {}
-        for voice in voices:
-            status = voice.get("status", "unknown")
-            provider = voice.get("provider", "unknown")
-            voice_statuses[status] = voice_statuses.get(status, 0) + 1
-            voice_providers[provider] = voice_providers.get(provider, 0) + 1
-        
-        logger.info(f"[VOICES] [LIST] Success | found={voice_count} voices | client_id={client_id} | request_id={request_id} | statuses={voice_statuses} | providers={voice_providers}")
+        logger.info(f"[VOICES] [LIST] Returning {len(voices_data)} voices | request_id={request_id}")
         
         # Log to database
         background_tasks.add_task(
@@ -632,35 +547,25 @@ async def list_voices(
             source="backend",
             level="INFO",
             category="voices_list",
-            message=f"Listed {voice_count} voices",
+            message=f"Listed {len(voices_data)} voices from Ultravox",
             request_id=request_id,
             client_id=client_id,
             user_id=user_id,
             endpoint="/api/v1/voices",
             method="GET",
             context={
-                "voice_count": voice_count,
-                "statuses": voice_statuses,
-                "providers": voice_providers,
+                "voice_count": len(voices_data),
+                "ownership": ownership,
             },
         )
         
-        response_data = {
-            "data": [VoiceResponse(**voice) for voice in voices],
+        return {
+            "data": voices_data,
             "meta": ResponseMeta(
                 request_id=request_id or str(uuid.uuid4()),
                 ts=datetime.utcnow(),
             ),
         }
-        
-        # #region agent log
-        try:
-            with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
-                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"H","location":"voices.py:341","message":"list_voices response prepared","data":{"response_data_count":len(response_data.get("data",[])),"response_keys":list(response_data.keys())},"timestamp":int(__import__("time").time()*1000)})+"\n")
-        except: pass
-        # #endregion
-        
-        return response_data
     except Exception as e:
         error_msg = f"Failed to list voices: {str(e)}"
         logger.error(f"[VOICES] [LIST] Error | {error_msg} | client_id={client_id} | request_id={request_id}", exc_info=True)
