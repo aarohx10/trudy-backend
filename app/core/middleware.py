@@ -86,12 +86,21 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             },
         )
         
+        # Skip logging for high-frequency endpoints that don't need tracking
+        skip_logging_endpoints = [
+            "/api/v1/auth/me",  # Clerk auth check - too frequent
+            "/health",  # Health checks
+        ]
+        
+        should_log = not any(request.url.path == endpoint for endpoint in skip_logging_endpoints)
+        
         # Log to database (using background tasks if available)
-        background_tasks = getattr(request.state, "background_tasks", None)
-        if background_tasks:
-            log_request(request, background_tasks, request_body)
-        else:
-            log_request(request, None, request_body)
+        if should_log:
+            background_tasks = getattr(request.state, "background_tasks", None)
+            if background_tasks:
+                log_request(request, background_tasks, request_body)
+            else:
+                log_request(request, None, request_body)
         
         response = await call_next(request)
         
@@ -149,11 +158,20 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             },
         )
         
+        # Skip logging for high-frequency endpoints that don't need tracking
+        skip_logging_endpoints = [
+            "/api/v1/auth/me",  # Clerk auth check - too frequent
+            "/health",  # Health checks
+        ]
+        
+        should_log = not any(request.url.path == endpoint for endpoint in skip_logging_endpoints)
+        
         # Log to database
-        if background_tasks:
-            log_response(request, response.status_code, duration_ms, background_tasks, response_body)
-        else:
-            log_response(request, response.status_code, duration_ms, None, response_body)
+        if should_log:
+            if background_tasks:
+                log_response(request, response.status_code, duration_ms, background_tasks, response_body)
+            else:
+                log_response(request, response.status_code, duration_ms, None, response_body)
         
         return response
 

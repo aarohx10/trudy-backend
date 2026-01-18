@@ -1,9 +1,9 @@
 """
 Voice Endpoints
 """
-from fastapi import APIRouter, Header, Depends, Query
+from fastapi import APIRouter, Header, Depends, Query, Request
 from fastapi.responses import StreamingResponse
-from starlette.requests import Request
+from fastapi.background import BackgroundTasks
 from typing import Optional, List
 from datetime import datetime
 import uuid
@@ -11,6 +11,7 @@ import json
 import logging
 import httpx
 import os
+import traceback
 
 from app.core.auth import get_current_user
 from app.core.database import DatabaseService
@@ -19,6 +20,7 @@ from app.core.exceptions import NotFoundError, ValidationError, PaymentRequiredE
 from app.core.idempotency import check_idempotency_key, store_idempotency_response
 from app.core.events import emit_voice_training_started, emit_voice_created
 from app.core.encryption import decrypt_api_key
+from app.core.db_logging import log_to_database
 from app.services.ultravox import ultravox_client
 from app.models.schemas import (
     VoiceCreate,
@@ -81,9 +83,31 @@ async def create_voice(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
     idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
     """Create voice (native clone or external reference)"""
+    request_id = getattr(request.state, "request_id", None)
+    client_id = current_user.get("client_id")
+    user_id = current_user.get("user_id")
+    
+    logger.info(f"[VOICES] [CREATE] Starting voice creation | name={voice_data.name} | strategy={voice_data.strategy} | client_id={client_id} | request_id={request_id}")
+    
     if current_user["role"] not in ["client_admin", "agency_admin"]:
+        error_msg = "Insufficient permissions for voice creation"
+        logger.warning(f"[VOICES] [CREATE] Permission denied | client_id={client_id} | user_id={user_id} | request_id={request_id}")
+        background_tasks.add_task(
+            log_to_database,
+            source="backend",
+            level="WARNING",
+            category="voices_create",
+            message=error_msg,
+            request_id=request_id,
+            client_id=client_id,
+            user_id=user_id,
+            endpoint="/api/v1/voices",
+            method="POST",
+            status_code=403,
+        )
         raise ForbiddenError("Insufficient permissions")
     
     # Check idempotency key
@@ -117,11 +141,28 @@ async def create_voice(
         if existing_voices and len(existing_voices) > 0:
             # Return existing voice instead of creating duplicate
             existing_voice = existing_voices[0]
-            logger.info(f"Voice with provider_voice_id {voice_data.source.provider_voice_id} already exists: {existing_voice['id']}")
+            logger.info(f"[VOICES] [CREATE] Voice already exists | provider_voice_id={voice_data.source.provider_voice_id} | existing_id={existing_voice['id']} | request_id={request_id}")
+            background_tasks.add_task(
+                log_to_database,
+                source="backend",
+                level="INFO",
+                category="voices_create",
+                message=f"Voice creation skipped - already exists",
+                request_id=request_id,
+                client_id=client_id,
+                user_id=user_id,
+                endpoint="/api/v1/voices",
+                method="POST",
+                context={
+                    "provider_voice_id": voice_data.source.provider_voice_id,
+                    "existing_voice_id": existing_voice['id'],
+                    "strategy": voice_data.strategy,
+                },
+            )
             return {
                 "data": VoiceResponse(**existing_voice),
                 "meta": ResponseMeta(
-                    request_id=str(uuid.uuid4()),
+                    request_id=request_id or str(uuid.uuid4()),
                     ts=datetime.utcnow(),
                 ),
             }
@@ -168,12 +209,14 @@ async def create_voice(
     
     # Insert temporary record
     db.insert("voices", voice_db_record)
+    logger.info(f"[VOICES] [CREATE] Voice record created (temporary) | voice_id={voice_id} | name={voice_data.name} | strategy={voice_data.strategy} | provider={provider} | request_id={request_id}")
     
     # Step 2: Call Ultravox API
     ultravox_voice_id = None
     provider_error_details = None
     
     try:
+        logger.info(f"[VOICES] [CREATE] Calling Ultravox API | voice_id={voice_id} | strategy={voice_data.strategy} | request_id={request_id}")
         # Generate presigned URLs for Ultravox (for native voices)
         training_samples = []
         if voice_data.strategy == "native" and voice_data.source.samples:
@@ -212,8 +255,11 @@ async def create_voice(
             ultravox_response = await ultravox_client.create_voice(ultravox_data)
             if ultravox_response and ultravox_response.get("id"):
                 ultravox_voice_id = ultravox_response.get("id")
+                logger.info(f"[VOICES] [CREATE] Ultravox voice created | voice_id={voice_id} | ultravox_id={ultravox_voice_id} | request_id={request_id}")
             else:
-                raise ValueError("Ultravox response missing voice ID")
+                error_msg = "Ultravox response missing voice ID"
+                logger.error(f"[VOICES] [CREATE] {error_msg} | voice_id={voice_id} | response={ultravox_response} | request_id={request_id}")
+                raise ValueError(error_msg)
         else:
             # External voices can be created without Ultravox (optional)
             if settings.ULTRAVOX_API_KEY:
@@ -227,6 +273,7 @@ async def create_voice(
                 ultravox_response = await ultravox_client.create_voice(ultravox_data)
                 if ultravox_response and ultravox_response.get("id"):
                     ultravox_voice_id = ultravox_response.get("id")
+                    logger.info(f"[VOICES] [CREATE] Ultravox voice created (reference) | voice_id={voice_id} | ultravox_id={ultravox_voice_id} | request_id={request_id}")
         
         # Step 3: Update record to 'active' with ultravox_id (success path)
         update_data = {
@@ -238,16 +285,44 @@ async def create_voice(
         
         db.update("voices", {"id": voice_id}, update_data)
         voice_db_record.update(update_data)
+        logger.info(f"[VOICES] [CREATE] Voice status updated | voice_id={voice_id} | status={update_data.get('status')} | ultravox_id={ultravox_voice_id} | request_id={request_id}")
         
     except Exception as e:
         # Step 4: Rollback - delete the temporary record and return error
-        logger.error(f"Failed to create voice in Ultravox: {e}", exc_info=True)
+        error_msg = f"Failed to create voice in Ultravox: {str(e)}"
+        logger.error(f"[VOICES] [CREATE] {error_msg} | voice_id={voice_id} | strategy={voice_data.strategy} | request_id={request_id}", exc_info=True)
         
         # Extract error details if it's a ProviderError
         if isinstance(e, ProviderError):
             provider_error_details = e.details.get("provider_details", {})
             # Delete the temporary record
             db.delete("voices", {"id": voice_id, "client_id": current_user["client_id"]})
+            logger.warning(f"[VOICES] [CREATE] Voice creation rolled back (ProviderError) | voice_id={voice_id} | request_id={request_id}")
+            
+            # Log error to database
+            background_tasks.add_task(
+                log_to_database,
+                source="backend",
+                level="ERROR",
+                category="voices_create",
+                message=f"Voice creation failed in Ultravox: {str(e)}",
+                request_id=request_id,
+                client_id=client_id,
+                user_id=user_id,
+                endpoint="/api/v1/voices",
+                method="POST",
+                status_code=e.details.get("httpStatus", 500),
+                error_details={
+                    "error_type": "ProviderError",
+                    "provider": "ultravox",
+                    "error_message": str(e),
+                    "provider_details": provider_error_details,
+                    "voice_id": voice_id,
+                    "strategy": voice_data.strategy,
+                    "traceback": traceback.format_exc(),
+                },
+            )
+            
             # Re-raise with full error details
             raise ProviderError(
                 provider="ultravox",
@@ -258,10 +333,55 @@ async def create_voice(
         else:
             # Delete the temporary record
             db.delete("voices", {"id": voice_id, "client_id": current_user["client_id"]})
+            logger.warning(f"[VOICES] [CREATE] Voice creation rolled back (Exception) | voice_id={voice_id} | request_id={request_id}")
+            
             # Raise appropriate error
             error_msg = str(e)
             if not settings.ULTRAVOX_API_KEY and voice_data.strategy == "native":
-                raise ValidationError("Ultravox API key is not configured. Native voice cloning requires Ultravox.")
+                error_detail = "Ultravox API key is not configured. Native voice cloning requires Ultravox."
+                background_tasks.add_task(
+                    log_to_database,
+                    source="backend",
+                    level="ERROR",
+                    category="voices_create",
+                    message=error_detail,
+                    request_id=request_id,
+                    client_id=client_id,
+                    user_id=user_id,
+                    endpoint="/api/v1/voices",
+                    method="POST",
+                    status_code=400,
+                    error_details={
+                        "error_type": "ValidationError",
+                        "error_message": error_detail,
+                        "voice_id": voice_id,
+                        "strategy": voice_data.strategy,
+                    },
+                )
+                raise ValidationError(error_detail)
+            
+            # Log error to database
+            background_tasks.add_task(
+                log_to_database,
+                source="backend",
+                level="ERROR",
+                category="voices_create",
+                message=f"Voice creation failed: {error_msg}",
+                request_id=request_id,
+                client_id=client_id,
+                user_id=user_id,
+                endpoint="/api/v1/voices",
+                method="POST",
+                status_code=500,
+                error_details={
+                    "error_type": type(e).__name__,
+                    "error_message": error_msg,
+                    "voice_id": voice_id,
+                    "strategy": voice_data.strategy,
+                    "traceback": traceback.format_exc(),
+                },
+            )
+            
             raise ProviderError(
                 provider="ultravox",
                 message=f"Failed to create voice in Ultravox: {error_msg}",
@@ -295,13 +415,40 @@ async def create_voice(
             {"credits_balance": client["credits_balance"] - 50},
         )
     
+    logger.info(f"[VOICES] [CREATE] Voice creation successful | voice_id={voice_id} | name={voice_data.name} | status={voice_record.get('status')} | ultravox_id={ultravox_voice_id} | request_id={request_id}")
+    
     response_data = {
         "data": VoiceResponse(**voice_record),
         "meta": ResponseMeta(
-            request_id=str(uuid.uuid4()),
+            request_id=request_id or str(uuid.uuid4()),
             ts=datetime.utcnow(),
         ),
     }
+    
+    # Log success to database
+    background_tasks.add_task(
+        log_to_database,
+        source="backend",
+        level="INFO",
+        category="voices_create",
+        message=f"Voice created successfully: {voice_data.name}",
+        request_id=request_id,
+        client_id=client_id,
+        user_id=user_id,
+        endpoint="/api/v1/voices",
+        method="POST",
+        status_code=201,
+        context={
+            "voice_id": voice_id,
+            "voice_name": voice_data.name,
+            "strategy": voice_data.strategy,
+            "provider": provider,
+            "type": voice_type,
+            "status": voice_record.get("status"),
+            "ultravox_voice_id": ultravox_voice_id,
+            "provider_voice_id": voice_record.get("provider_voice_id"),
+        },
+    )
     
     # Store idempotency response
     if idempotency_key:
@@ -319,59 +466,166 @@ async def create_voice(
 
 @router.get("")
 async def list_voices(
+    request: Request,
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
     """
     List voices - returns what is in the DB immediately.
     Use /voices/{voice_id}/sync or /voices/sync-from-ultravox for syncing with Ultravox.
     """
-    db = DatabaseService(current_user["token"])
-    db.set_auth(current_user["token"])
+    request_id = getattr(request.state, "request_id", None)
+    client_id = current_user.get("client_id")
+    user_id = current_user.get("user_id")
     
-    # Get voices from database - return immediately without polling
-    voices = db.select("voices", {"client_id": current_user["client_id"]}, "created_at")
-    
-    return {
-        "data": [VoiceResponse(**voice) for voice in voices],
-        "meta": ResponseMeta(
-            request_id=str(uuid.uuid4()),
-            ts=datetime.utcnow(),
-        ),
-    }
+    try:
+        logger.info(f"[VOICES] [LIST] Starting voice list request | client_id={client_id} | user_id={user_id} | request_id={request_id}")
+        
+        db = DatabaseService(current_user["token"])
+        db.set_auth(current_user["token"])
+        
+        # Get voices from database - return immediately without polling
+        voices = db.select("voices", {"client_id": current_user["client_id"]}, "created_at")
+        
+        # Log detailed information
+        voice_count = len(voices)
+        voice_statuses = {}
+        voice_providers = {}
+        for voice in voices:
+            status = voice.get("status", "unknown")
+            provider = voice.get("provider", "unknown")
+            voice_statuses[status] = voice_statuses.get(status, 0) + 1
+            voice_providers[provider] = voice_providers.get(provider, 0) + 1
+        
+        logger.info(f"[VOICES] [LIST] Success | found={voice_count} voices | client_id={client_id} | request_id={request_id} | statuses={voice_statuses} | providers={voice_providers}")
+        
+        # Log to database
+        background_tasks.add_task(
+            log_to_database,
+            source="backend",
+            level="INFO",
+            category="voices_list",
+            message=f"Listed {voice_count} voices",
+            request_id=request_id,
+            client_id=client_id,
+            user_id=user_id,
+            endpoint="/api/v1/voices",
+            method="GET",
+            context={
+                "voice_count": voice_count,
+                "statuses": voice_statuses,
+                "providers": voice_providers,
+            },
+        )
+        
+        return {
+            "data": [VoiceResponse(**voice) for voice in voices],
+            "meta": ResponseMeta(
+                request_id=request_id or str(uuid.uuid4()),
+                ts=datetime.utcnow(),
+            ),
+        }
+    except Exception as e:
+        error_msg = f"Failed to list voices: {str(e)}"
+        logger.error(f"[VOICES] [LIST] Error | {error_msg} | client_id={client_id} | request_id={request_id}", exc_info=True)
+        
+        # Log error to database
+        background_tasks.add_task(
+            log_to_database,
+            source="backend",
+            level="ERROR",
+            category="voices_list",
+            message=error_msg,
+            request_id=request_id,
+            client_id=client_id,
+            user_id=user_id,
+            endpoint="/api/v1/voices",
+            method="GET",
+            status_code=500,
+            error_details={
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "traceback": traceback.format_exc(),
+            },
+        )
+        raise
 
 
 @router.post("/sync-from-ultravox")
 async def sync_voices_from_ultravox(
+    request: Request,
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
     ownership: Optional[str] = Query("public", description="Filter by ownership: 'public' or 'private'"),
     provider: Optional[List[str]] = Query(None, description="Filter by provider (e.g., 'eleven_labs', 'cartesia', 'lmnt', 'google')"),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
     """
     Sync pre-loaded voices from Ultravox into the local database.
     This imports public voices (pre-loaded voices) that exist in Ultravox but not in your database.
     """
+    request_id = getattr(request.state, "request_id", None)
+    client_id = current_user.get("client_id")
+    user_id = current_user.get("user_id")
+    
+    logger.info(f"[VOICES] [SYNC] Starting sync from Ultravox | client_id={client_id} | ownership={ownership} | provider={provider} | request_id={request_id}")
+    
     if current_user["role"] not in ["client_admin", "agency_admin"]:
+        error_msg = "Insufficient permissions for voice sync"
+        logger.warning(f"[VOICES] [SYNC] Permission denied | client_id={client_id} | user_id={user_id} | request_id={request_id}")
+        background_tasks.add_task(
+            log_to_database,
+            source="backend",
+            level="WARNING",
+            category="voices_sync",
+            message=error_msg,
+            request_id=request_id,
+            client_id=client_id,
+            user_id=user_id,
+            endpoint="/api/v1/voices/sync-from-ultravox",
+            method="POST",
+            status_code=403,
+        )
         raise ForbiddenError("Insufficient permissions")
     
     # Check if Ultravox is configured
     if not settings.ULTRAVOX_API_KEY:
+        error_msg = "Ultravox API key not configured"
+        logger.error(f"[VOICES] [SYNC] Configuration error | {error_msg} | client_id={client_id} | request_id={request_id}")
+        background_tasks.add_task(
+            log_to_database,
+            source="backend",
+            level="ERROR",
+            category="voices_sync",
+            message=error_msg,
+            request_id=request_id,
+            client_id=client_id,
+            user_id=user_id,
+            endpoint="/api/v1/voices/sync-from-ultravox",
+            method="POST",
+            status_code=500,
+        )
         raise ValidationError("Ultravox API key not configured. Please set ULTRAVOX_API_KEY environment variable.")
     
     db = DatabaseService(current_user["token"])
     db.set_auth(current_user["token"])
     
     try:
+        logger.info(f"[VOICES] [SYNC] Fetching voices from Ultravox | ownership={ownership} | provider={provider} | request_id={request_id}")
+        
         # Fetch voices from Ultravox (public voices are pre-loaded)
         ultravox_voices = await ultravox_client.list_voices(
             ownership=ownership,
             provider=provider
         )
         
+        logger.info(f"[VOICES] [SYNC] Fetched {len(ultravox_voices)} voices from Ultravox | request_id={request_id}")
+        
         imported_count = 0
         skipped_count = 0
         errors = []
+        skipped_reasons = {"no_provider_id": 0, "already_exists": 0}
         
         for uv_voice in ultravox_voices:
             try:
@@ -382,6 +636,8 @@ async def sync_voices_from_ultravox(
                 # Skip if no provider_voice_id (can't use generic voices as reference)
                 if not provider_voice_id:
                     skipped_count += 1
+                    skipped_reasons["no_provider_id"] += 1
+                    logger.debug(f"[VOICES] [SYNC] Skipping voice (no provider_id) | voice_id={ultravox_voice_id} | name={uv_voice.get('name')} | request_id={request_id}")
                     continue
                 
                 # Check if voice already exists (by ultravox_voice_id or provider_voice_id)
@@ -406,6 +662,8 @@ async def sync_voices_from_ultravox(
                 
                 if existing_by_ultravox or existing_by_provider:
                     skipped_count += 1
+                    skipped_reasons["already_exists"] += 1
+                    logger.debug(f"[VOICES] [SYNC] Skipping voice (already exists) | voice_id={ultravox_voice_id} | name={uv_voice.get('name')} | request_id={request_id}")
                     continue
                 
                 # Import voice into database
@@ -438,57 +696,180 @@ async def sync_voices_from_ultravox(
                 
                 db.insert("voices", voice_record)
                 imported_count += 1
+                logger.info(f"[VOICES] [SYNC] Imported voice | voice_id={voice_id} | ultravox_id={ultravox_voice_id} | name={voice_record['name']} | provider={provider_name} | request_id={request_id}")
                 
             except Exception as e:
-                logger.error(f"Failed to import voice {uv_voice.get('voiceId')}: {e}", exc_info=True)
-                errors.append({
+                error_detail = {
                     "voice_id": uv_voice.get("voiceId"),
                     "name": uv_voice.get("name"),
-                    "error": str(e)
-                })
+                    "error": str(e),
+                    "traceback": traceback.format_exc(),
+                }
+                logger.error(f"[VOICES] [SYNC] Failed to import voice | voice_id={uv_voice.get('voiceId')} | name={uv_voice.get('name')} | error={str(e)} | request_id={request_id}", exc_info=True)
+                errors.append(error_detail)
+        
+        # Log sync completion
+        logger.info(f"[VOICES] [SYNC] Sync completed | imported={imported_count} | skipped={skipped_count} | total={len(ultravox_voices)} | errors={len(errors)} | request_id={request_id}")
+        
+        # Log to database
+        background_tasks.add_task(
+            log_to_database,
+            source="backend",
+            level="INFO",
+            category="voices_sync",
+            message=f"Synced voices from Ultravox: {imported_count} imported, {skipped_count} skipped",
+            request_id=request_id,
+            client_id=client_id,
+            user_id=user_id,
+            endpoint="/api/v1/voices/sync-from-ultravox",
+            method="POST",
+            context={
+                "imported": imported_count,
+                "skipped": skipped_count,
+                "total_fetched": len(ultravox_voices),
+                "skipped_reasons": skipped_reasons,
+                "ownership_filter": ownership,
+                "provider_filter": provider,
+                "error_count": len(errors),
+            },
+        )
         
         return {
             "data": {
                 "imported": imported_count,
                 "skipped": skipped_count,
                 "total_fetched": len(ultravox_voices),
+                "skipped_reasons": skipped_reasons,
                 "errors": errors if errors else None,
             },
             "meta": ResponseMeta(
-                request_id=str(uuid.uuid4()),
+                request_id=request_id or str(uuid.uuid4()),
                 ts=datetime.utcnow(),
             ),
         }
         
     except Exception as e:
-        logger.error(f"Failed to sync voices from Ultravox: {e}", exc_info=True)
-        raise ValidationError(f"Failed to sync voices from Ultravox: {str(e)}", {"error": str(e)})
+        error_msg = f"Failed to sync voices from Ultravox: {str(e)}"
+        logger.error(f"[VOICES] [SYNC] Fatal error | {error_msg} | client_id={client_id} | request_id={request_id}", exc_info=True)
+        
+        # Log error to database
+        background_tasks.add_task(
+            log_to_database,
+            source="backend",
+            level="ERROR",
+            category="voices_sync",
+            message=error_msg,
+            request_id=request_id,
+            client_id=client_id,
+            user_id=user_id,
+            endpoint="/api/v1/voices/sync-from-ultravox",
+            method="POST",
+            status_code=500,
+            error_details={
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "traceback": traceback.format_exc(),
+            },
+        )
+        raise ValidationError(error_msg, {"error": str(e)})
 
 
 @router.get("/{voice_id}")
 async def get_voice(
     voice_id: str,
+    request: Request,
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
     """
     Get single voice - returns what is in the DB immediately.
     Use /voices/{voice_id}/sync for status reconciliation.
     """
-    db = DatabaseService(current_user["token"])
-    db.set_auth(current_user["token"])
+    request_id = getattr(request.state, "request_id", None)
+    client_id = current_user.get("client_id")
+    user_id = current_user.get("user_id")
     
-    voice = db.get_voice(voice_id, current_user["client_id"])
-    if not voice:
-        raise NotFoundError("voice", voice_id)
+    logger.info(f"[VOICES] [GET] Fetching voice | voice_id={voice_id} | client_id={client_id} | request_id={request_id}")
     
-    return {
-        "data": VoiceResponse(**voice),
-        "meta": ResponseMeta(
-            request_id=str(uuid.uuid4()),
-            ts=datetime.utcnow(),
-        ),
-    }
+    try:
+        db = DatabaseService(current_user["token"])
+        db.set_auth(current_user["token"])
+        
+        voice = db.get_voice(voice_id, current_user["client_id"])
+        if not voice:
+            error_msg = f"Voice not found: {voice_id}"
+            logger.warning(f"[VOICES] [GET] {error_msg} | client_id={client_id} | request_id={request_id}")
+            background_tasks.add_task(
+                log_to_database,
+                source="backend",
+                level="WARNING",
+                category="voices_get",
+                message=error_msg,
+                request_id=request_id,
+                client_id=client_id,
+                user_id=user_id,
+                endpoint=f"/api/v1/voices/{voice_id}",
+                method="GET",
+                status_code=404,
+            )
+            raise NotFoundError("voice", voice_id)
+        
+        logger.info(f"[VOICES] [GET] Voice found | voice_id={voice_id} | name={voice.get('name')} | status={voice.get('status')} | request_id={request_id}")
+        
+        # Log to database
+        background_tasks.add_task(
+            log_to_database,
+            source="backend",
+            level="INFO",
+            category="voices_get",
+            message=f"Retrieved voice: {voice.get('name')}",
+            request_id=request_id,
+            client_id=client_id,
+            user_id=user_id,
+            endpoint=f"/api/v1/voices/{voice_id}",
+            method="GET",
+            context={
+                "voice_id": voice_id,
+                "voice_name": voice.get("name"),
+                "status": voice.get("status"),
+                "provider": voice.get("provider"),
+                "type": voice.get("type"),
+            },
+        )
+        
+        return {
+            "data": VoiceResponse(**voice),
+            "meta": ResponseMeta(
+                request_id=request_id or str(uuid.uuid4()),
+                ts=datetime.utcnow(),
+            ),
+        }
+    except NotFoundError:
+        raise
+    except Exception as e:
+        error_msg = f"Failed to get voice: {str(e)}"
+        logger.error(f"[VOICES] [GET] {error_msg} | voice_id={voice_id} | client_id={client_id} | request_id={request_id}", exc_info=True)
+        background_tasks.add_task(
+            log_to_database,
+            source="backend",
+            level="ERROR",
+            category="voices_get",
+            message=error_msg,
+            request_id=request_id,
+            client_id=client_id,
+            user_id=user_id,
+            endpoint=f"/api/v1/voices/{voice_id}",
+            method="GET",
+            status_code=500,
+            error_details={
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "voice_id": voice_id,
+                "traceback": traceback.format_exc(),
+            },
+        )
+        raise
 
 
 @router.patch("/{voice_id}")
