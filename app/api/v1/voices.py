@@ -1332,8 +1332,8 @@ async def sync_voice_with_ultravox(
 @router.get("/{voice_id}/preview")
 async def preview_voice(
     voice_id: str,
-    text: Optional[str] = Query(None, description="Text to convert to speech for preview (not used with Ultravox preview)"),
     request: Request,
+    text: Optional[str] = Query(None, description="Text to convert to speech for preview (not used with Ultravox preview)"),
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
