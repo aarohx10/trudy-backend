@@ -486,13 +486,14 @@ async def list_voices(
     user_id = current_user.get("user_id")
     
     try:
-        # If source is 'custom', fetch from database
+        # 1. Initialize DB service
+        db = DatabaseService(current_user["token"])
+        db.set_auth(current_user["token"])
+        
+        # 2. Case: Fetch custom voices from database
         if source == "custom":
             logger.info(f"[VOICES] [LIST] Fetching custom voices from database | client_id={client_id} | request_id={request_id}")
             
-    db = DatabaseService(current_user["token"])
-    db.set_auth(current_user["token"])
-    
             # Query database for custom voices (type='custom' and client_id matches)
             custom_voices = db.select(
                 "voices",
@@ -569,36 +570,23 @@ async def list_voices(
                     "voice_count": len(voices_data),
                     "source": "custom",
                 },
-            )
-    
-    return {
-                "data": voices_data,
-        "meta": ResponseMeta(
-                    request_id=request_id or str(uuid.uuid4()),
-            ts=datetime.utcnow(),
-        ),
-    }
-        
-        # Default: Fetch from Ultravox (for Explore tab)
-        logger.info(f"[VOICES] [LIST] Fetching voices from Ultravox | client_id={client_id} | ownership={ownership} | source={source} | request_id={request_id}")
-        
-        # Check if Ultravox is configured
-        if not settings.ULTRAVOX_API_KEY:
-            error_msg = "Ultravox API key not configured"
-            logger.error(f"[VOICES] [LIST] {error_msg} | client_id={client_id} | request_id={request_id}")
-            raise ValidationError(error_msg)
-        
-        # Fetch voices directly from Ultravox - SIMPLE!
-        ultravox_voices = await ultravox_client.list_voices(ownership=ownership)
-        
-        logger.info(f"[VOICES] [LIST] Fetched {len(ultravox_voices)} voices from Ultravox | request_id={request_id}")
-        
-        # Convert Ultravox voices to our response format and save to database
-        voices_data = []
-        db = DatabaseService(current_user["token"])
-        db.set_auth(current_user["token"])
-        
-        for uv_voice in ultravox_voices:
+        # 3. Case: Fetch voices from Ultravox (Default or source='ultravox')
+        else:
+            logger.info(f"[VOICES] [LIST] Fetching voices from Ultravox | client_id={client_id} | ownership={ownership} | source={source} | request_id={request_id}")
+            
+            # Check if Ultravox is configured
+            if not settings.ULTRAVOX_API_KEY:
+                error_msg = "Ultravox API key not configured"
+                logger.error(f"[VOICES] [LIST] {error_msg} | client_id={client_id} | request_id={request_id}")
+                raise ValidationError(error_msg)
+            
+            # Fetch voices directly from Ultravox
+            ultravox_voices = await ultravox_client.list_voices(ownership=ownership)
+            
+            logger.info(f"[VOICES] [LIST] Fetched {len(ultravox_voices)} voices from Ultravox | request_id={request_id}")
+            
+            # Convert Ultravox voices to our response format and save to database
+            for uv_voice in ultravox_voices:
             try:
                 # Extract provider_voice_id from definition
                 definition = uv_voice.get("definition", {})
