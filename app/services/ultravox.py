@@ -1,5 +1,5 @@
 """
-Ultravox API Client
+Ultravox API Client + ElevenLabs Voice Cloning
 """
 import httpx
 import logging
@@ -9,6 +9,142 @@ from app.core.retry import retry_with_backoff
 from app.core.exceptions import ProviderError
 
 logger = logging.getLogger(__name__)
+
+
+class ElevenLabsClient:
+    """Client for ElevenLabs API - Voice Cloning"""
+    
+    def __init__(self):
+        self.base_url = "https://api.elevenlabs.io/v1"
+        self.api_key = settings.ELEVENLABS_API_KEY
+        if not self.api_key:
+            logger.warning("⚠️  ELEVENLABS_API_KEY is not set. Voice cloning will be disabled.")
+        else:
+            logger.info("✅ ElevenLabs client initialized")
+    
+    async def clone_voice(
+        self,
+        name: str,
+        audio_files: List[bytes],
+        description: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Clone a voice using ElevenLabs API.
+        
+        Args:
+            name: Name for the cloned voice
+            audio_files: List of audio file bytes (WAV, MP3, etc.)
+            description: Optional description for the voice
+        
+        Returns:
+            Dict with voice_id and other details from ElevenLabs
+        """
+        if not self.api_key:
+            raise ProviderError(
+                provider="elevenlabs",
+                message="ElevenLabs API key is not configured",
+                http_status=500,
+            )
+        
+        url = f"{self.base_url}/voices/add"
+        logger.info(f"[ELEVENLABS] Creating voice clone | name={name} | files_count={len(audio_files)}")
+        
+        async def _make_request():
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                # Build multipart form data
+                files = []
+                for i, audio_bytes in enumerate(audio_files):
+                    files.append(("files", (f"sample_{i}.mp3", audio_bytes, "audio/mpeg")))
+                
+                data = {"name": name}
+                if description:
+                    data["description"] = description
+                
+                response = await client.post(
+                    url,
+                    headers={"xi-api-key": self.api_key},
+                    data=data,
+                    files=files,
+                )
+                
+                logger.debug(f"[ELEVENLABS] Response | status_code={response.status_code}")
+                if response.status_code >= 400:
+                    error_text = response.text[:500] if response.text else "No response body"
+                    logger.error(f"[ELEVENLABS] Error | status={response.status_code} | response={error_text}")
+                response.raise_for_status()
+                return response.json()
+        
+        try:
+            result = await retry_with_backoff(_make_request)
+            voice_id = result.get("voice_id")
+            logger.info(f"[ELEVENLABS] Voice clone created | voice_id={voice_id} | name={name}")
+            return result
+        except httpx.HTTPStatusError as e:
+            error_detail = "Unknown error"
+            try:
+                error_body = e.response.json()
+                error_detail = error_body.get("detail", {}).get("message", str(e)) if isinstance(error_body.get("detail"), dict) else str(error_body.get("detail", e))
+            except:
+                error_detail = e.response.text[:200] if e.response.text else str(e)
+            
+            logger.error(f"[ELEVENLABS] Clone failed | status={e.response.status_code} | error={error_detail}")
+            raise ProviderError(
+                provider="elevenlabs",
+                message=f"ElevenLabs voice cloning failed: {error_detail}",
+                http_status=e.response.status_code,
+            )
+        except httpx.RequestError as e:
+            logger.error(f"[ELEVENLABS] Request error: {e}")
+            raise ProviderError(
+                provider="elevenlabs",
+                message=f"ElevenLabs API request failed: {e}",
+                http_status=502,
+            )
+    
+    async def get_voice(self, voice_id: str) -> Dict[str, Any]:
+        """Get voice details from ElevenLabs"""
+        if not self.api_key:
+            raise ProviderError(
+                provider="elevenlabs",
+                message="ElevenLabs API key is not configured",
+                http_status=500,
+            )
+        
+        url = f"{self.base_url}/voices/{voice_id}"
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                url,
+                headers={"xi-api-key": self.api_key},
+            )
+            response.raise_for_status()
+            return response.json()
+    
+    async def delete_voice(self, voice_id: str) -> bool:
+        """Delete a voice from ElevenLabs"""
+        if not self.api_key:
+            raise ProviderError(
+                provider="elevenlabs",
+                message="ElevenLabs API key is not configured",
+                http_status=500,
+            )
+        
+        url = f"{self.base_url}/voices/{voice_id}"
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.delete(
+                url,
+                headers={"xi-api-key": self.api_key},
+            )
+            if response.status_code == 200:
+                logger.info(f"[ELEVENLABS] Voice deleted | voice_id={voice_id}")
+                return True
+            logger.warning(f"[ELEVENLABS] Delete failed | voice_id={voice_id} | status={response.status_code}")
+            return False
+
+
+# Global ElevenLabs client instance
+elevenlabs_client = ElevenLabsClient()
 
 
 class UltravoxClient:
@@ -235,8 +371,101 @@ class UltravoxClient:
         return drift
     
     async def create_voice(self, voice_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Create voice in Ultravox"""
+        """Create voice in Ultravox (legacy - use import_voice_from_provider instead)"""
         response = await self._request("POST", "/api/voices", data=voice_data)
+        return response
+    
+    async def import_voice_from_provider(
+        self,
+        name: str,
+        provider: str,
+        provider_voice_id: str,
+        description: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Import a voice from an external provider into Ultravox.
+        
+        This uses the correct Ultravox API format with provider-specific definitions.
+        Voice names are lowercased with underscores (no spaces).
+        
+        Args:
+            name: Display name for the voice
+            provider: Provider name (elevenlabs, cartesia, lmnt, google)
+            provider_voice_id: The voice ID from the provider
+            description: Optional description
+        
+        Returns:
+            Ultravox voice response with voiceId
+        """
+        # Normalize name: lowercase, replace spaces with underscores
+        normalized_name = name.lower().replace(" ", "_").replace("-", "_")
+        # Remove any non-alphanumeric characters except underscores
+        normalized_name = "".join(c if c.isalnum() or c == "_" else "" for c in normalized_name)
+        
+        logger.info(f"[ULTRAVOX] Importing voice from provider | name={normalized_name} | provider={provider} | provider_voice_id={provider_voice_id}")
+        
+        # Build provider-specific definition
+        voice_data: Dict[str, Any] = {
+            "name": normalized_name,
+        }
+        
+        if description:
+            voice_data["description"] = description
+        
+        # Provider-specific definitions per Ultravox API
+        if provider == "elevenlabs":
+            voice_data["definition"] = {
+                "elevenLabs": {
+                    "voiceId": provider_voice_id,
+                    "model": "eleven_multilingual_v2",
+                    "stability": 0.5,
+                    "similarityBoost": 0.75,
+                    "style": 0.0,
+                    "useSpeakerBoost": True,
+                    "speed": 1.0,
+                }
+            }
+        elif provider == "cartesia":
+            voice_data["definition"] = {
+                "cartesia": {
+                    "voiceId": provider_voice_id,
+                    "model": "sonic-english",
+                    "generationConfig": {
+                        "speed": 1.0,
+                        "emotion": "positivity:high",
+                    }
+                }
+            }
+        elif provider == "lmnt":
+            voice_data["definition"] = {
+                "lmnt": {
+                    "voiceId": provider_voice_id,
+                    "model": "lily",
+                    "speed": 1.0,
+                    "conversational": True,
+                }
+            }
+        elif provider == "google":
+            voice_data["definition"] = {
+                "google": {
+                    "voiceId": provider_voice_id,
+                    "speakingRate": 1.0,
+                }
+            }
+        else:
+            raise ProviderError(
+                provider="ultravox",
+                message=f"Unsupported provider: {provider}. Supported: elevenlabs, cartesia, lmnt, google",
+                http_status=400,
+            )
+        
+        logger.debug(f"[ULTRAVOX] Voice import payload: {voice_data}")
+        
+        response = await self._request("POST", "/api/voices", data=voice_data)
+        
+        ultravox_voice_id = response.get("voiceId") or response.get("id")
+        logger.info(f"[ULTRAVOX] Voice imported successfully | ultravox_voice_id={ultravox_voice_id} | provider={provider}")
+        
         return response
     
     async def get_voice(self, voice_id: str) -> Dict[str, Any]:
@@ -625,6 +854,6 @@ class UltravoxClient:
         return response
 
 
-# Global client instance
+# Global client instances
 ultravox_client = UltravoxClient()
 

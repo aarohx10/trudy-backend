@@ -21,7 +21,7 @@ from app.core.idempotency import check_idempotency_key, store_idempotency_respon
 from app.core.events import emit_voice_training_started, emit_voice_created
 from app.core.encryption import decrypt_api_key
 from app.core.db_logging import log_to_database
-from app.services.ultravox import ultravox_client
+from app.services.ultravox import ultravox_client, elevenlabs_client
 from app.models.schemas import (
     VoiceCreate,
     VoiceUpdate,
@@ -85,12 +85,22 @@ async def create_voice(
     idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
     background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
-    """Create voice (native clone or external reference)"""
+    """
+    Create voice - two strategies:
+    
+    1. NATIVE (Voice Clone): 
+       - Upload audio files → Create clone in ElevenLabs → Import to Ultravox
+       - User gets a custom cloned voice
+    
+    2. EXTERNAL (Import):
+       - User provides existing provider_voice_id (from ElevenLabs, Cartesia, LMNT)
+       - Import directly to Ultravox with correct definition format
+    """
     request_id = getattr(request.state, "request_id", None)
     client_id = current_user.get("client_id")
     user_id = current_user.get("user_id")
     
-    logger.info(f"[VOICES] [CREATE] Starting voice creation | name={voice_data.name} | strategy={voice_data.strategy} | client_id={client_id} | request_id={request_id}")
+    logger.info(f"[VOICES] [CREATE] Starting voice creation | name={voice_data.name} | strategy={voice_data.strategy} | client_id={client_id} | user_id={user_id} | request_id={request_id}")
     
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         error_msg = "Insufficient permissions for voice creation"
@@ -129,25 +139,29 @@ async def create_voice(
     db = DatabaseService(current_user["token"])
     db.set_auth(current_user["token"])
     
-    # Check for duplicate external voice (same provider_voice_id for same client)
+    # Determine provider
+    provider = voice_data.provider_overrides.get("provider", "elevenlabs") if voice_data.provider_overrides else "elevenlabs"
+    
+    # Check for duplicate voice (same provider_voice_id for same user)
     if voice_data.strategy != "native" and voice_data.source.provider_voice_id:
         existing_voices = db.select(
             "voices",
             {
-                "client_id": current_user["client_id"],
+                "client_id": client_id,
+                "user_id": user_id,
                 "provider_voice_id": voice_data.source.provider_voice_id,
+                "provider": provider,
             }
         )
         if existing_voices and len(existing_voices) > 0:
-            # Return existing voice instead of creating duplicate
             existing_voice = existing_voices[0]
-            logger.info(f"[VOICES] [CREATE] Voice already exists | provider_voice_id={voice_data.source.provider_voice_id} | existing_id={existing_voice['id']} | request_id={request_id}")
+            logger.info(f"[VOICES] [CREATE] Voice already exists for user | provider_voice_id={voice_data.source.provider_voice_id} | existing_id={existing_voice['id']} | request_id={request_id}")
             background_tasks.add_task(
                 log_to_database,
                 source="backend",
                 level="INFO",
                 category="voices_create",
-                message=f"Voice creation skipped - already exists",
+                message=f"Voice creation skipped - already exists for user",
                 request_id=request_id,
                 client_id=client_id,
                 user_id=user_id,
@@ -167,33 +181,35 @@ async def create_voice(
                 ),
             }
     
-    # Credit check for native training
+    # Credit check for native training (voice cloning)
     client = None
     if voice_data.strategy == "native":
-        client = db.get_client(current_user["client_id"])
+        client = db.get_client(client_id)
         if not client or client.get("credits_balance", 0) < 50:
             raise PaymentRequiredError(
-                "Insufficient credits for voice training. Required: 50",
+                "Insufficient credits for voice cloning. Required: 50",
                 {"required": 50, "available": client.get("credits_balance", 0) if client else 0},
             )
     
-    # ATOMIC RESOURCE CREATION (Saga Pattern)
-    # Step 1: Insert record with status='creating' (temporary state)
+    # ATOMIC RESOURCE CREATION
     voice_id = str(uuid.uuid4())
     now = datetime.utcnow()
-    
-    provider = voice_data.provider_overrides.get("provider", "elevenlabs") if voice_data.provider_overrides else "elevenlabs"
     voice_type = "custom" if voice_data.strategy == "native" else "reference"
     
-    # Prepare voice record for database (use ISO strings for storage)
+    # Initialize tracking variables
+    elevenlabs_voice_id = None
+    ultravox_voice_id = None
+    
+    # Prepare voice record for database
     voice_db_record = {
         "id": voice_id,
-        "client_id": current_user["client_id"],
+        "client_id": client_id,
+        "user_id": user_id,  # IMPORTANT: Track which user created this voice
         "name": voice_data.name,
         "provider": provider,
         "type": voice_type,
         "language": "en-US",
-        "status": "creating",  # Temporary status - will be updated after Ultravox call
+        "status": "creating",
         "training_info": {
             "progress": 0,
             "started_at": now.isoformat(),
@@ -202,222 +218,216 @@ async def create_voice(
         "updated_at": now.isoformat(),
     }
     
-    # Store provider_voice_id for external voices (ElevenLabs voice ID)
-    if voice_data.strategy != "native" and voice_data.source.provider_voice_id:
-        voice_db_record["provider_voice_id"] = voice_data.source.provider_voice_id
-        logger.info(f"Storing provider_voice_id: {voice_data.source.provider_voice_id} for voice {voice_id}")
-    
     # Insert temporary record
     db.insert("voices", voice_db_record)
-    logger.info(f"[VOICES] [CREATE] Voice record created (temporary) | voice_id={voice_id} | name={voice_data.name} | strategy={voice_data.strategy} | provider={provider} | request_id={request_id}")
-    
-    # Step 2: Call Ultravox API
-    ultravox_voice_id = None
-    provider_error_details = None
+    logger.info(f"[VOICES] [CREATE] Voice record created (temporary) | voice_id={voice_id} | name={voice_data.name} | strategy={voice_data.strategy} | provider={provider} | user_id={user_id} | request_id={request_id}")
     
     try:
-        logger.info(f"[VOICES] [CREATE] Calling Ultravox API | voice_id={voice_id} | strategy={voice_data.strategy} | request_id={request_id}")
-        # Generate presigned URLs for Ultravox (for native voices)
-        training_samples = []
-        if voice_data.strategy == "native" and voice_data.source.samples:
+        # ============================================
+        # STRATEGY: NATIVE (Voice Clone)
+        # Step 1: Clone in ElevenLabs
+        # Step 2: Import to Ultravox
+        # ============================================
+        if voice_data.strategy == "native":
+            logger.info(f"[VOICES] [CREATE] Starting native voice clone flow | voice_id={voice_id} | request_id={request_id}")
+            
+            # Validate requirements
+            if not settings.ELEVENLABS_API_KEY:
+                raise ValidationError("ElevenLabs API key is not configured. Voice cloning requires ElevenLabs.")
+            if not settings.ULTRAVOX_API_KEY:
+                raise ValidationError("Ultravox API key is not configured. Voice cloning requires Ultravox.")
+            if not voice_data.source.samples or len(voice_data.source.samples) == 0:
+                raise ValidationError("At least one audio sample is required for voice cloning.")
+            
+            # Step 1: Download audio files from storage
+            audio_files = []
             for sample in voice_data.source.samples:
-                # Check storage file exists
                 if not check_object_exists(settings.STORAGE_BUCKET_UPLOADS, sample.storage_key):
                     raise NotFoundError("voice sample", sample.storage_key)
                 
-                # Generate read-only presigned URL
+                # Generate presigned URL and download the file
                 audio_url = generate_presigned_url(
                     bucket=settings.STORAGE_BUCKET_UPLOADS,
                     key=sample.storage_key,
                     operation="get_object",
-                    expires_in=86400,
+                    expires_in=3600,
                 )
                 
-                training_samples.append({
-                    "text": sample.text,
-                    "audio_url": audio_url,
-                    "duration_seconds": sample.duration_seconds,
-                })
-        
-        # Call Ultravox API
-        if voice_data.strategy == "native":
-            # Native voices MUST be created in Ultravox
-            if not settings.ULTRAVOX_API_KEY:
-                raise ValidationError("Ultravox API key is not configured. Native voice cloning requires Ultravox.")
+                # Download the audio file
+                async with httpx.AsyncClient(timeout=60.0) as http_client:
+                    response = await http_client.get(audio_url)
+                    response.raise_for_status()
+                    audio_files.append(response.content)
+                
+                logger.debug(f"[VOICES] [CREATE] Downloaded audio sample | storage_key={sample.storage_key} | size={len(response.content)} bytes")
             
-            ultravox_data = {
-                "name": voice_data.name,
-                "provider": provider,
-                "type": "custom",
-                "language": "en-US",
-                "training_samples": training_samples,
-            }
-            ultravox_response = await ultravox_client.create_voice(ultravox_data)
-            # Ultravox returns "voiceId" (camelCase), not "id"
+            logger.info(f"[VOICES] [CREATE] Downloaded {len(audio_files)} audio samples | voice_id={voice_id} | request_id={request_id}")
+            
+            # Step 2: Create voice clone in ElevenLabs
+            logger.info(f"[VOICES] [CREATE] Creating voice clone in ElevenLabs | voice_id={voice_id} | request_id={request_id}")
+            elevenlabs_response = await elevenlabs_client.clone_voice(
+                name=voice_data.name,
+                audio_files=audio_files,
+                description=f"Voice clone for user {user_id}",
+            )
+            elevenlabs_voice_id = elevenlabs_response.get("voice_id")
+            
+            if not elevenlabs_voice_id:
+                raise ProviderError(
+                    provider="elevenlabs",
+                    message="ElevenLabs response missing voice_id",
+                    http_status=500,
+                )
+            
+            logger.info(f"[VOICES] [CREATE] ElevenLabs voice clone created | elevenlabs_voice_id={elevenlabs_voice_id} | voice_id={voice_id} | request_id={request_id}")
+            
+            # Step 3: Import ElevenLabs voice to Ultravox
+            logger.info(f"[VOICES] [CREATE] Importing voice to Ultravox | elevenlabs_voice_id={elevenlabs_voice_id} | request_id={request_id}")
+            ultravox_response = await ultravox_client.import_voice_from_provider(
+                name=voice_data.name,
+                provider="elevenlabs",
+                provider_voice_id=elevenlabs_voice_id,
+                description=f"Cloned voice: {voice_data.name}",
+            )
             ultravox_voice_id = ultravox_response.get("voiceId") or ultravox_response.get("id")
-            if ultravox_voice_id:
-                logger.info(f"[VOICES] [CREATE] Ultravox voice created | voice_id={voice_id} | ultravox_id={ultravox_voice_id} | request_id={request_id}")
-            else:
-                error_msg = "Ultravox response missing voice ID"
-                logger.error(f"[VOICES] [CREATE] {error_msg} | voice_id={voice_id} | response={ultravox_response} | request_id={request_id}")
-                raise ValueError(error_msg)
+            
+            if not ultravox_voice_id:
+                raise ProviderError(
+                    provider="ultravox",
+                    message="Ultravox response missing voiceId",
+                    http_status=500,
+                )
+            
+            logger.info(f"[VOICES] [CREATE] Ultravox voice imported | ultravox_voice_id={ultravox_voice_id} | voice_id={voice_id} | request_id={request_id}")
+            
+            # Update database record
+            update_data = {
+                "status": "active",  # Voice cloning is complete
+                "provider_voice_id": elevenlabs_voice_id,
+                "ultravox_voice_id": ultravox_voice_id,
+                "updated_at": now.isoformat(),
+            }
+            db.update("voices", {"id": voice_id}, update_data)
+            voice_db_record.update(update_data)
+        
+        # ============================================
+        # STRATEGY: EXTERNAL (Import existing voice)
+        # Just import to Ultravox with correct format
+        # ============================================
         else:
-            # External voices can be created without Ultravox (optional)
-            if settings.ULTRAVOX_API_KEY:
-                ultravox_data = {
-                    "name": voice_data.name,
-                    "provider": provider,
-                    "type": "reference",
-                }
-                if voice_data.source.provider_voice_id:
-                    ultravox_data["provider_voice_id"] = voice_data.source.provider_voice_id
-                ultravox_response = await ultravox_client.create_voice(ultravox_data)
-                # Ultravox returns "voiceId" (camelCase), not "id"
-                ultravox_voice_id = ultravox_response.get("voiceId") or ultravox_response.get("id")
-                if ultravox_voice_id:
-                    logger.info(f"[VOICES] [CREATE] Ultravox voice created (reference) | voice_id={voice_id} | ultravox_id={ultravox_voice_id} | request_id={request_id}")
-        
-        # Step 3: Update record to 'active' with ultravox_id (success path)
-        update_data = {
-            "status": "training" if voice_data.strategy == "native" else "active",
-            "updated_at": now.isoformat(),
-        }
-        if ultravox_voice_id:
-            update_data["ultravox_voice_id"] = ultravox_voice_id
-        
-        db.update("voices", {"id": voice_id}, update_data)
-        voice_db_record.update(update_data)
-        logger.info(f"[VOICES] [CREATE] Voice status updated | voice_id={voice_id} | status={update_data.get('status')} | ultravox_id={ultravox_voice_id} | request_id={request_id}")
+            logger.info(f"[VOICES] [CREATE] Starting external voice import flow | voice_id={voice_id} | provider={provider} | request_id={request_id}")
+            
+            if not settings.ULTRAVOX_API_KEY:
+                raise ValidationError("Ultravox API key is not configured.")
+            
+            provider_voice_id = voice_data.source.provider_voice_id
+            if not provider_voice_id:
+                raise ValidationError(f"Provider voice ID is required for {provider} import.")
+            
+            # Import to Ultravox with correct provider-specific definition
+            ultravox_response = await ultravox_client.import_voice_from_provider(
+                name=voice_data.name,
+                provider=provider,
+                provider_voice_id=provider_voice_id,
+                description=f"Imported {provider} voice: {voice_data.name}",
+            )
+            ultravox_voice_id = ultravox_response.get("voiceId") or ultravox_response.get("id")
+            
+            if not ultravox_voice_id:
+                raise ProviderError(
+                    provider="ultravox",
+                    message="Ultravox response missing voiceId",
+                    http_status=500,
+                )
+            
+            logger.info(f"[VOICES] [CREATE] Ultravox voice imported | ultravox_voice_id={ultravox_voice_id} | provider={provider} | provider_voice_id={provider_voice_id} | request_id={request_id}")
+            
+            # Update database record
+            update_data = {
+                "status": "active",
+                "provider_voice_id": provider_voice_id,
+                "ultravox_voice_id": ultravox_voice_id,
+                "updated_at": now.isoformat(),
+            }
+            db.update("voices", {"id": voice_id}, update_data)
+            voice_db_record.update(update_data)
         
     except Exception as e:
-        # Step 4: Rollback - delete the temporary record and return error
-        error_msg = f"Failed to create voice in Ultravox: {str(e)}"
+        # Rollback: Delete temporary record
+        error_msg = f"Failed to create voice: {str(e)}"
         logger.error(f"[VOICES] [CREATE] {error_msg} | voice_id={voice_id} | strategy={voice_data.strategy} | request_id={request_id}", exc_info=True)
         
-        # Extract error details if it's a ProviderError
-        if isinstance(e, ProviderError):
-            provider_error_details = e.details.get("provider_details", {})
-            # Delete the temporary record
-            db.delete("voices", {"id": voice_id, "client_id": current_user["client_id"]})
-            logger.warning(f"[VOICES] [CREATE] Voice creation rolled back (ProviderError) | voice_id={voice_id} | request_id={request_id}")
-            
-            # Log error to database
-            background_tasks.add_task(
-                log_to_database,
-                source="backend",
-                level="ERROR",
-                category="voices_create",
-                message=f"Voice creation failed in Ultravox: {str(e)}",
-                request_id=request_id,
-                client_id=client_id,
-                user_id=user_id,
-                endpoint="/api/v1/voices",
-                method="POST",
-                status_code=e.details.get("httpStatus", 500),
-                error_details={
-                    "error_type": "ProviderError",
-                    "provider": "ultravox",
-                    "error_message": str(e),
-                    "provider_details": provider_error_details,
-                    "voice_id": voice_id,
-                    "strategy": voice_data.strategy,
-                    "traceback": traceback.format_exc(),
-                },
-            )
-            
-            # Re-raise with full error details
-            raise ProviderError(
-                provider="ultravox",
-                message=str(e),
-                http_status=e.details.get("httpStatus", 500),
-                details=provider_error_details,
-            )
-        else:
-            # Delete the temporary record
-            db.delete("voices", {"id": voice_id, "client_id": current_user["client_id"]})
-            logger.warning(f"[VOICES] [CREATE] Voice creation rolled back (Exception) | voice_id={voice_id} | request_id={request_id}")
-            
-            # Raise appropriate error
-            error_msg = str(e)
-            if not settings.ULTRAVOX_API_KEY and voice_data.strategy == "native":
-                error_detail = "Ultravox API key is not configured. Native voice cloning requires Ultravox."
-                background_tasks.add_task(
-                    log_to_database,
-                    source="backend",
-                    level="ERROR",
-                    category="voices_create",
-                    message=error_detail,
-                    request_id=request_id,
-                    client_id=client_id,
-                    user_id=user_id,
-                    endpoint="/api/v1/voices",
-                    method="POST",
-                    status_code=400,
-                    error_details={
-                        "error_type": "ValidationError",
-                        "error_message": error_detail,
-                        "voice_id": voice_id,
-                        "strategy": voice_data.strategy,
-                    },
-                )
-                raise ValidationError(error_detail)
-            
-            # Log error to database
-            background_tasks.add_task(
-                log_to_database,
-                source="backend",
-                level="ERROR",
-                category="voices_create",
-                message=f"Voice creation failed: {error_msg}",
-                request_id=request_id,
-                client_id=client_id,
-                user_id=user_id,
-                endpoint="/api/v1/voices",
-                method="POST",
-                status_code=500,
-                error_details={
-                    "error_type": type(e).__name__,
-                    "error_message": error_msg,
-                    "voice_id": voice_id,
-                    "strategy": voice_data.strategy,
-                    "traceback": traceback.format_exc(),
-                },
-            )
-            
-            raise ProviderError(
-                provider="ultravox",
-                message=f"Failed to create voice in Ultravox: {error_msg}",
-                http_status=500,
-                details={"error": error_msg},
-            )
+        # Clean up: Delete database record
+        db.delete("voices", {"id": voice_id, "client_id": client_id})
+        logger.warning(f"[VOICES] [CREATE] Voice creation rolled back | voice_id={voice_id} | request_id={request_id}")
+        
+        # If we created an ElevenLabs voice but Ultravox failed, try to clean up ElevenLabs
+        if elevenlabs_voice_id:
+            try:
+                await elevenlabs_client.delete_voice(elevenlabs_voice_id)
+                logger.info(f"[VOICES] [CREATE] Cleaned up ElevenLabs voice after failure | elevenlabs_voice_id={elevenlabs_voice_id}")
+            except Exception as cleanup_error:
+                logger.warning(f"[VOICES] [CREATE] Failed to cleanup ElevenLabs voice | elevenlabs_voice_id={elevenlabs_voice_id} | error={cleanup_error}")
+        
+        # Log error to database
+        background_tasks.add_task(
+            log_to_database,
+            source="backend",
+            level="ERROR",
+            category="voices_create",
+            message=error_msg,
+            request_id=request_id,
+            client_id=client_id,
+            user_id=user_id,
+            endpoint="/api/v1/voices",
+            method="POST",
+            status_code=getattr(e, 'http_status', 500) if hasattr(e, 'http_status') else 500,
+            error_details={
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "voice_id": voice_id,
+                "strategy": voice_data.strategy,
+                "provider": provider,
+                "traceback": traceback.format_exc(),
+            },
+        )
+        
+        # Re-raise appropriate error
+        if isinstance(e, (ValidationError, NotFoundError, PaymentRequiredError, ProviderError)):
+            raise
+        raise ProviderError(
+            provider=provider,
+            message=error_msg,
+            http_status=500,
+            details={"error": str(e)},
+        )
     
-    # Prepare voice record for response (use datetime objects for Pydantic)
+    # Prepare response record
     voice_record = voice_db_record.copy()
     voice_record["created_at"] = now
     voice_record["updated_at"] = now
-    if ultravox_voice_id:
-        voice_record["ultravox_voice_id"] = ultravox_voice_id
     
-    # Debit credits if native
+    # Debit credits for native voice cloning
     if voice_data.strategy == "native" and client:
         db.insert(
             "credit_transactions",
             {
-                "client_id": current_user["client_id"],
+                "client_id": client_id,
                 "type": "spent",
                 "amount": 50,
-                "reference_type": "voice_training",
+                "reference_type": "voice_cloning",
                 "reference_id": voice_id,
-                "description": f"Voice training: {voice_data.name}",
+                "description": f"Voice cloning: {voice_data.name}",
             },
         )
         db.update(
             "clients",
-            {"id": current_user["client_id"]},
+            {"id": client_id},
             {"credits_balance": client["credits_balance"] - 50},
         )
+        logger.info(f"[VOICES] [CREATE] Credits debited | client_id={client_id} | amount=50 | voice_id={voice_id}")
     
-    logger.info(f"[VOICES] [CREATE] Voice creation successful | voice_id={voice_id} | name={voice_data.name} | status={voice_record.get('status')} | ultravox_id={ultravox_voice_id} | request_id={request_id}")
+    logger.info(f"[VOICES] [CREATE] Voice creation successful | voice_id={voice_id} | name={voice_data.name} | status=active | provider={provider} | ultravox_voice_id={ultravox_voice_id} | request_id={request_id}")
     
     response_data = {
         "data": VoiceResponse(**voice_record),
@@ -446,16 +456,17 @@ async def create_voice(
             "strategy": voice_data.strategy,
             "provider": provider,
             "type": voice_type,
-            "status": voice_record.get("status"),
+            "status": "active",
             "ultravox_voice_id": ultravox_voice_id,
             "provider_voice_id": voice_record.get("provider_voice_id"),
+            "elevenlabs_voice_id": elevenlabs_voice_id,
         },
     )
     
     # Store idempotency response
     if idempotency_key:
         await store_idempotency_response(
-            current_user["client_id"],
+            client_id,
             idempotency_key,
             request,
             body_dict,
