@@ -236,13 +236,13 @@ class UltravoxClient:
     
     async def create_voice(self, voice_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create voice in Ultravox"""
-        response = await self._request("POST", "/voices", data=voice_data)
-        return response.get("data", {})
+        response = await self._request("POST", "/api/voices", data=voice_data)
+        return response
     
     async def get_voice(self, voice_id: str) -> Dict[str, Any]:
         """Get voice from Ultravox"""
         response = await self._request("GET", f"/api/voices/{voice_id}")
-        return response.get("data", {})
+        return response
     
     async def get_voice_preview(self, voice_id: str) -> bytes:
         """Get voice preview audio from Ultravox - returns raw audio bytes (audio/wav)"""
@@ -319,35 +319,35 @@ class UltravoxClient:
     # Agents
     async def create_agent(self, agent_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create agent in Ultravox"""
-        response = await self._request("POST", "/agents", data=agent_data)
-        return response.get("data", {})
+        response = await self._request("POST", "/api/agents", data=agent_data)
+        return response
     
     async def get_agent(self, agent_id: str) -> Dict[str, Any]:
         """Get agent from Ultravox"""
-        response = await self._request("GET", f"/agents/{agent_id}")
-        return response.get("data", {})
+        response = await self._request("GET", f"/api/agents/{agent_id}")
+        return response
     
     async def update_agent(self, agent_id: str, agent_data: Dict[str, Any]) -> Dict[str, Any]:
         """Update agent in Ultravox"""
-        response = await self._request("PATCH", f"/agents/{agent_id}", data=agent_data)
-        return response.get("data", {})
+        response = await self._request("PATCH", f"/api/agents/{agent_id}", data=agent_data)
+        return response
     
     async def delete_agent(self, agent_id: str, force: bool = False) -> Dict[str, Any]:
         """Delete agent from Ultravox"""
         params = {"force": "true"} if force else {}
-        response = await self._request("DELETE", f"/agents/{agent_id}", params=params)
-        return response.get("data", {})
+        response = await self._request("DELETE", f"/api/agents/{agent_id}", params=params)
+        return response
     
     # Knowledge Bases (Corpora)
     async def create_corpus(self, corpus_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create corpus in Ultravox"""
-        response = await self._request("POST", "/corpora", data=corpus_data)
-        return response.get("data", {})
+        response = await self._request("POST", "/api/corpora", data=corpus_data)
+        return response
     
     async def add_corpus_source(self, corpus_id: str, source_data: Dict[str, Any]) -> Dict[str, Any]:
         """Add source to corpus"""
-        response = await self._request("POST", f"/corpora/{corpus_id}/sources", data=source_data)
-        return response.get("data", {})
+        response = await self._request("POST", f"/api/corpora/{corpus_id}/sources", data=source_data)
+        return response
     
     # Calls
     async def create_call(self, call_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -366,8 +366,8 @@ class UltravoxClient:
                     "secrets": [settings.ULTRAVOX_WEBHOOK_SECRET],
                 }
         
-        response = await self._request("POST", "/calls", data=call_data)
-        return response.get("data", {})
+        response = await self._request("POST", "/api/calls", data=call_data)
+        return response
     
     async def create_test_call(
         self,
@@ -386,23 +386,23 @@ class UltravoxClient:
                 "is_test": True,  # Flag to bypass billing logic
             },
         }
-        response = await self._request("POST", "/calls", data=call_data)
-        return response.get("data", {})
+        response = await self._request("POST", "/api/calls", data=call_data)
+        return response
     
     async def get_call(self, call_id: str) -> Dict[str, Any]:
         """Get call from Ultravox"""
-        response = await self._request("GET", f"/calls/{call_id}")
-        return response.get("data", {})
+        response = await self._request("GET", f"/api/calls/{call_id}")
+        return response
     
-    async def get_call_transcript(self, call_id: str) -> Dict[str, Any]:
-        """Get call transcript"""
-        response = await self._request("GET", f"/calls/{call_id}/transcript")
-        return response.get("data", {})
+    async def get_call_transcript(self, call_id: str) -> List[Dict[str, Any]]:
+        """Get call messages/transcript"""
+        response = await self._request("GET", f"/api/calls/{call_id}/messages")
+        return response.get("results", [])
     
     async def get_call_recording(self, call_id: str) -> str:
         """Get call recording URL"""
-        response = await self._request("GET", f"/calls/{call_id}/recording")
-        return response.get("data", {}).get("url", "")
+        response = await self._request("GET", f"/api/calls/{call_id}/recording")
+        return response.get("recordingUrl", "")
     
     # Campaigns (Batches)
     async def create_scheduled_batch(
@@ -417,25 +417,25 @@ class UltravoxClient:
         """
         response = await self._request(
             "POST",
-            f"/agents/{agent_id}/scheduled-batches",
+            f"/api/agents/{agent_id}/scheduled-batches",
             data=batch_data,
         )
-        return response.get("data", {})
+        return response
     
     async def get_batch(self, agent_id: str, batch_id: str) -> Dict[str, Any]:
         """
         Get batch status from Ultravox.
         Requires agent_id as batches are scoped to agents.
         """
-        # Ultravox API structure: /agents/{agent_id}/scheduled-batches/{batch_id}
-        response = await self._request("GET", f"/agents/{agent_id}/scheduled-batches/{batch_id}")
-        return response.get("data", {})
+        # Ultravox API structure: /api/agents/{agent_id}/scheduled-batches/{batch_id}
+        response = await self._request("GET", f"/api/agents/{agent_id}/scheduled-batches/{batch_id}")
+        return response
     
     # Webhooks
     async def list_webhooks(self) -> List[Dict[str, Any]]:
         """List all webhooks configured in Ultravox"""
-        response = await self._request("GET", "/webhooks")
-        return response.get("data", [])
+        response = await self._request("GET", "/api/webhooks")
+        return response.get("results", [])
     
     async def create_webhook(
         self,
@@ -454,8 +454,8 @@ class UltravoxClient:
         if agent_id:
             webhook_data["agentId"] = agent_id
         
-        response = await self._request("POST", "/webhooks", data=webhook_data)
-        return response.get("data", {})
+        response = await self._request("POST", "/api/webhooks", data=webhook_data)
+        return response
     
     async def update_webhook(
         self,
@@ -473,12 +473,12 @@ class UltravoxClient:
         if secrets is not None:
             webhook_data["secrets"] = secrets
         
-        response = await self._request("PATCH", f"/webhooks/{webhook_id}", data=webhook_data)
-        return response.get("data", {})
+        response = await self._request("PATCH", f"/api/webhooks/{webhook_id}", data=webhook_data)
+        return response
     
     async def delete_webhook(self, webhook_id: str) -> None:
         """Delete a webhook from Ultravox"""
-        await self._request("DELETE", f"/webhooks/{webhook_id}")
+        await self._request("DELETE", f"/api/webhooks/{webhook_id}")
     
     async def ensure_webhook_registration(self) -> Optional[str]:
         """
@@ -495,15 +495,12 @@ class UltravoxClient:
             return None
         
         webhook_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/webhooks/ultravox"
+        # Valid Ultravox webhook events per API documentation
         required_events = [
-            "call.started",
-            "call.ended",
-            "call.completed",
-            "call.failed",
-            "batch.status.changed",
-            "batch.completed",
-            "voice.training.completed",
-            "voice.training.failed",
+            "call.started",   # Fired when a call starts
+            "call.joined",    # Fired when a call is joined
+            "call.ended",     # Fired when a call ends
+            "call.billed",    # Fired when a call is billed
         ]
         
         try:
@@ -554,8 +551,8 @@ class UltravoxClient:
     # Tools
     async def create_tool(self, tool_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create tool in Ultravox"""
-        response = await self._request("POST", "/tools", data=tool_data)
-        return response.get("data", {})
+        response = await self._request("POST", "/api/tools", data=tool_data)
+        return response
     
     async def create_durable_tool(
         self,
@@ -599,33 +596,33 @@ class UltravoxClient:
             },
         }
         
-        response = await self._request("POST", "/tools", data=tool_data)
-        return response.get("data", {})
+        response = await self._request("POST", "/api/tools", data=tool_data)
+        return response
     
     async def update_tool(self, tool_id: str, tool_data: Dict[str, Any]) -> Dict[str, Any]:
         """Update tool in Ultravox"""
-        response = await self._request("PATCH", f"/tools/{tool_id}", data=tool_data)
-        return response.get("data", {})
+        response = await self._request("PATCH", f"/api/tools/{tool_id}", data=tool_data)
+        return response
     
     async def delete_tool(self, tool_id: str) -> None:
         """Delete tool from Ultravox"""
-        await self._request("DELETE", f"/tools/{tool_id}")
+        await self._request("DELETE", f"/api/tools/{tool_id}")
     
     # TTS API Keys
     async def update_tts_api_key(self, provider: str, api_key_data: Dict[str, Any]) -> Dict[str, Any]:
         """Update TTS API key for provider"""
         response = await self._request(
             "PATCH",
-            "/accounts/me/tts-api-keys",
+            "/api/accounts/me/tts_api_keys",
             data={"provider": provider, **api_key_data},
         )
-        return response.get("data", {})
+        return response
     
     # SIP/Telephony
     async def get_sip_config(self) -> Dict[str, Any]:
         """Get SIP configuration from Ultravox"""
-        response = await self._request("GET", "/sip/config")
-        return response.get("data", {})
+        response = await self._request("GET", "/api/sip")
+        return response
 
 
 # Global client instance
