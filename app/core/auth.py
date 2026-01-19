@@ -285,6 +285,25 @@ async def get_current_user(
     return result
 
 
+async def get_optional_current_user(
+    authorization: Optional[str] = Header(None),
+    x_client_id: Optional[str] = Header(None),
+) -> Optional[Dict[str, Any]]:
+    """
+    Get current user from Clerk JWT token, or None if not authenticated.
+    This is a non-raising version of get_current_user for endpoints that
+    can work with or without authentication (like /logs).
+    """
+    if not authorization:
+        return None
+    
+    try:
+        return await get_current_user(authorization, x_client_id)
+    except Exception:
+        # Any auth error returns None instead of raising
+        return None
+
+
 def require_role(required_roles: list[str]):
     """Decorator to require specific roles"""
     def decorator(func):

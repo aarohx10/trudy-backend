@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 import logging
 
 from app.core.db_logging import log_to_database
-from app.core.auth import get_current_user
+from app.core.auth import get_optional_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -43,7 +43,7 @@ async def ingest_logs(
     log_batch: LogBatch,
     request: Request,
     background_tasks: BackgroundTasks,
-    current_user: Optional[dict] = Depends(get_current_user),
+    current_user: Optional[dict] = Depends(get_optional_current_user),
 ):
     """
     Ingest logs from frontend
