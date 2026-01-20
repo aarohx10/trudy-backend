@@ -99,23 +99,72 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS Configuration (Specific origins + Regex for wildcards)
-# Convert wildcard patterns to regex patterns for FastAPI CORS
+# ============================================================
+# CORS Configuration (Bulletproof)
+# ============================================================
+# Strategy:
+# 1. Exact origins checked first (fastest, most secure)
+# 2. Regex patterns checked for dynamic subdomains (Vercel previews)
+# 3. max_age caches preflight for 24 hours (reduces OPTIONS requests)
+# 4. Helper function validates origins consistently across all handlers
+
+# Compile regex patterns for efficient matching
 cors_regex_patterns = []
+cors_compiled_patterns = []
 for pattern in settings.CORS_WILDCARD_PATTERNS:
-    # Patterns are already in regex format, but ensure they're anchored
+    # Ensure patterns are anchored for full string match
     if not pattern.startswith("^"):
         pattern = f"^{pattern}"
     if not pattern.endswith("$"):
         pattern = f"{pattern}$"
     cors_regex_patterns.append(pattern)
+    try:
+        cors_compiled_patterns.append(re.compile(pattern))
+    except re.error as e:
+        logger.warning(f"Invalid CORS regex pattern '{pattern}': {e}")
+
+
+def is_origin_allowed(origin: str) -> bool:
+    """
+    Check if an origin is allowed by CORS configuration.
+    
+    This function is used by exception handlers to ensure CORS headers
+    are only added for legitimately allowed origins (security).
+    
+    Args:
+        origin: The Origin header value from the request
+        
+    Returns:
+        True if origin is allowed, False otherwise
+    """
+    if not origin:
+        return False
+    
+    # Check exact origins first (fast O(n) lookup, could be O(1) with set)
+    if origin in settings.CORS_ORIGINS:
+        return True
+    
+    # Check regex patterns for dynamic subdomains
+    for pattern in cors_compiled_patterns:
+        if pattern.match(origin):
+            return True
+    
+    return False
+
 
 cors_middleware_config = {
     "allow_origins": settings.CORS_ORIGINS,
     "allow_credentials": True,
-    "allow_methods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    "allow_headers": ["*"],
-    "expose_headers": ["*"],
+    "allow_methods": ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
+    "allow_headers": [
+        "*",  # Allow all headers
+    ],
+    "expose_headers": [
+        "X-Request-ID",
+        "X-Idempotency-Key",
+        "Content-Disposition",
+    ],
+    "max_age": 86400,  # Cache preflight for 24 hours (reduces OPTIONS requests)
 }
 
 # Add regex pattern if we have wildcard patterns
@@ -123,7 +172,8 @@ if cors_regex_patterns:
     cors_middleware_config["allow_origin_regex"] = "|".join(cors_regex_patterns)
     logger.info(f"✅ CORS regex patterns configured: {cors_middleware_config['allow_origin_regex']}")
 
-logger.info(f"✅ CORS Exact Origins: {settings.CORS_ORIGINS}")
+logger.info(f"✅ CORS Exact Origins ({len(settings.CORS_ORIGINS)}): {settings.CORS_ORIGINS[:5]}...")  # Log first 5
+logger.info(f"✅ CORS Wildcard Patterns ({len(settings.CORS_WILDCARD_PATTERNS)}): {settings.CORS_WILDCARD_PATTERNS}")
 
 # Create custom CORS middleware wrapper for detailed logging
 class LoggingCORSMiddleware(StarletteCORSMiddleware):
@@ -186,10 +236,28 @@ app.add_middleware(LoggingCORSMiddleware, **cors_middleware_config)
 logger.info("✅ Middlewares configured (CORS is outermost)")
 
 
-# Exception Handlers
+# ============================================================
+# Exception Handlers (with secure CORS headers)
+# ============================================================
+
+def add_cors_headers_if_allowed(response: JSONResponse, origin: str) -> None:
+    """
+    Add CORS headers to response only if origin is allowed.
+    
+    This is used by exception handlers to ensure CORS compliance
+    for error responses, while not exposing the API to arbitrary origins.
+    """
+    if origin and is_origin_allowed(origin):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        response.headers["Access-Control-Max-Age"] = "86400"
+
+
 @app.exception_handler(TrudyException)
 async def trudy_exception_handler(request: Request, exc: TrudyException):
-    """Handle Trudy-specific exceptions"""
+    """Handle Trudy-specific exceptions with CORS headers"""
     # Log error to database
     log_error(
         request,
@@ -201,7 +269,7 @@ async def trudy_exception_handler(request: Request, exc: TrudyException):
         },
     )
     
-    return JSONResponse(
+    response = JSONResponse(
         status_code=exc.status_code,
         content={
             "error": {
@@ -213,11 +281,17 @@ async def trudy_exception_handler(request: Request, exc: TrudyException):
             }
         },
     )
+    
+    # Add CORS headers for allowed origins (security: validate origin)
+    origin = request.headers.get("origin")
+    add_cors_headers_if_allowed(response, origin)
+    
+    return response
 
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
-    """Handle general exceptions and ensure CORS headers are present"""
+    """Handle general exceptions with CORS headers"""
     logger.exception(f"Unhandled exception: {exc}")
     request_id = getattr(request.state, "request_id", None)
     
@@ -231,9 +305,6 @@ async def general_exception_handler(request: Request, exc: Exception):
         },
     )
     
-    # Extract origin from request to mirror it back for CORS compliance
-    origin = request.headers.get("origin")
-    
     response = JSONResponse(
         status_code=500,
         content={
@@ -246,13 +317,10 @@ async def general_exception_handler(request: Request, exc: Exception):
         },
     )
     
-    # Manually add CORS headers if the exception occurred before/outside the middleware
-    if origin:
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-        response.headers["Access-Control-Allow-Methods"] = "*"
-        response.headers["Access-Control-Allow-Headers"] = "*"
-        
+    # Add CORS headers for allowed origins (security: validate origin)
+    origin = request.headers.get("origin")
+    add_cors_headers_if_allowed(response, origin)
+    
     return response
 
 
@@ -292,32 +360,65 @@ async def health_check():
 
 # Explicit OPTIONS handler for all routes (backup for CORS preflight)
 @app.options("/{full_path:path}")
-async def options_handler(full_path: str):
-    """Handle OPTIONS preflight requests explicitly"""
-    from fastapi.responses import Response
-    return Response(status_code=200)
-
-# CORS Debug Endpoint
-@app.get("/api/v1/debug/cors")
-async def cors_debug():
-    """Debug endpoint to check CORS configuration"""
-    from fastapi import Request
+async def options_handler(request: Request, full_path: str):
+    """Handle OPTIONS preflight requests explicitly with CORS headers"""
+    origin = request.headers.get("origin")
     
+    response = Response(status_code=200)
+    
+    # Add CORS headers for allowed origins
+    if origin and is_origin_allowed(origin):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        response.headers["Access-Control-Max-Age"] = "86400"
+    
+    return response
+
+
+# CORS Test Endpoint - For verifying CORS is working
+@app.get("/api/v1/cors-test")
+async def cors_test(request: Request):
+    """
+    Test endpoint to verify CORS is working correctly.
+    
+    Call this endpoint from the frontend to verify CORS configuration.
+    Returns diagnostic info about the CORS setup.
+    """
+    origin = request.headers.get("origin", "none")
+    is_allowed = is_origin_allowed(origin) if origin != "none" else False
+    
+    return {
+        "status": "ok",
+        "cors_working": True,
+        "origin_received": origin,
+        "origin_allowed": is_allowed,
+        "exact_origins_count": len(settings.CORS_ORIGINS),
+        "wildcard_patterns_count": len(settings.CORS_WILDCARD_PATTERNS),
+        "message": "If you can read this, CORS is working correctly!",
+    }
+
+
+# CORS Debug Endpoint - Detailed configuration info
+@app.get("/api/v1/debug/cors")
+async def cors_debug(request: Request):
+    """Debug endpoint to check CORS configuration"""
     debug_logger.log_request("GET", "/api/v1/debug/cors")
     
-    # Convert wildcard patterns to regex for display
-    regex_patterns = []
-    for pattern in settings.CORS_WILDCARD_PATTERNS:
-        regex_pattern = pattern.replace(".", r"\.").replace("*", r".*")
-        regex_patterns.append(f"^{regex_pattern}$")
+    origin = request.headers.get("origin", "none")
+    is_allowed = is_origin_allowed(origin) if origin != "none" else False
     
     debug_info = {
+        "request_origin": origin,
+        "origin_allowed": is_allowed,
         "exact_origins": settings.CORS_ORIGINS,
         "wildcard_patterns": settings.CORS_WILDCARD_PATTERNS,
-        "regex_patterns": regex_patterns,
-        "combined_regex": "|".join(regex_patterns) if regex_patterns else None,
+        "compiled_regex_patterns": cors_regex_patterns,
+        "combined_regex": "|".join(cors_regex_patterns) if cors_regex_patterns else None,
         "total_exact": len(settings.CORS_ORIGINS),
         "total_wildcards": len(settings.CORS_WILDCARD_PATTERNS),
+        "max_age_seconds": 86400,
     }
     
     debug_logger.log_response("GET", "/api/v1/debug/cors", 200, context=debug_info)

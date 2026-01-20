@@ -28,34 +28,92 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Trudy API"
     
     def __init__(self, **kwargs):
-        """Initialize settings and parse CORS origins - Dynamic with production support"""
+        """Initialize settings and parse CORS origins - Dynamic with production support
+        
+        CORS Configuration Strategy (Bulletproof):
+        1. CORS_ORIGINS: Explicit list of all known production and development domains
+        2. CORS_WILDCARD_PATTERNS: Regex patterns for Vercel previews and subdomains
+        
+        Both are checked - if origin matches either, it's allowed.
+        """
         # Remove CORS_ORIGINS from kwargs to prevent Pydantic from trying to parse it as JSON
         kwargs.pop("CORS_ORIGINS", None)
         super().__init__(**kwargs)
         
-        # Define base allowed origins
+        # ============================================================
+        # CORS ORIGINS - Explicit allowlist (most reliable)
+        # ============================================================
+        # These are checked EXACTLY - origin must match one of these
         origins = [
+            # ----- Local Development -----
             "http://localhost:3000",
             "http://localhost:3001",
+            "http://localhost:8000",  # Backend direct access
             "http://127.0.0.1:3000",
             "http://127.0.0.1:3001",
+            "http://127.0.0.1:8000",
+            
+            # ----- Production Domains -----
+            # Truedy main domains
             "https://trudy.ai",
-            "https://truedy.sendora.ai",  # Production Frontend
+            "https://www.trudy.ai",
+            "https://app.trudy.ai",
+            "https://truedy.ai",
+            "https://www.truedy.ai",
+            "https://app.truedy.ai",
+            
+            # Sendora hosting (current production)
+            "https://truedy.sendora.ai",
+            "https://www.truedy.sendora.ai",
+            "https://app.truedy.sendora.ai",
+            
+            # Closi.tech hosting (backend domain)
+            "https://truedy.closi.tech",
+            "https://www.truedy.closi.tech",
+            "https://app.truedy.closi.tech",
+            
+            # Vercel production domain (common patterns)
+            "https://truedy.vercel.app",
+            "https://truedy-frontend.vercel.app",
+            "https://truedy-main.vercel.app",
         ]
         
-        # Also allow the backend's own URL for internal calls if necessary
-        # Add Hetzner domain if configured
+        # Add Hetzner domain if configured via environment variable
         hetzner_domain = os.getenv("HETZNER_DOMAIN", "")
-        if hetzner_domain:
+        if hetzner_domain and hetzner_domain not in origins:
             origins.append(hetzner_domain)
         
+        # Add any additional origins from environment variable (comma-separated)
+        extra_origins = os.getenv("CORS_EXTRA_ORIGINS", "")
+        if extra_origins:
+            for origin in extra_origins.split(","):
+                origin = origin.strip()
+                if origin and origin not in origins:
+                    origins.append(origin)
+        
         object.__setattr__(self, "CORS_ORIGINS", origins)
+        
+        # ============================================================
+        # CORS WILDCARD PATTERNS - Regex for dynamic subdomains
+        # ============================================================
+        # These use Python regex syntax - checked if exact match fails
+        # Pattern format: Full regex that will be matched against origin
         object.__setattr__(self, "CORS_WILDCARD_PATTERNS", [
-            r"https://.*\.vercel\.app",  # Vercel preview deployments (regex format)
-            r"https://.*\.truedy\.ai",  # Hetzner domain wildcards (regex format)
-            r"https://.*\.closi\.tech",  # Temporary hosting wildcards
-            r"https://.*\.sendora\.ai",  # Sendora domain wildcards
-            r"https://truedy\.sendora\.ai",  # Explicit match for production frontend
+            # Vercel preview deployments (handles all preview URLs)
+            # Matches: https://anything.vercel.app
+            r"https://[a-zA-Z0-9][-a-zA-Z0-9]*\.vercel\.app",
+            
+            # Truedy subdomains
+            # Matches: https://anything.truedy.ai
+            r"https://[a-zA-Z0-9][-a-zA-Z0-9]*\.truedy\.ai",
+            
+            # Closi.tech subdomains (temporary hosting)
+            # Matches: https://anything.closi.tech
+            r"https://[a-zA-Z0-9][-a-zA-Z0-9]*\.closi\.tech",
+            
+            # Sendora subdomains
+            # Matches: https://anything.sendora.ai
+            r"https://[a-zA-Z0-9][-a-zA-Z0-9]*\.sendora\.ai",
         ])
     
     
