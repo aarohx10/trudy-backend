@@ -30,64 +30,35 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/files/presign")
-async def presign_voice_files(
-    request_data: VoicePresignRequest,
-    current_user: dict = Depends(get_current_user),
-    x_client_id: Optional[str] = Header(None),
-):
-    """Get presigned URLs for voice sample uploads"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
-    
-    # Generate presigned URLs
-    uploads = []
-    for i, file in enumerate(request_data.files):
-        doc_id = str(uuid.uuid4())
-        storage_key = f"uploads/client_{current_user['client_id']}/voices/{doc_id}/sample_{i}.{file.filename.split('.')[-1]}"
-        
-        url = generate_presigned_url(
-            bucket=settings.STORAGE_BUCKET_UPLOADS,
-            key=storage_key,
-            operation="put_object",
-            expires_in=3600,
-            content_type=file.content_type,
-        )
-        
-        uploads.append({
-            "doc_id": doc_id,
-            "storage_key": storage_key,
-            "url": url,
-            "headers": {"Content-Type": file.content_type},
-        })
-    
-    return {
-        "data": {"uploads": uploads},
-        "meta": ResponseMeta(
-            request_id=str(uuid.uuid4()),
-            ts=datetime.utcnow(),
-        ),
-    }
+# Presign endpoint removed - using direct multipart upload instead
 
 
 @router.post("")
 async def create_voice(
-    voice_data: VoiceCreate,
-    request: Request,
+    # Support both multipart/form-data (new) and JSON (legacy)
+    name: Optional[str] = Form(None),
+    strategy: Optional[str] = Form(None),
+    provider: Optional[str] = Form("elevenlabs"),
+    provider_voice_id: Optional[str] = Form(None),
+    files: Optional[List[UploadFile]] = File(None),
+    # Legacy JSON support
+    voice_data: Optional[VoiceCreate] = None,
+    request: Request = None,
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
     idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     """
-    Create voice - two strategies:
+    Create voice - SIMPLIFIED: Direct multipart upload
     
-    1. NATIVE (Voice Clone): 
-       - Upload audio files → Create clone in ElevenLabs → Import to Ultravox
-       - User gets a custom cloned voice
+    FormData (multipart/form-data):
+    - name: Voice name (required)
+    - strategy: "native" (voice clone) or "external" (import)
+    - provider: "elevenlabs" (default)
+    - files: Audio files (WAV, MP3, WebM, OGG) - required for native
+    - provider_voice_id: Provider voice ID - required for external
     
-    2. EXTERNAL (Import):
-       - User provides existing provider_voice_id (from ElevenLabs, Cartesia, LMNT)
-       - Import directly to Ultravox with correct definition format
+    Legacy JSON support maintained for backward compatibility.
     """
     client_id = current_user.get("client_id")
     user_id = current_user.get("user_id")
@@ -95,159 +66,358 @@ async def create_voice(
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
-    # Check idempotency key
-    body_dict = voice_data.dict() if hasattr(voice_data, 'dict') else json.loads(json.dumps(voice_data, default=str))
-    if idempotency_key:
-        cached = await check_idempotency_key(
-            current_user["client_id"],
-            idempotency_key,
-            request,
-            body_dict,
-        )
-        if cached:
-            from fastapi.responses import JSONResponse
-            return JSONResponse(
-                content=cached["response_body"],
-                status_code=cached["status_code"],
-            )
-    
     db = DatabaseService(current_user["token"])
     db.set_auth(current_user["token"])
     
-    # Determine provider
-    provider = voice_data.provider_overrides.get("provider", "elevenlabs") if voice_data.provider_overrides else "elevenlabs"
+    # Determine if this is multipart (new) or JSON (legacy)
+    # Check if files are provided (multipart) or voice_data is provided (JSON)
+    is_multipart = files is not None and len(files) > 0
     
-    # Check for duplicate voice (same provider_voice_id for same user)
-    if voice_data.strategy != "native" and voice_data.source.provider_voice_id:
-        existing_voices = db.select(
-            "voices",
-            {
-                "client_id": client_id,
-                "user_id": user_id,
-                "provider_voice_id": voice_data.source.provider_voice_id,
-                "provider": provider,
-            }
-        )
-        if existing_voices and len(existing_voices) > 0:
-            existing_voice = existing_voices[0]
-            return {
-                "data": VoiceResponse(**existing_voice),
-                "meta": ResponseMeta(request_id=str(uuid.uuid4()), ts=datetime.utcnow()),
-            }
-    
-    # Credit check for native training (voice cloning)
-    client = None
-    if voice_data.strategy == "native":
-        client = db.get_client(client_id)
-        if not client or client.get("credits_balance", 0) < 50:
-            raise PaymentRequiredError(
-                "Insufficient credits for voice cloning. Required: 50",
-                {"required": 50, "available": client.get("credits_balance", 0) if client else 0},
-            )
-    
-    # ATOMIC RESOURCE CREATION
-    voice_id = str(uuid.uuid4())
-    now = datetime.utcnow()
-    voice_type = "custom" if voice_data.strategy == "native" else "reference"
-    
-    # Initialize tracking variables
-    elevenlabs_voice_id = None
-    ultravox_voice_id = None
-    
-    # Prepare voice record for database
-    voice_db_record = {
-        "id": voice_id,
-        "client_id": client_id,
-        "user_id": user_id,  # IMPORTANT: Track which user created this voice
-        "name": voice_data.name,
-        "provider": provider,
-        "type": voice_type,
-        "language": "en-US",
-        "status": "creating",
-        "training_info": {
-            "progress": 0,
-            "started_at": now.isoformat(),
-        } if voice_data.strategy == "native" else {},
-        "created_at": now.isoformat(),
-        "updated_at": now.isoformat(),
-    }
-    
-    # Insert temporary record
-    db.insert("voices", voice_db_record)
-    
-    try:
-        # NATIVE (Voice Clone): Clone in ElevenLabs → Import to Ultravox
-        if voice_data.strategy == "native":
+    if is_multipart:
+        # NEW: Multipart form-data approach
+        if not name:
+            raise ValidationError("Voice name is required")
+        if not strategy:
+            raise ValidationError("Strategy is required (native or external)")
+        
+        # NATIVE (Voice Clone): Process files directly
+        if strategy == "native":
+            if not files or len(files) == 0:
+                raise ValidationError("At least one audio file is required for voice cloning")
+            
+            if len(files) > 10:
+                raise ValidationError("Maximum 10 files allowed")
             
             # Validate requirements
             if not settings.ELEVENLABS_API_KEY:
                 raise ValidationError("ElevenLabs API key is not configured. Voice cloning requires ElevenLabs.")
             if not settings.ULTRAVOX_API_KEY:
                 raise ValidationError("Ultravox API key is not configured. Voice cloning requires Ultravox.")
-            if not voice_data.source.samples or len(voice_data.source.samples) == 0:
-                raise ValidationError("At least one audio sample is required for voice cloning.")
             
-            # Step 1: Download audio files from storage
+            # Credit check
+            client = db.get_client(client_id)
+            if not client or client.get("credits_balance", 0) < 50:
+                raise PaymentRequiredError(
+                    "Insufficient credits for voice cloning. Required: 50",
+                    {"required": 50, "available": client.get("credits_balance", 0) if client else 0},
+                )
+            
+            # Process files directly (no storage, no re-download)
             audio_files = []
-            for sample in voice_data.source.samples:
-                if not check_object_exists(settings.STORAGE_BUCKET_UPLOADS, sample.storage_key):
-                    raise NotFoundError("voice sample", sample.storage_key)
+            for file in files:
+                # Validate file type
+                if not file.content_type or not file.content_type.startswith('audio/'):
+                    raise ValidationError(f"Invalid file type: {file.content_type}. Only audio files are allowed.")
                 
-                # Generate presigned URL and download the file
-                audio_url = generate_presigned_url(
-                    bucket=settings.STORAGE_BUCKET_UPLOADS,
-                    key=sample.storage_key,
-                    operation="get_object",
-                    expires_in=3600,
-                )
+                # Read file content directly
+                content = await file.read()
                 
-                # Download the audio file
-                async with httpx.AsyncClient(timeout=60.0) as http_client:
-                    response = await http_client.get(audio_url)
-                    response.raise_for_status()
-                    audio_files.append(response.content)
+                # Validate size (10MB max per file)
+                if len(content) > 10 * 1024 * 1024:
+                    raise ValidationError(f"File {file.filename} exceeds 10MB limit")
                 
-            elevenlabs_response = await elevenlabs_client.clone_voice(
-                name=voice_data.name,
-                audio_files=audio_files,
-                description=f"Voice clone for user {user_id}",
-            )
-            elevenlabs_voice_id = elevenlabs_response.get("voice_id")
+                audio_files.append(content)
             
-            if not elevenlabs_voice_id:
-                raise ProviderError(
-                    provider="elevenlabs",
-                    message="ElevenLabs response missing voice_id",
-                    http_status=500,
-                )
+            # Create voice record
+            voice_id = str(uuid.uuid4())
+            now = datetime.utcnow()
             
-            ultravox_response = await ultravox_client.import_voice_from_provider(
-                name=voice_data.name,
-                provider="elevenlabs",
-                provider_voice_id=elevenlabs_voice_id,
-                description=f"Cloned voice: {voice_data.name}",
-            )
-            ultravox_voice_id = ultravox_response.get("voiceId") or ultravox_response.get("id")
-            
-            if not ultravox_voice_id:
-                raise ProviderError(
-                    provider="ultravox",
-                    message="Ultravox response missing voiceId",
-                    http_status=500,
-                )
-            
-            # Update database record
-            update_data = {
-                "status": "active",  # Voice cloning is complete
-                "provider_voice_id": elevenlabs_voice_id,
-                "ultravox_voice_id": ultravox_voice_id,
+            voice_db_record = {
+                "id": voice_id,
+                "client_id": client_id,
+                "user_id": user_id,
+                "name": name,
+                "provider": provider or "elevenlabs",
+                "type": "custom",
+                "language": "en-US",
+                "status": "creating",
+                "training_info": {
+                    "progress": 0,
+                    "started_at": now.isoformat(),
+                },
+                "created_at": now.isoformat(),
                 "updated_at": now.isoformat(),
             }
-            db.update("voices", {"id": voice_id}, update_data)
-            voice_db_record.update(update_data)
+            
+            db.insert("voices", voice_db_record)
+            
+            try:
+                # Send directly to ElevenLabs (no storage step)
+                elevenlabs_response = await elevenlabs_client.clone_voice(
+                    name=name,
+                    audio_files=audio_files,
+                    description=f"Voice clone for user {user_id}",
+                )
+                elevenlabs_voice_id = elevenlabs_response.get("voice_id")
+                
+                if not elevenlabs_voice_id:
+                    raise ProviderError(
+                        provider="elevenlabs",
+                        message="ElevenLabs response missing voice_id",
+                        http_status=500,
+                    )
+                
+                ultravox_response = await ultravox_client.import_voice_from_provider(
+                    name=name,
+                    provider="elevenlabs",
+                    provider_voice_id=elevenlabs_voice_id,
+                    description=f"Cloned voice: {name}",
+                )
+                ultravox_voice_id = ultravox_response.get("voiceId") or ultravox_response.get("id")
+                
+                if not ultravox_voice_id:
+                    raise ProviderError(
+                        provider="ultravox",
+                        message="Ultravox response missing voiceId",
+                        http_status=500,
+                    )
+                
+                # Update database record
+                update_data = {
+                    "status": "active",
+                    "provider_voice_id": elevenlabs_voice_id,
+                    "ultravox_voice_id": ultravox_voice_id,
+                    "updated_at": datetime.utcnow().isoformat(),
+                }
+                db.update("voices", {"id": voice_id}, update_data)
+                voice_db_record.update(update_data)
+                
+                # Deduct credits
+                db.update("clients", {"id": client_id}, {
+                    "credits_balance": client.get("credits_balance", 0) - 50,
+                    "updated_at": datetime.utcnow().isoformat(),
+                })
+                
+                response_data = {
+                    "data": VoiceResponse(**voice_db_record),
+                    "meta": ResponseMeta(request_id=str(uuid.uuid4()), ts=datetime.utcnow()),
+                }
+                
+                return response_data
+                
+            except Exception as e:
+                # Cleanup on error
+                db.delete("voices", {"id": voice_id})
+                raise
         
-        # EXTERNAL (Import existing voice): Import to Ultravox
+        # EXTERNAL (Import existing voice)
         else:
+            if not provider_voice_id:
+                raise ValidationError("Provider voice ID is required for external import")
+            
+            if not settings.ULTRAVOX_API_KEY:
+                raise ValidationError("Ultravox API key is not configured.")
+            
+            # Create voice record
+            voice_id = str(uuid.uuid4())
+            now = datetime.utcnow()
+            
+            voice_db_record = {
+                "id": voice_id,
+                "client_id": client_id,
+                "user_id": user_id,
+                "name": name,
+                "provider": provider or "elevenlabs",
+                "type": "reference",
+                "language": "en-US",
+                "status": "creating",
+                "created_at": now.isoformat(),
+                "updated_at": now.isoformat(),
+            }
+            
+            db.insert("voices", voice_db_record)
+            
+            try:
+                ultravox_response = await ultravox_client.import_voice_from_provider(
+                    name=name,
+                    provider=provider or "elevenlabs",
+                    provider_voice_id=provider_voice_id,
+                    description=f"Imported voice: {name}",
+                )
+                ultravox_voice_id = ultravox_response.get("voiceId") or ultravox_response.get("id")
+                
+                if not ultravox_voice_id:
+                    raise ProviderError(
+                        provider="ultravox",
+                        message="Ultravox response missing voiceId",
+                        http_status=500,
+                    )
+                
+                update_data = {
+                    "status": "active",
+                    "provider_voice_id": provider_voice_id,
+                    "ultravox_voice_id": ultravox_voice_id,
+                    "updated_at": datetime.utcnow().isoformat(),
+                }
+                db.update("voices", {"id": voice_id}, update_data)
+                voice_db_record.update(update_data)
+                
+                response_data = {
+                    "data": VoiceResponse(**voice_db_record),
+                    "meta": ResponseMeta(request_id=str(uuid.uuid4()), ts=datetime.utcnow()),
+                }
+                
+                return response_data
+                
+            except Exception as e:
+                db.delete("voices", {"id": voice_id})
+                raise
+    
+    else:
+        # LEGACY: JSON approach (backward compatibility)
+        if not voice_data:
+            raise ValidationError("Request body is required")
+        
+        # Check idempotency key
+        body_dict = voice_data.dict() if hasattr(voice_data, 'dict') else json.loads(json.dumps(voice_data, default=str))
+        if idempotency_key:
+            cached = await check_idempotency_key(
+                current_user["client_id"],
+                idempotency_key,
+                request,
+                body_dict,
+            )
+            if cached:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    content=cached["response_body"],
+                    status_code=cached["status_code"],
+                )
+        
+        # Determine provider
+        provider = voice_data.provider_overrides.get("provider", "elevenlabs") if voice_data.provider_overrides else "elevenlabs"
+        
+        # Check for duplicate voice
+        if voice_data.strategy != "native" and voice_data.source.provider_voice_id:
+            existing_voices = db.select(
+                "voices",
+                {
+                    "client_id": client_id,
+                    "user_id": user_id,
+                    "provider_voice_id": voice_data.source.provider_voice_id,
+                    "provider": provider,
+                }
+            )
+            if existing_voices and len(existing_voices) > 0:
+                existing_voice = existing_voices[0]
+                return {
+                    "data": VoiceResponse(**existing_voice),
+                    "meta": ResponseMeta(request_id=str(uuid.uuid4()), ts=datetime.utcnow()),
+                }
+        
+        # Credit check for native training
+        client = None
+        if voice_data.strategy == "native":
+            client = db.get_client(client_id)
+            if not client or client.get("credits_balance", 0) < 50:
+                raise PaymentRequiredError(
+                    "Insufficient credits for voice cloning. Required: 50",
+                    {"required": 50, "available": client.get("credits_balance", 0) if client else 0},
+                )
+        
+        # ATOMIC RESOURCE CREATION
+        voice_id = str(uuid.uuid4())
+        now = datetime.utcnow()
+        voice_type = "custom" if voice_data.strategy == "native" else "reference"
+        
+        # Initialize tracking variables
+        elevenlabs_voice_id = None
+        ultravox_voice_id = None
+        
+        # Prepare voice record for database
+        voice_db_record = {
+            "id": voice_id,
+            "client_id": client_id,
+            "user_id": user_id,
+            "name": voice_data.name,
+            "provider": provider,
+            "type": voice_type,
+            "language": "en-US",
+            "status": "creating",
+            "training_info": {
+                "progress": 0,
+                "started_at": now.isoformat(),
+            } if voice_data.strategy == "native" else {},
+            "created_at": now.isoformat(),
+            "updated_at": now.isoformat(),
+        }
+        
+        # Insert temporary record
+        db.insert("voices", voice_db_record)
+        
+        try:
+            # NATIVE (Voice Clone): Clone in ElevenLabs → Import to Ultravox
+            if voice_data.strategy == "native":
+                
+                # Validate requirements
+                if not settings.ELEVENLABS_API_KEY:
+                    raise ValidationError("ElevenLabs API key is not configured. Voice cloning requires ElevenLabs.")
+                if not settings.ULTRAVOX_API_KEY:
+                    raise ValidationError("Ultravox API key is not configured. Voice cloning requires Ultravox.")
+                if not voice_data.source.samples or len(voice_data.source.samples) == 0:
+                    raise ValidationError("At least one audio sample is required for voice cloning.")
+                
+                # Step 1: Download audio files from storage (legacy path)
+                audio_files = []
+                for sample in voice_data.source.samples:
+                    if not check_object_exists(settings.STORAGE_BUCKET_UPLOADS, sample.storage_key):
+                        raise NotFoundError("voice sample", sample.storage_key)
+                    
+                    # Generate presigned URL and download the file
+                    audio_url = generate_presigned_url(
+                        bucket=settings.STORAGE_BUCKET_UPLOADS,
+                        key=sample.storage_key,
+                        operation="get_object",
+                        expires_in=3600,
+                    )
+                    
+                    # Download the audio file
+                    async with httpx.AsyncClient(timeout=60.0) as http_client:
+                        response = await http_client.get(audio_url)
+                        response.raise_for_status()
+                        audio_files.append(response.content)
+                
+                elevenlabs_response = await elevenlabs_client.clone_voice(
+                    name=voice_data.name,
+                    audio_files=audio_files,
+                    description=f"Voice clone for user {user_id}",
+                )
+                elevenlabs_voice_id = elevenlabs_response.get("voice_id")
+                
+                if not elevenlabs_voice_id:
+                    raise ProviderError(
+                        provider="elevenlabs",
+                        message="ElevenLabs response missing voice_id",
+                        http_status=500,
+                    )
+                
+                ultravox_response = await ultravox_client.import_voice_from_provider(
+                    name=voice_data.name,
+                    provider="elevenlabs",
+                    provider_voice_id=elevenlabs_voice_id,
+                    description=f"Cloned voice: {voice_data.name}",
+                )
+                ultravox_voice_id = ultravox_response.get("voiceId") or ultravox_response.get("id")
+                
+                if not ultravox_voice_id:
+                    raise ProviderError(
+                        provider="ultravox",
+                        message="Ultravox response missing voiceId",
+                        http_status=500,
+                    )
+                
+                # Update database record
+                update_data = {
+                    "status": "active",  # Voice cloning is complete
+                    "provider_voice_id": elevenlabs_voice_id,
+                    "ultravox_voice_id": ultravox_voice_id,
+                    "updated_at": now.isoformat(),
+                }
+                db.update("voices", {"id": voice_id}, update_data)
+                voice_db_record.update(update_data)
+            
+            # EXTERNAL (Import existing voice): Import to Ultravox
+            else:
             if not settings.ULTRAVOX_API_KEY:
                 raise ValidationError("Ultravox API key is not configured.")
             
