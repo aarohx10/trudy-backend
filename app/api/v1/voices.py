@@ -34,6 +34,237 @@ router = APIRouter()
 # Presign endpoint removed - using direct multipart upload instead
 
 
+@router.post("/clone")
+async def clone_voice(
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+    x_client_id: Optional[str] = Header(None),
+):
+    """
+    Muscular voice cloning endpoint: File Upload → ElevenLabs Clone → Ultravox Sync → Supabase Record
+    
+    FormData (multipart/form-data):
+    - name: Voice name (required)
+    - file: Audio file (MP3, WAV, etc.) - required
+    
+    Returns immediately with voice record. Processing happens synchronously.
+    """
+    client_id = current_user.get("client_id")
+    user_id = current_user.get("user_id")
+    
+    if current_user["role"] not in ["client_admin", "agency_admin"]:
+        raise ForbiddenError("Insufficient permissions")
+    
+    # Validate API keys
+    if not settings.ELEVENLABS_API_KEY:
+        raise ValidationError("ElevenLabs API key is not configured")
+    if not settings.ULTRAVOX_API_KEY:
+        raise ValidationError("Ultravox API key is not configured")
+    
+    db = DatabaseService(current_user["token"])
+    db.set_auth(current_user["token"])
+    
+    # Parse multipart form data
+    form = await request.form()
+    name = form.get("name")
+    file_item = form.get("file")
+    
+    if not name:
+        raise ValidationError("Voice name is required")
+    if not file_item or not isinstance(file_item, UploadFile):
+        raise ValidationError("Audio file is required")
+    
+    # Validate file
+    filename = file_item.filename or ""
+    content_type = file_item.content_type or ""
+    valid_extensions = ['.wav', '.mp3', '.mpeg', '.webm', '.ogg', '.m4a', '.aac', '.flac']
+    
+    if not content_type.startswith('audio/') and not any(filename.lower().endswith(ext) for ext in valid_extensions):
+        raise ValidationError(f"Invalid file type: {filename}. Only audio files are allowed.")
+    
+    # Read file content
+    audio_content = await file_item.read()
+    file_size = len(audio_content)
+    
+    if file_size > 10 * 1024 * 1024:
+        raise ValidationError(f"File {filename} exceeds 10MB limit")
+    
+    if file_size == 0:
+        raise ValidationError("File is empty")
+    
+    # Credit check
+    client = db.get_client(client_id)
+    if not client or client.get("credits_balance", 0) < 50:
+        raise PaymentRequiredError(
+            "Insufficient credits for voice cloning. Required: 50",
+            {"required": 50, "available": client.get("credits_balance", 0) if client else 0},
+        )
+    
+    # Create voice record first
+    voice_id = str(uuid.uuid4())
+    now = datetime.utcnow()
+    
+    voice_db_record = {
+        "id": voice_id,
+        "client_id": client_id,
+        "user_id": user_id,
+        "name": name,
+        "provider": "elevenlabs",
+        "type": "custom",
+        "language": "en-US",
+        "status": "creating",
+        "training_info": {
+            "progress": 0,
+            "started_at": now.isoformat(),
+        },
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+    }
+    
+    db.insert("voices", voice_db_record)
+    logger.info(f"[VOICES] [CLONE] Voice record created | voice_id={voice_id} | name={name}")
+    
+    try:
+        # Action A: Direct HTTP POST to ElevenLabs
+        logger.info(f"[VOICES] [CLONE] Starting ElevenLabs clone | voice_id={voice_id}")
+        elevenlabs_url = "https://api.elevenlabs.io/v1/voices/add"
+        
+        async with httpx.AsyncClient(timeout=120.0) as http_client:
+            files = [("files", (filename, audio_content, content_type or "audio/mpeg"))]
+            data = {"name": name}
+            
+            elevenlabs_response = await http_client.post(
+                elevenlabs_url,
+                headers={"xi-api-key": settings.ELEVENLABS_API_KEY},
+                data=data,
+                files=files,
+            )
+            
+            if elevenlabs_response.status_code >= 400:
+                error_text = elevenlabs_response.text[:500] if elevenlabs_response.text else "No response body"
+                logger.error(f"[VOICES] [CLONE] ElevenLabs error | status={elevenlabs_response.status_code} | error={error_text}")
+                raise ProviderError(
+                    provider="elevenlabs",
+                    message=f"ElevenLabs voice cloning failed: {error_text}",
+                    http_status=elevenlabs_response.status_code,
+                )
+            
+            elevenlabs_data = elevenlabs_response.json()
+            elevenlabs_voice_id = elevenlabs_data.get("voice_id")
+            
+            if not elevenlabs_voice_id:
+                raise ProviderError(
+                    provider="elevenlabs",
+                    message="ElevenLabs response missing voice_id",
+                    http_status=500,
+                )
+        
+        logger.info(f"[VOICES] [CLONE] ElevenLabs clone completed | voice_id={voice_id} | elevenlabs_voice_id={elevenlabs_voice_id}")
+        
+        # Action B: Direct HTTP POST to Ultravox
+        logger.info(f"[VOICES] [CLONE] Starting Ultravox sync | voice_id={voice_id} | elevenlabs_voice_id={elevenlabs_voice_id}")
+        
+        # Normalize name for Ultravox
+        normalized_name = name.lower().replace(" ", "_").replace("-", "_")
+        normalized_name = "".join(c if c.isalnum() or c == "_" else "" for c in normalized_name)
+        
+        ultravox_url = f"{settings.ULTRAVOX_BASE_URL.rstrip('/')}/api/voices"
+        ultravox_payload = {
+            "name": normalized_name,
+            "description": f"Cloned voice: {name}",
+            "definition": {
+                "elevenLabs": {
+                    "voiceId": elevenlabs_voice_id,
+                    "model": "eleven_multilingual_v2",
+                    "stability": 0.5,
+                    "similarityBoost": 0.75,
+                    "style": 0.0,
+                    "useSpeakerBoost": True,
+                    "speed": 1.0,
+                }
+            }
+        }
+        
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http_client:
+            ultravox_response = await http_client.post(
+                ultravox_url,
+                headers={
+                    "X-API-Key": settings.ULTRAVOX_API_KEY,
+                    "Content-Type": "application/json",
+                },
+                json=ultravox_payload,
+            )
+            
+            if ultravox_response.status_code >= 400:
+                error_text = ultravox_response.text[:500] if ultravox_response.text else "No response body"
+                logger.error(f"[VOICES] [CLONE] Ultravox error | status={ultravox_response.status_code} | error={error_text}")
+                # Clean up ElevenLabs voice on Ultravox failure
+                try:
+                    async with httpx.AsyncClient(timeout=30.0) as cleanup_client:
+                        await cleanup_client.delete(
+                            f"https://api.elevenlabs.io/v1/voices/{elevenlabs_voice_id}",
+                            headers={"xi-api-key": settings.ELEVENLABS_API_KEY},
+                        )
+                except Exception:
+                    pass
+                raise ProviderError(
+                    provider="ultravox",
+                    message=f"Ultravox sync failed: {error_text}",
+                    http_status=ultravox_response.status_code,
+                )
+            
+            ultravox_data = ultravox_response.json()
+            ultravox_voice_id = ultravox_data.get("voiceId") or ultravox_data.get("id")
+            
+            if not ultravox_voice_id:
+                raise ProviderError(
+                    provider="ultravox",
+                    message="Ultravox response missing voiceId",
+                    http_status=500,
+                )
+        
+        logger.info(f"[VOICES] [CLONE] Ultravox sync completed | voice_id={voice_id} | ultravox_voice_id={ultravox_voice_id}")
+        
+        # Action C: Update database record
+        update_data = {
+            "status": "active",
+            "provider_voice_id": elevenlabs_voice_id,
+            "ultravox_voice_id": ultravox_voice_id,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+        db.update("voices", {"id": voice_id}, update_data)
+        voice_db_record.update(update_data)
+        
+        # Deduct credits
+        db.update("clients", {"id": client_id}, {
+            "credits_balance": client.get("credits_balance", 0) - 50,
+            "updated_at": datetime.utcnow().isoformat(),
+        })
+        
+        logger.info(f"[VOICES] [CLONE] Voice cloning completed successfully | voice_id={voice_id} | name={name}")
+        
+        return {
+            "data": VoiceResponse(**voice_db_record),
+            "meta": ResponseMeta(request_id=str(uuid.uuid4()), ts=datetime.utcnow()),
+        }
+        
+    except (ProviderError, ValidationError, PaymentRequiredError):
+        # Re-raise known errors
+        raise
+    except Exception as e:
+        logger.error(f"[VOICES] [CLONE] Unexpected error | voice_id={voice_id} | error={str(e)}", exc_info=True)
+        # Update voice status to failed
+        db.update("voices", {"id": voice_id}, {
+            "status": "failed",
+            "updated_at": datetime.utcnow().isoformat(),
+        })
+        raise ProviderError(
+            provider="voice_cloning",
+            message=f"Voice cloning failed: {str(e)}",
+            http_status=500,
+        )
+
+
 async def _process_voice_cloning(
     voice_id: str,
     name: str,

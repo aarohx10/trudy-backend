@@ -10,7 +10,7 @@ import json
 
 from app.core.auth import get_current_user
 from app.core.database import DatabaseService
-from app.core.exceptions import NotFoundError, ForbiddenError, ValidationError
+from app.core.exceptions import NotFoundError, ForbiddenError, ValidationError, ProviderError
 from app.core.idempotency import check_idempotency_key, store_idempotency_response
 from app.core.events import emit_agent_created, emit_agent_updated
 from app.services.ultravox import ultravox_client
@@ -1035,22 +1035,13 @@ async def create_agent(
         # Step 4: Rollback - delete the temporary record and return error
         logger.error(f"Failed to create agent in Ultravox: {e}", exc_info=True)
         
-        # Extract error details if it's a ProviderError
+        # Rollback: Delete the temporary record
+        db.delete("agents", {"id": agent_id, "client_id": current_user["client_id"]})
+        
+        # Re-raise ProviderError as-is, otherwise wrap in ProviderError
         if isinstance(e, ProviderError):
-            provider_error_details = e.details.get("provider_details", {})
-            # Delete the temporary record
-            db.delete("agents", {"id": agent_id, "client_id": current_user["client_id"]})
-            # Re-raise with full error details
-            raise ProviderError(
-                provider="ultravox",
-                message=str(e),
-                http_status=e.details.get("httpStatus", 500),
-                details=provider_error_details,
-            )
+            raise
         else:
-            # Delete the temporary record
-            db.delete("agents", {"id": agent_id, "client_id": current_user["client_id"]})
-            # Raise appropriate error
             error_msg = str(e)
             raise ProviderError(
                 provider="ultravox",

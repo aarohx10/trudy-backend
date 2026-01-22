@@ -1,14 +1,17 @@
 """
 Knowledge Base Endpoints
 """
-from fastapi import APIRouter, Header, Depends, Request, HTTPException
+from fastapi import APIRouter, Header, Depends, Request, HTTPException, UploadFile
 from starlette.requests import Request
 from typing import Optional, Dict, Any
 from datetime import datetime
+from pathlib import Path
 import uuid
 import json
 import logging
 import os
+import httpx
+import tempfile
 
 from app.core.auth import get_current_user, verify_ultravox_signature
 from app.core.database import DatabaseService, DatabaseAdminService
@@ -18,7 +21,7 @@ from app.core.idempotency import check_idempotency_key, store_idempotency_respon
 from app.core.events import emit_knowledge_base_created, emit_knowledge_base_ingestion_started
 from app.services.ultravox import ultravox_client
 from app.services.embeddings import generate_embeddings_batch
-from app.services.text_extraction import extract_text_from_file, chunk_text
+from app.services.text_extraction import extract_text_from_file, extract_text_from_url, chunk_text
 from app.models.schemas import (
     KnowledgeBaseCreate,
     KnowledgeBaseUpdate,
@@ -415,7 +418,7 @@ async def get_knowledge_base(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """Get knowledge base"""
+    """Get knowledge base with documents list"""
     db = DatabaseService(current_user["token"])
     db.set_auth(current_user["token"])
     
@@ -423,8 +426,8 @@ async def get_knowledge_base(
     if not kb:
         raise NotFoundError("knowledge_base", kb_id)
     
-    # Get document counts
-    documents = db.select("knowledge_base_documents", {"knowledge_base_id": kb_id})
+    # Get documents list
+    documents = db.select("knowledge_base_documents", {"knowledge_base_id": kb_id}, order_by="created_at")
     document_counts = {
         "total": len(documents),
         "indexed": sum(1 for d in documents if d.get("status") == "indexed"),
@@ -433,6 +436,18 @@ async def get_knowledge_base(
     }
     
     kb["document_counts"] = document_counts
+    kb["documents"] = [
+        {
+            "id": doc.get("id"),
+            "name": doc.get("s3_key") or "Unknown",
+            "type": doc.get("file_type") or "unknown",
+            "size": doc.get("file_size") or 0,
+            "status": doc.get("status") or "unknown",
+            "chunk_count": doc.get("chunk_count") or 0,
+            "created_at": doc.get("created_at"),
+        }
+        for doc in documents
+    ]
     
     return {
         "data": KnowledgeBaseResponse(**kb),
@@ -492,6 +507,197 @@ async def update_knowledge_base(
             ts=datetime.utcnow(),
         ),
     }
+
+
+@router.post("/{kb_id}/add-content")
+async def add_content_to_knowledge_base(
+    kb_id: str,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+    x_client_id: Optional[str] = Header(None),
+):
+    """
+    Muscular RAG endpoint: Direct-to-Vector content addition.
+    
+    Accepts either:
+    - url: str (optional) - Web URL to fetch and index
+    - file: UploadFile (optional) - File to upload and index
+    
+    Processing flow:
+    1. Extract text (from URL or file)
+    2. Chunk text
+    3. Generate embeddings
+    4. Insert chunks into database
+    5. Return status immediately
+    
+    FormData (multipart/form-data):
+    - url: str (optional)
+    - file: UploadFile (optional)
+    """
+    if current_user["role"] not in ["client_admin", "agency_admin"]:
+        raise ForbiddenError("Insufficient permissions")
+    
+    db = DatabaseService(current_user["token"])
+    db.set_auth(current_user["token"])
+    admin_db = DatabaseAdminService()  # For batch inserts
+    
+    # Verify knowledge base exists
+    kb = db.get_knowledge_base(kb_id, current_user["client_id"])
+    if not kb:
+        raise NotFoundError("knowledge_base", kb_id)
+    
+    if kb.get("status") != "ready":
+        raise ValidationError("Knowledge base must be ready", {"kb_status": kb.get("status")})
+    
+    # Parse form data
+    form = await request.form()
+    url = form.get("url")
+    file_item = form.get("file")
+    
+    if not url and not file_item:
+        raise ValidationError("Either 'url' or 'file' must be provided")
+    
+    if url and file_item:
+        raise ValidationError("Provide either 'url' or 'file', not both")
+    
+    # Create document record
+    doc_id = str(uuid.uuid4())
+    now = datetime.utcnow()
+    
+    try:
+        extracted_text = ""
+        source_name = ""
+        file_type = ""
+        file_size = 0
+        
+        # Extract text based on input type
+        if url:
+            # Action: Fetch URL and extract text
+            logger.info(f"[KB] [ADD-CONTENT] Fetching URL | kb_id={kb_id} | url={url}")
+            extracted_text = await extract_text_from_url(url)
+            source_name = url
+            file_type = "url"
+            file_size = len(extracted_text.encode('utf-8'))
+        else:
+            # Action: Extract text from file
+            if not isinstance(file_item, UploadFile):
+                raise ValidationError("Invalid file upload")
+            
+            filename = file_item.filename or "unknown"
+            file_type = file_item.content_type or ""
+            file_content = await file_item.read()
+            file_size = len(file_content)
+            
+            # Validate file size (20MB max for direct processing)
+            if file_size > 20 * 1024 * 1024:
+                raise ValidationError("File exceeds 20MB limit. Use presign/ingest flow for large files.")
+            
+            # Save to temporary file for extraction
+            with tempfile.NamedTemporaryFile(delete=False, suffix=Path(filename).suffix) as tmp_file:
+                tmp_file.write(file_content)
+                tmp_path = tmp_file.name
+            
+            try:
+                logger.info(f"[KB] [ADD-CONTENT] Extracting text from file | kb_id={kb_id} | filename={filename}")
+                extracted_text = await extract_text_from_file(tmp_path, file_type)
+                source_name = filename
+            finally:
+                # Clean up temp file
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+        
+        if not extracted_text or not extracted_text.strip():
+            raise ValidationError("Could not extract text from source")
+        
+        # Create document record
+        doc_record = {
+            "id": doc_id,
+            "client_id": current_user["client_id"],
+            "knowledge_base_id": kb_id,
+            "s3_key": source_name,  # Store source name/URL
+            "file_type": file_type,
+            "file_size": file_size,
+            "status": "processing",
+            "created_at": now.isoformat(),
+            "updated_at": now.isoformat(),
+        }
+        db.insert("knowledge_base_documents", doc_record)
+        logger.info(f"[KB] [ADD-CONTENT] Document record created | doc_id={doc_id} | kb_id={kb_id}")
+        
+        # Chunk text (1000 chars with 200 overlap)
+        logger.info(f"[KB] [ADD-CONTENT] Chunking text | doc_id={doc_id} | text_length={len(extracted_text)}")
+        chunks = chunk_text(extracted_text, chunk_size=1000, overlap=200)
+        
+        if not chunks:
+            raise ValidationError("No chunks generated from extracted text")
+        
+        # Generate embeddings for all chunks
+        logger.info(f"[KB] [ADD-CONTENT] Generating embeddings | doc_id={doc_id} | chunks={len(chunks)}")
+        embeddings = await generate_embeddings_batch(chunks, batch_size=100)
+        
+        if len(embeddings) != len(chunks):
+            raise ValidationError(f"Embedding count mismatch: {len(embeddings)} != {len(chunks)}")
+        
+        # Prepare chunks for batch insert
+        chunk_records = []
+        for chunk_content, embedding in zip(chunks, embeddings):
+            chunk_records.append({
+                "kb_id": kb_id,
+                "content": chunk_content,
+                "embedding": embedding,
+            })
+        
+        # Batch insert chunks
+        logger.info(f"[KB] [ADD-CONTENT] Inserting chunks | doc_id={doc_id} | chunks={len(chunk_records)}")
+        admin_db.insert_chunks_batch(chunk_records)
+        
+        # Update document status
+        db.update(
+            "knowledge_base_documents",
+            {"id": doc_id},
+            {
+                "status": "indexed",
+                "chunk_count": len(chunks),
+                "updated_at": datetime.utcnow().isoformat(),
+            },
+        )
+        
+        logger.info(f"[KB] [ADD-CONTENT] Content indexed successfully | doc_id={doc_id} | kb_id={kb_id} | chunks={len(chunks)}")
+        
+        return {
+            "data": {
+                "doc_id": doc_id,
+                "status": "indexed",
+                "chunk_count": len(chunks),
+                "source": source_name,
+            },
+            "meta": ResponseMeta(
+                request_id=str(uuid.uuid4()),
+                ts=datetime.utcnow(),
+            ),
+        }
+        
+    except (ValidationError, NotFoundError, ForbiddenError):
+        # Re-raise known errors
+        raise
+    except Exception as e:
+        logger.error(f"[KB] [ADD-CONTENT] Failed to add content | doc_id={doc_id} | kb_id={kb_id} | error={str(e)}", exc_info=True)
+        # Update document status to failed
+        try:
+            db.update(
+                "knowledge_base_documents",
+                {"id": doc_id},
+                {
+                    "status": "failed",
+                    "error_message": str(e),
+                    "updated_at": datetime.utcnow().isoformat(),
+                },
+            )
+        except Exception:
+            pass
+        raise ValidationError(f"Failed to add content to knowledge base: {str(e)}")
 
 
 @router.post("/kb/query")

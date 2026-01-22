@@ -778,6 +778,17 @@ class UltravoxClient:
             return None
     
     # Tools
+    async def list_tools(self, ownership: str = "private") -> Dict[str, Any]:
+        """List tools from Ultravox with ownership filter"""
+        params = {"ownership": ownership} if ownership else {}
+        response = await self._request("GET", "/api/tools", params=params)
+        return response
+    
+    async def get_tool(self, tool_id: str) -> Dict[str, Any]:
+        """Get tool from Ultravox"""
+        response = await self._request("GET", f"/api/tools/{tool_id}")
+        return response
+    
     async def create_tool(self, tool_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create tool in Ultravox"""
         response = await self._request("POST", "/api/tools", data=tool_data)
@@ -829,8 +840,13 @@ class UltravoxClient:
         return response
     
     async def update_tool(self, tool_id: str, tool_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Update tool in Ultravox"""
-        response = await self._request("PATCH", f"/api/tools/{tool_id}", data=tool_data)
+        """Update tool in Ultravox (full definition replacement)"""
+        response = await self._request("PUT", f"/api/tools/{tool_id}", data=tool_data)
+        return response
+    
+    async def test_tool(self, tool_id: str, test_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Test tool in Ultravox"""
+        response = await self._request("POST", f"/api/tools/{tool_id}/test", data=test_data)
         return response
     
     async def delete_tool(self, tool_id: str) -> None:

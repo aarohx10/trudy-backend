@@ -5,8 +5,89 @@ import logging
 from typing import List
 from pathlib import Path
 import io
+import httpx
+import re
+from html.parser import HTMLParser
 
 logger = logging.getLogger(__name__)
+
+
+class HTMLTextExtractor(HTMLParser):
+    """Extract text from HTML, removing script, style, and navigation elements"""
+    def __init__(self):
+        super().__init__()
+        self.text_parts = []
+        self.skip_tags = {'script', 'style', 'noscript', 'nav', 'header', 'footer'}
+        self.in_skip_tag = False
+    
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() in self.skip_tags:
+            self.in_skip_tag = True
+    
+    def handle_endtag(self, tag):
+        if tag.lower() in self.skip_tags:
+            self.in_skip_tag = False
+    
+    def handle_data(self, data):
+        if not self.in_skip_tag:
+            text = data.strip()
+            if text:
+                self.text_parts.append(text)
+    
+    def get_text(self) -> str:
+        """Get extracted text, cleaned and normalized"""
+        text = ' '.join(self.text_parts)
+        # Remove excessive whitespace
+        text = re.sub(r'\s+', ' ', text)
+        # Remove common UI patterns
+        ui_patterns = [
+            r'\b(File|Edit|View|Insert|Format|Tools|Extensions|Help|Sign in|Share|Tab|External|Menu|Undo|Redo|Print)\b',
+            r'\b(Copy format|Normal text|Arial|Bold|Italic|Underline|Align|Line spacing)\b',
+            r'\b(Checklist|Bullet points|Numbered list|Indent|Outdent|Clear formatting)\b',
+            r'\b(Version history|Comment|Video call|Editing|Document tabs)\b',
+        ]
+        for pattern in ui_patterns:
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE)
+        return text.strip()
+
+
+async def extract_text_from_url(url: str) -> str:
+    """
+    Extract text from a web URL by fetching HTML and stripping tags.
+    
+    Args:
+        url: The URL to fetch and extract text from
+    
+    Returns:
+        Extracted text content
+    """
+    try:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            response = await client.get(
+                url,
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                }
+            )
+            response.raise_for_status()
+            html_content = response.text
+            
+            # Extract text from HTML
+            extractor = HTMLTextExtractor()
+            extractor.feed(html_content)
+            text = extractor.get_text()
+            
+            if not text or len(text.strip()) < 10:
+                raise ValueError(f"Could not extract meaningful text from URL: {url}")
+            
+            return text
+    except httpx.HTTPStatusError as e:
+        logger.error(f"HTTP error fetching URL {url}: {e.response.status_code}")
+        raise ValueError(f"Failed to fetch URL: HTTP {e.response.status_code}")
+    except Exception as e:
+        logger.error(f"Failed to extract text from URL {url}: {e}", exc_info=True)
+        raise
 
 
 def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
