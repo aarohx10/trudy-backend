@@ -9,6 +9,7 @@ import hmac
 import hashlib
 import time
 import os
+import re
 import logging
 from app.core.storage import get_file_path, check_file_exists, get_storage_path, ensure_directory_exists
 from app.core.config import settings
@@ -19,6 +20,52 @@ router = APIRouter()
 
 # Maximum file size for uploads (50MB)
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024
+
+# Compile CORS regex patterns for origin validation
+_cors_compiled_patterns = []
+for pattern in settings.CORS_WILDCARD_PATTERNS:
+    # Ensure patterns are anchored for full string match
+    if not pattern.startswith("^"):
+        pattern = f"^{pattern}"
+    if not pattern.endswith("$"):
+        pattern = f"{pattern}$"
+    try:
+        _cors_compiled_patterns.append(re.compile(pattern))
+    except re.error as e:
+        logger.warning(f"Invalid CORS regex pattern '{pattern}': {e}")
+
+
+def is_origin_allowed(origin: str) -> bool:
+    """
+    Check if an origin is allowed by CORS configuration.
+    Matches the logic in main.py for consistency.
+    """
+    if not origin:
+        return False
+    
+    # Check exact origins first
+    if origin in settings.CORS_ORIGINS:
+        return True
+    
+    # Check regex patterns for dynamic subdomains
+    for pattern in _cors_compiled_patterns:
+        if pattern.match(origin):
+            return True
+    
+    return False
+
+
+def add_cors_headers_if_allowed(response: Response, origin: str) -> None:
+    """
+    Add CORS headers to response only if origin is allowed.
+    Matches the logic in main.py for consistency.
+    """
+    if origin and is_origin_allowed(origin):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        response.headers["Access-Control-Max-Age"] = "86400"
 
 
 @router.get("/files/{bucket_type}")
@@ -86,6 +133,20 @@ async def serve_file(
     except Exception as e:
         logger.error(f"Error serving file: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.options("/files/{bucket_type}")
+async def options_file_upload(
+    request: Request,
+    bucket_type: str,
+):
+    """
+    Handle OPTIONS preflight requests for file uploads.
+    """
+    origin = request.headers.get("origin")
+    response = Response(status_code=200)
+    add_cors_headers_if_allowed(response, origin)
+    return response
 
 
 @router.put("/files/{bucket_type}")
@@ -157,15 +218,25 @@ async def upload_file(
         
         logger.info(f"Uploaded file: {file_path} ({len(body)} bytes)")
         
-        return Response(
+        # Create response
+        response = Response(
             status_code=200,
             content=f"File uploaded successfully: {key}",
             media_type="text/plain"
         )
         
+        # Add CORS headers for allowed origins (explicit for PUT requests)
+        origin = request.headers.get("origin")
+        add_cors_headers_if_allowed(response, origin)
+        
+        return response
+        
     except HTTPException:
+        # HTTPException will be handled by exception handlers in main.py which add CORS
+        # Re-raise to let the middleware handle it
         raise
     except Exception as e:
         logger.error(f"Error uploading file: {e}")
+        # Let exception handlers in main.py handle CORS for errors
         raise HTTPException(status_code=500, detail="Internal server error")
 
