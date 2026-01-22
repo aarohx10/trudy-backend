@@ -195,16 +195,6 @@ async def upload_file(
                     detail=f"File too large. Maximum size is {MAX_UPLOAD_SIZE // (1024 * 1024)}MB"
                 )
         
-        # Read the body
-        body = await request.body()
-        
-        # Double-check size after reading
-        if len(body) > MAX_UPLOAD_SIZE:
-            raise HTTPException(
-                status_code=413, 
-                detail=f"File too large. Maximum size is {MAX_UPLOAD_SIZE // (1024 * 1024)}MB"
-            )
-        
         # Get storage path and save file
         storage_path = get_storage_path(bucket_type)
         file_path = os.path.join(storage_path, key)
@@ -212,9 +202,31 @@ async def upload_file(
         # Ensure directory exists
         ensure_directory_exists(file_path)
         
-        # Write file
-        with open(file_path, 'wb') as f:
-            f.write(body)
+        # Stream the body directly to file to avoid memory issues and timeouts
+        total_bytes = 0
+        try:
+            with open(file_path, 'wb') as f:
+                async for chunk in request.stream():
+                    total_bytes += len(chunk)
+                    if total_bytes > MAX_UPLOAD_SIZE:
+                        # Clean up partial file
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+                        raise HTTPException(
+                            status_code=413, 
+                            detail=f"File too large. Maximum size is {MAX_UPLOAD_SIZE // (1024 * 1024)}MB"
+                        )
+                    f.write(chunk)
+            
+            logger.info(f"Uploaded file: {file_path} ({total_bytes} bytes)")
+        except Exception as stream_error:
+            # Clean up partial file on error
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except:
+                    pass
+            raise stream_error
         
         logger.info(f"Uploaded file: {file_path} ({len(body)} bytes)")
         
