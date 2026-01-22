@@ -228,8 +228,6 @@ async def upload_file(
                     pass
             raise stream_error
         
-        logger.info(f"Uploaded file: {file_path} ({len(body)} bytes)")
-        
         # Create response
         response = Response(
             status_code=200,
