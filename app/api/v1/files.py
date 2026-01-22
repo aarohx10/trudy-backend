@@ -236,7 +236,16 @@ async def upload_file(
         # Re-raise to let the middleware handle it
         raise
     except Exception as e:
-        logger.error(f"Error uploading file: {e}")
-        # Let exception handlers in main.py handle CORS for errors
-        raise HTTPException(status_code=500, detail="Internal server error")
+        import traceback
+        error_traceback = traceback.format_exc()
+        logger.error(f"Error uploading file: {e}\n{error_traceback}")
+        # Create error response with CORS headers
+        error_response = Response(
+            status_code=500,
+            content=f"Internal server error: {str(e)}",
+            media_type="text/plain"
+        )
+        origin = request.headers.get("origin")
+        add_cors_headers_if_allowed(error_response, origin)
+        return error_response
 
