@@ -183,31 +183,36 @@ async def create_voice(
                     {"required": 50, "available": client.get("credits_balance", 0) if client else 0},
                 )
             
-            # Process files directly (no storage, no re-download)
+            # Process files - read quickly and validate
             audio_files = []
+            total_size = 0
             for file_item in files:
                 # file_item is a UploadFile from form
                 if not isinstance(file_item, UploadFile):
-                    # Handle case where form.getlist returns strings
                     continue
                 
-                # Validate file type
+                # Quick validation first (before reading)
+                filename = file_item.filename or ""
                 content_type = file_item.content_type or ""
-                if not content_type.startswith('audio/'):
-                    # Check extension as fallback
-                    filename = file_item.filename or ""
-                    valid_extensions = ['.wav', '.mp3', '.mpeg', '.webm', '.ogg', '.m4a', '.aac', '.flac']
-                    if not any(filename.lower().endswith(ext) for ext in valid_extensions):
-                        raise ValidationError(f"Invalid file type: {filename}. Only audio files are allowed.")
+                valid_extensions = ['.wav', '.mp3', '.mpeg', '.webm', '.ogg', '.m4a', '.aac', '.flac']
                 
-                # Read file content directly
+                if not content_type.startswith('audio/') and not any(filename.lower().endswith(ext) for ext in valid_extensions):
+                    raise ValidationError(f"Invalid file type: {filename}. Only audio files are allowed.")
+                
+                # Read file content (this is necessary before passing to background task)
+                # FastAPI streams this efficiently, but for large files it can take a moment
                 content = await file_item.read()
                 
                 # Validate size (10MB max per file)
-                if len(content) > 10 * 1024 * 1024:
-                    raise ValidationError(f"File {file_item.filename} exceeds 10MB limit")
+                file_size = len(content)
+                if file_size > 10 * 1024 * 1024:
+                    raise ValidationError(f"File {filename} exceeds 10MB limit")
                 
+                total_size += file_size
                 audio_files.append(content)
+            
+            # Log file processing
+            logger.info(f"[VOICES] [CREATE] Files processed | count={len(audio_files)} | total_size={total_size} bytes")
             
             # Create voice record
             voice_id = str(uuid.uuid4())
