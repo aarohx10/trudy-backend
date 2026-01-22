@@ -35,15 +35,7 @@ router = APIRouter()
 
 @router.post("")
 async def create_voice(
-    # Support both multipart/form-data (new) and JSON (legacy)
-    name: Optional[str] = Form(None),
-    strategy: Optional[str] = Form(None),
-    provider: Optional[str] = Form("elevenlabs"),
-    provider_voice_id: Optional[str] = Form(None),
-    files: Optional[List[UploadFile]] = File(None),
-    # Legacy JSON support
-    voice_data: Optional[VoiceCreate] = None,
-    request: Request = None,
+    request: Request,
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
     idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
@@ -70,10 +62,17 @@ async def create_voice(
     db.set_auth(current_user["token"])
     
     # Determine if this is multipart (new) or JSON (legacy)
-    # Check if files are provided (multipart) or voice_data is provided (JSON)
-    is_multipart = files is not None and len(files) > 0
+    content_type = request.headers.get("content-type", "")
+    is_multipart = "multipart/form-data" in content_type
     
     if is_multipart:
+        # Parse multipart form data
+        form = await request.form()
+        name = form.get("name")
+        strategy = form.get("strategy")
+        provider = form.get("provider", "elevenlabs")
+        provider_voice_id = form.get("provider_voice_id")
+        files = form.getlist("files")
         # NEW: Multipart form-data approach
         if not name:
             raise ValidationError("Voice name is required")
@@ -104,17 +103,27 @@ async def create_voice(
             
             # Process files directly (no storage, no re-download)
             audio_files = []
-            for file in files:
+            for file_item in files:
+                # file_item is a UploadFile from form
+                if not isinstance(file_item, UploadFile):
+                    # Handle case where form.getlist returns strings
+                    continue
+                
                 # Validate file type
-                if not file.content_type or not file.content_type.startswith('audio/'):
-                    raise ValidationError(f"Invalid file type: {file.content_type}. Only audio files are allowed.")
+                content_type = file_item.content_type or ""
+                if not content_type.startswith('audio/'):
+                    # Check extension as fallback
+                    filename = file_item.filename or ""
+                    valid_extensions = ['.wav', '.mp3', '.mpeg', '.webm', '.ogg', '.m4a', '.aac', '.flac']
+                    if not any(filename.lower().endswith(ext) for ext in valid_extensions):
+                        raise ValidationError(f"Invalid file type: {filename}. Only audio files are allowed.")
                 
                 # Read file content directly
-                content = await file.read()
+                content = await file_item.read()
                 
                 # Validate size (10MB max per file)
                 if len(content) > 10 * 1024 * 1024:
-                    raise ValidationError(f"File {file.filename} exceeds 10MB limit")
+                    raise ValidationError(f"File {file_item.filename} exceeds 10MB limit")
                 
                 audio_files.append(content)
             
@@ -265,8 +274,11 @@ async def create_voice(
     
     else:
         # LEGACY: JSON approach (backward compatibility)
-        if not voice_data:
-            raise ValidationError("Request body is required")
+        try:
+            body = await request.json()
+            voice_data = VoiceCreate(**body)
+        except Exception as e:
+            raise ValidationError(f"Invalid request body: {str(e)}")
         
         # Check idempotency key
         body_dict = voice_data.dict() if hasattr(voice_data, 'dict') else json.loads(json.dumps(voice_data, default=str))
