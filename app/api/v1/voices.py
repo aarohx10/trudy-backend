@@ -430,98 +430,98 @@ async def create_voice(
             
             # EXTERNAL (Import existing voice): Import to Ultravox
             else:
-            if not settings.ULTRAVOX_API_KEY:
-                raise ValidationError("Ultravox API key is not configured.")
-            
-            provider_voice_id = voice_data.source.provider_voice_id
-            if not provider_voice_id:
-                raise ValidationError(f"Provider voice ID is required for {provider} import.")
-            
-            # Import to Ultravox with correct provider-specific definition
-            ultravox_response = await ultravox_client.import_voice_from_provider(
-                name=voice_data.name,
-                provider=provider,
-                provider_voice_id=provider_voice_id,
-                description=f"Imported {provider} voice: {voice_data.name}",
-            )
-            ultravox_voice_id = ultravox_response.get("voiceId") or ultravox_response.get("id")
-            
-            if not ultravox_voice_id:
-                raise ProviderError(
-                    provider="ultravox",
-                    message="Ultravox response missing voiceId",
-                    http_status=500,
+                if not settings.ULTRAVOX_API_KEY:
+                    raise ValidationError("Ultravox API key is not configured.")
+                
+                provider_voice_id = voice_data.source.provider_voice_id
+                if not provider_voice_id:
+                    raise ValidationError(f"Provider voice ID is required for {provider} import.")
+                
+                # Import to Ultravox with correct provider-specific definition
+                ultravox_response = await ultravox_client.import_voice_from_provider(
+                    name=voice_data.name,
+                    provider=provider,
+                    provider_voice_id=provider_voice_id,
+                    description=f"Imported {provider} voice: {voice_data.name}",
                 )
+                ultravox_voice_id = ultravox_response.get("voiceId") or ultravox_response.get("id")
+                
+                if not ultravox_voice_id:
+                    raise ProviderError(
+                        provider="ultravox",
+                        message="Ultravox response missing voiceId",
+                        http_status=500,
+                    )
+                
+                # Update database record
+                update_data = {
+                    "status": "active",
+                    "provider_voice_id": provider_voice_id,
+                    "ultravox_voice_id": ultravox_voice_id,
+                    "updated_at": now.isoformat(),
+                }
+                db.update("voices", {"id": voice_id}, update_data)
+                voice_db_record.update(update_data)
+        
+        except Exception as e:
+            # Rollback: Delete temporary record
+            db.delete("voices", {"id": voice_id, "client_id": client_id})
             
-            # Update database record
-            update_data = {
-                "status": "active",
-                "provider_voice_id": provider_voice_id,
-                "ultravox_voice_id": ultravox_voice_id,
-                "updated_at": now.isoformat(),
-            }
-            db.update("voices", {"id": voice_id}, update_data)
-            voice_db_record.update(update_data)
+            # Clean up ElevenLabs voice if created
+            if elevenlabs_voice_id:
+                try:
+                    await elevenlabs_client.delete_voice(elevenlabs_voice_id)
+                except Exception:
+                    pass  # Ignore cleanup errors
+            
+            # Re-raise appropriate error
+            if isinstance(e, (ValidationError, NotFoundError, PaymentRequiredError, ProviderError)):
+                raise
+            logger.error(f"[VOICES] [CREATE] Failed to create voice: {e}", exc_info=True)
+            raise ProviderError(provider=provider, message=str(e), http_status=500)
         
-    except Exception as e:
-        # Rollback: Delete temporary record
-        db.delete("voices", {"id": voice_id, "client_id": client_id})
+        # Prepare response record
+        voice_record = voice_db_record.copy()
+        voice_record["created_at"] = now
+        voice_record["updated_at"] = now
         
-        # Clean up ElevenLabs voice if created
-        if elevenlabs_voice_id:
-            try:
-                await elevenlabs_client.delete_voice(elevenlabs_voice_id)
-            except Exception:
-                pass  # Ignore cleanup errors
+        # Debit credits for native voice cloning
+        if voice_data.strategy == "native" and client:
+            db.insert(
+                "credit_transactions",
+                {
+                    "client_id": client_id,
+                    "type": "spent",
+                    "amount": 50,
+                    "reference_type": "voice_cloning",
+                    "reference_id": voice_id,
+                    "description": f"Voice cloning: {voice_data.name}",
+                },
+            )
+            db.update(
+                "clients",
+                {"id": client_id},
+                {"credits_balance": client["credits_balance"] - 50},
+            )
         
-        # Re-raise appropriate error
-        if isinstance(e, (ValidationError, NotFoundError, PaymentRequiredError, ProviderError)):
-            raise
-        logger.error(f"[VOICES] [CREATE] Failed to create voice: {e}", exc_info=True)
-        raise ProviderError(provider=provider, message=str(e), http_status=500)
-    
-    # Prepare response record
-    voice_record = voice_db_record.copy()
-    voice_record["created_at"] = now
-    voice_record["updated_at"] = now
-    
-    # Debit credits for native voice cloning
-    if voice_data.strategy == "native" and client:
-        db.insert(
-            "credit_transactions",
-            {
-                "client_id": client_id,
-                "type": "spent",
-                "amount": 50,
-                "reference_type": "voice_cloning",
-                "reference_id": voice_id,
-                "description": f"Voice cloning: {voice_data.name}",
-            },
-        )
-        db.update(
-            "clients",
-            {"id": client_id},
-            {"credits_balance": client["credits_balance"] - 50},
-        )
-    
-    response_data = {
-        "data": VoiceResponse(**voice_record),
-        "meta": ResponseMeta(request_id=str(uuid.uuid4()), ts=datetime.utcnow()),
-    }
-    
-    # Store idempotency response
-    if idempotency_key:
-        body_dict = voice_data.dict() if hasattr(voice_data, 'dict') else json.loads(json.dumps(voice_data, default=str))
-        await store_idempotency_response(
-            client_id,
-            idempotency_key,
-            request,
-            body_dict,
-            response_data,
-            201,
-        )
-    
-    return response_data
+        response_data = {
+            "data": VoiceResponse(**voice_record),
+            "meta": ResponseMeta(request_id=str(uuid.uuid4()), ts=datetime.utcnow()),
+        }
+        
+        # Store idempotency response
+        if idempotency_key:
+            body_dict = voice_data.dict() if hasattr(voice_data, 'dict') else json.loads(json.dumps(voice_data, default=str))
+            await store_idempotency_response(
+                client_id,
+                idempotency_key,
+                request,
+                body_dict,
+                response_data,
+                201,
+            )
+        
+        return response_data
 
 
 @router.get("")
