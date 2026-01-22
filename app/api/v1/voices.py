@@ -1,7 +1,7 @@
 """
 Voice Endpoints
 """
-from fastapi import APIRouter, Header, Depends, Query, Request, HTTPException
+from fastapi import APIRouter, Header, Depends, Query, Request, HTTPException, UploadFile
 from fastapi.responses import Response
 from typing import Optional, List
 from datetime import datetime
@@ -149,15 +149,18 @@ async def create_voice(
             }
             
             db.insert("voices", voice_db_record)
+            logger.info(f"[VOICES] [CREATE] Voice record created | voice_id={voice_id} | name={name} | strategy=native")
             
             try:
                 # Send directly to ElevenLabs (no storage step)
+                logger.info(f"[VOICES] [CREATE] Starting ElevenLabs voice clone | voice_id={voice_id} | files_count={len(audio_files)}")
                 elevenlabs_response = await elevenlabs_client.clone_voice(
                     name=name,
                     audio_files=audio_files,
                     description=f"Voice clone for user {user_id}",
                 )
                 elevenlabs_voice_id = elevenlabs_response.get("voice_id")
+                logger.info(f"[VOICES] [CREATE] ElevenLabs clone completed | voice_id={voice_id} | elevenlabs_voice_id={elevenlabs_voice_id}")
                 
                 if not elevenlabs_voice_id:
                     raise ProviderError(
@@ -166,6 +169,7 @@ async def create_voice(
                         http_status=500,
                     )
                 
+                logger.info(f"[VOICES] [CREATE] Starting Ultravox import | voice_id={voice_id} | elevenlabs_voice_id={elevenlabs_voice_id}")
                 ultravox_response = await ultravox_client.import_voice_from_provider(
                     name=name,
                     provider="elevenlabs",
@@ -173,6 +177,7 @@ async def create_voice(
                     description=f"Cloned voice: {name}",
                 )
                 ultravox_voice_id = ultravox_response.get("voiceId") or ultravox_response.get("id")
+                logger.info(f"[VOICES] [CREATE] Ultravox import completed | voice_id={voice_id} | ultravox_voice_id={ultravox_voice_id}")
                 
                 if not ultravox_voice_id:
                     raise ProviderError(
@@ -190,24 +195,37 @@ async def create_voice(
                 }
                 db.update("voices", {"id": voice_id}, update_data)
                 voice_db_record.update(update_data)
+                logger.info(f"[VOICES] [CREATE] Database updated | voice_id={voice_id} | status=active")
                 
                 # Deduct credits
                 db.update("clients", {"id": client_id}, {
                     "credits_balance": client.get("credits_balance", 0) - 50,
                     "updated_at": datetime.utcnow().isoformat(),
                 })
+                logger.info(f"[VOICES] [CREATE] Credits deducted | voice_id={voice_id} | client_id={client_id} | amount=50")
                 
                 response_data = {
                     "data": VoiceResponse(**voice_db_record),
                     "meta": ResponseMeta(request_id=str(uuid.uuid4()), ts=datetime.utcnow()),
                 }
                 
+                logger.info(f"[VOICES] [CREATE] Voice creation completed successfully | voice_id={voice_id} | name={name}")
                 return response_data
                 
-            except Exception as e:
-                # Cleanup on error
+            except ProviderError as e:
+                # Provider errors - log and re-raise
+                logger.error(f"[VOICES] [CREATE] Provider error | voice_id={voice_id} | error={str(e)}", exc_info=True)
                 db.delete("voices", {"id": voice_id})
                 raise
+            except Exception as e:
+                # Other errors - log and re-raise as ProviderError
+                logger.error(f"[VOICES] [CREATE] Unexpected error | voice_id={voice_id} | error={str(e)}", exc_info=True)
+                db.delete("voices", {"id": voice_id})
+                raise ProviderError(
+                    provider="system",
+                    message=f"Voice creation failed: {str(e)}",
+                    http_status=500,
+                )
         
         # EXTERNAL (Import existing voice)
         else:
