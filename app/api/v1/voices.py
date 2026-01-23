@@ -157,14 +157,30 @@ async def create_voice(
                 provider_voice_id=elevenlabs_voice_id,
                 description=f"Cloned voice: {name}",
             )
-            ultravox_voice_id = ultravox_response.get("voiceId") or ultravox_response.get("id")
+            # Log full response for debugging
+            logger.info(f"[VOICES] Ultravox clone response received | response_keys={list(ultravox_response.keys()) if isinstance(ultravox_response, dict) else 'not_dict'}")
+            
+            # Extract voice ID - try multiple possible field names
+            ultravox_voice_id = (
+                ultravox_response.get("voiceId") or 
+                ultravox_response.get("id") or
+                ultravox_response.get("voice_id") or
+                (ultravox_response.get("data", {}) if isinstance(ultravox_response.get("data"), dict) else {}).get("voiceId") or
+                (ultravox_response.get("data", {}) if isinstance(ultravox_response.get("data"), dict) else {}).get("id")
+            )
             
             if not ultravox_voice_id:
+                import json
+                response_str = json.dumps(ultravox_response, default=str)[:1000]
+                logger.error(f"[VOICES] Ultravox clone response missing voiceId | response={response_str} | response_keys={list(ultravox_response.keys()) if isinstance(ultravox_response, dict) else 'N/A'}")
                 raise ProviderError(
                     provider="ultravox",
-                    message="Ultravox response missing voiceId",
+                    message=f"Ultravox response missing voiceId. Response structure: {list(ultravox_response.keys()) if isinstance(ultravox_response, dict) else 'not a dict'}",
                     http_status=500,
+                    details={"response": ultravox_response},
                 )
+            
+            logger.info(f"[VOICES] Extracted ultravox_voice_id from clone | ultravox_voice_id={ultravox_voice_id}")
             
             logger.info(f"[VOICES] Ultravox import successful | ultravox_voice_id={ultravox_voice_id}")
             
@@ -216,17 +232,32 @@ async def create_voice(
                     description=f"Imported voice: {name}",
                 )
                 
-                logger.info(f"[VOICES] Ultravox response received | response_keys={list(ultravox_response.keys()) if isinstance(ultravox_response, dict) else 'not_dict'}")
+                logger.info(f"[VOICES] Ultravox response received | response_keys={list(ultravox_response.keys()) if isinstance(ultravox_response, dict) else 'not_dict'} | response_type={type(ultravox_response).__name__}")
                 
-                ultravox_voice_id = ultravox_response.get("voiceId") or ultravox_response.get("id")
+                # Log full response for debugging (truncated to avoid huge logs)
+                import json
+                response_str = json.dumps(ultravox_response, default=str)[:1000]
+                logger.debug(f"[VOICES] Ultravox response (first 1000 chars): {response_str}")
+                
+                # Extract voice ID - try multiple possible field names
+                ultravox_voice_id = (
+                    ultravox_response.get("voiceId") or 
+                    ultravox_response.get("id") or
+                    ultravox_response.get("voice_id") or
+                    (ultravox_response.get("data", {}) if isinstance(ultravox_response.get("data"), dict) else {}).get("voiceId") or
+                    (ultravox_response.get("data", {}) if isinstance(ultravox_response.get("data"), dict) else {}).get("id")
+                )
                 
                 if not ultravox_voice_id:
-                    logger.error(f"[VOICES] Ultravox response missing voiceId | response={ultravox_response}")
+                    logger.error(f"[VOICES] Ultravox response missing voiceId | response={ultravox_response} | response_keys={list(ultravox_response.keys()) if isinstance(ultravox_response, dict) else 'N/A'}")
                     raise ProviderError(
                         provider="ultravox",
-                        message="Ultravox response missing voiceId",
+                        message=f"Ultravox response missing voiceId. Response structure: {list(ultravox_response.keys()) if isinstance(ultravox_response, dict) else 'not a dict'}",
                         http_status=500,
+                        details={"response": ultravox_response},
                     )
+                
+                logger.info(f"[VOICES] Extracted ultravox_voice_id | ultravox_voice_id={ultravox_voice_id} | from_field={'voiceId' if ultravox_response.get('voiceId') else 'id' if ultravox_response.get('id') else 'other'}")
                 
                 logger.info(f"[VOICES] Ultravox import successful | ultravox_voice_id={ultravox_voice_id}")
                 
@@ -521,6 +552,24 @@ async def preview_voice(
             logger.warning(f"[VOICES] Preview: WARNING - ultravox_voice_id equals provider_voice_id | voice_id={voice_id} | id={ultravox_voice_id}")
         
         logger.info(f"[VOICES] Preview: Using ultravox_voice_id from DB | voice_id={voice_id} | ultravox_voice_id={ultravox_voice_id}")
+        
+        # Verify voice exists in Ultravox before trying to preview
+        # This helps catch cases where the voice was deleted or never properly imported
+        try:
+            ultravox_voice_info = await ultravox_client.get_voice(ultravox_voice_id)
+            logger.info(f"[VOICES] Preview: Verified voice exists in Ultravox | ultravox_voice_id={ultravox_voice_id} | name={ultravox_voice_info.get('name', 'Unknown')}")
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                logger.error(f"[VOICES] Preview: Voice not found in Ultravox | ultravox_voice_id={ultravox_voice_id} | voice_id={voice_id}")
+                raise NotFoundError(
+                    "voice",
+                    ultravox_voice_id,
+                    message=f"Voice not found in Ultravox. The voice may have been deleted or the import may have failed. Ultravox Voice ID: {ultravox_voice_id}",
+                )
+            else:
+                logger.warning(f"[VOICES] Preview: Error verifying voice in Ultravox (non-404) | ultravox_voice_id={ultravox_voice_id} | status={e.response.status_code} | continuing anyway...")
+        except Exception as e:
+            logger.warning(f"[VOICES] Preview: Exception verifying voice in Ultravox | ultravox_voice_id={ultravox_voice_id} | error={str(e)} | continuing anyway...")
     else:
         # Voice not in DB - might be a default Ultravox voice (from explore section)
         # In this case, voice_id should already be the ultravox_voice_id
@@ -533,7 +582,7 @@ async def preview_voice(
         raise ValidationError("Ultravox voice ID is required for preview")
     
     # Always use ultravox_voice_id for preview - NEVER use provider_voice_id
-    logger.info(f"[VOICES] Preview: Calling Ultravox API | ultravox_voice_id={ultravox_voice_id} | voice_id={voice_id}")
+    logger.info(f"[VOICES] Preview: Calling Ultravox preview API | ultravox_voice_id={ultravox_voice_id} | voice_id={voice_id}")
     
     try:
         audio_bytes = await ultravox_client.get_voice_preview(ultravox_voice_id)
@@ -541,22 +590,53 @@ async def preview_voice(
     except httpx.HTTPStatusError as e:
         # HTTP error from Ultravox API
         error_msg = f"Ultravox API error: {e.response.status_code}"
+        error_details = {}
+        
         if e.response.text:
             try:
                 error_data = e.response.json()
-                error_msg += f" - {error_data.get('message', e.response.text[:200])}"
+                error_msg += f" - {error_data.get('message', error_data.get('error', str(error_data)))}"
+                error_details = error_data
             except:
-                error_msg += f" - {e.response.text[:200]}"
+                error_text = e.response.text[:500]
+                error_msg += f" - {error_text}"
+                error_details = {"raw_response": error_text}
         
-        logger.error(f"[VOICES] Preview: Ultravox API HTTP error | ultravox_voice_id={ultravox_voice_id} | status={e.response.status_code} | error={error_msg}")
-        raise ProviderError(
-            provider="ultravox",
-            message=error_msg,
-            http_status=502,
-            details={"ultravox_voice_id": ultravox_voice_id, "status_code": e.response.status_code},
-        )
+        logger.error(f"[VOICES] Preview: Ultravox API HTTP error | ultravox_voice_id={ultravox_voice_id} | status={e.response.status_code} | error={error_msg} | details={error_details}")
+        
+        # Provide more specific error messages based on status code
+        if e.response.status_code == 400:
+            raise ProviderError(
+                provider="ultravox",
+                message=f"Invalid request to Ultravox API. The voice may not be ready for preview yet, or the voice ID may be incorrect. {error_msg}",
+                http_status=502,
+                details={
+                    "ultravox_voice_id": ultravox_voice_id,
+                    "status_code": e.response.status_code,
+                    "ultravox_error": error_details,
+                },
+            )
+        elif e.response.status_code == 404:
+            raise NotFoundError(
+                "voice",
+                ultravox_voice_id,
+                message=f"Voice not found in Ultravox. {error_msg}",
+            )
+        else:
+            raise ProviderError(
+                provider="ultravox",
+                message=error_msg,
+                http_status=502,
+                details={
+                    "ultravox_voice_id": ultravox_voice_id,
+                    "status_code": e.response.status_code,
+                    "ultravox_error": error_details,
+                },
+            )
     except Exception as e:
         logger.error(f"[VOICES] Preview: Unexpected error calling Ultravox | ultravox_voice_id={ultravox_voice_id} | error={str(e)} | type={type(e).__name__}")
+        import traceback
+        logger.error(f"[VOICES] Preview: Traceback | {traceback.format_exc()}")
         raise ProviderError(
             provider="ultravox",
             message=f"Failed to get voice preview: {str(e)}",
