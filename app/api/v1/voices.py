@@ -164,12 +164,17 @@ async def _process_voice_cloning_unified(
     Handles both single file (from /voices/clone) and multiple files (from /voices).
     Uses DatabaseAdminService to bypass RLS since we don't have user token in background.
     """
-    from app.core.database import DatabaseAdminService
+    # Hardened implementation with broad try/except to prevent stuck loading state
+    logger.info(f"[VOICES] [BACKGROUND] Task started | voice_id={voice_id} | name={name}")
     
-    db = DatabaseAdminService()
-    elevenlabs_voice_id = None
+    db = None
     
     try:
+        from app.core.database import DatabaseAdminService
+        
+        db = DatabaseAdminService()
+        elevenlabs_voice_id = None
+    
         logger.info(f"[VOICES] [BACKGROUND] Starting unified voice clone processing | voice_id={voice_id} | name={name} | files_count={len(audio_files)}")
         
         # Update status to training
@@ -381,60 +386,34 @@ async def _process_voice_cloning_unified(
         
         logger.info(f"[VOICES] [BACKGROUND] Voice cloning completed successfully | voice_id={voice_id} | name={name}")
         
-    except ProviderError as e:
-        import traceback
-        import json
-        error_details_raw = {
-            "error_type": type(e).__name__,
-            "error_message": str(e),
-            "error_args": e.args if hasattr(e, 'args') else None,
-            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
-            "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
-            "full_traceback": traceback.format_exc(),
-            "voice_id": voice_id,
-            "name": name,
-            "user_id": user_id,
-            "client_id": client_id,
-            "files_count": len(audio_files),
-        }
-        logger.error(f"[VOICES] [BACKGROUND] Provider error (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
-        db.update("voices", {"id": voice_id}, {
-            "status": "failed",
-            "training_info": {
-                "progress": 0,
-                "message": f"Error: {str(e)}",
-                "error_at": datetime.utcnow().isoformat(),
-            },
-            "updated_at": datetime.utcnow().isoformat(),
-        })
     except Exception as e:
+        # Catch-all for any error in the background task to ensure status is updated
         import traceback
         import json
-        error_details_raw = {
+        
+        error_details = {
             "error_type": type(e).__name__,
             "error_message": str(e),
-            "error_args": e.args if hasattr(e, 'args') else None,
-            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
-            "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
-            "error_module": getattr(e, '__module__', None),
-            "error_class": type(e).__name__,
             "full_traceback": traceback.format_exc(),
             "voice_id": voice_id,
-            "name": name,
-            "user_id": user_id,
-            "client_id": client_id,
-            "files_count": len(audio_files),
         }
-        logger.error(f"[VOICES] [BACKGROUND] Unexpected error (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
-        db.update("voices", {"id": voice_id}, {
-            "status": "failed",
-            "training_info": {
-                "progress": 0,
-                "message": f"Unexpected error: {str(e)}",
-                "error_at": datetime.utcnow().isoformat(),
-            },
-            "updated_at": datetime.utcnow().isoformat(),
-        })
+        logger.error(f"[VOICES] [BACKGROUND] Critical failure in background task (RAW ERROR): {json.dumps(error_details, indent=2, default=str)}", exc_info=True)
+        
+        # Try to update status to failed if DB connection is available
+        if db:
+            try:
+                db.update("voices", {"id": voice_id}, {
+                    "status": "failed",
+                    "training_info": {
+                        "progress": 0,
+                        "message": f"Critical error: {str(e)}",
+                        "error_at": datetime.utcnow().isoformat(),
+                    },
+                    "updated_at": datetime.utcnow().isoformat(),
+                })
+                logger.info(f"[VOICES] [BACKGROUND] Updated voice status to failed | voice_id={voice_id}")
+            except Exception as db_error:
+                logger.error(f"[VOICES] [BACKGROUND] Failed to update voice status to failed: {str(db_error)}", exc_info=True)
 
 
 @router.post("")
@@ -844,22 +823,42 @@ async def create_voice(
                 if not provider_voice_id:
                     raise ValidationError(f"Provider voice ID is required for {provider} import.")
                 
+                logger.info(f"[VOICES] [CREATE] Importing voice from provider | provider={provider} | provider_voice_id={provider_voice_id} | name={name}")
+                
                 # Import to Ultravox with correct provider-specific definition
-                ultravox_response = await ultravox_client.import_voice_from_provider(
-                    name=voice_data.name,
-                    provider=provider,
-                    provider_voice_id=provider_voice_id,
-                    description=f"Imported {provider} voice: {voice_data.name}",
-                )
+                try:
+                    ultravox_response = await ultravox_client.import_voice_from_provider(
+                        name=voice_data.name,
+                        provider=provider,
+                        provider_voice_id=provider_voice_id,
+                        description=f"Imported {provider} voice: {voice_data.name}",
+                    )
+                except ProviderError as pe:
+                    logger.error(f"[VOICES] [CREATE] ProviderError during import: {str(pe)}", exc_info=True)
+                    # Re-raise with original status code if available
+                    raise pe
+                except Exception as import_error:
+                    logger.error(f"[VOICES] [CREATE] Unexpected error during import: {str(import_error)}", exc_info=True)
+                    raise ProviderError(
+                        provider="ultravox",
+                        message=f"Failed to import voice from Ultravox: {str(import_error)}",
+                        http_status=502, # Bad Gateway / Upstream error
+                        details={"original_error": str(import_error)}
+                    )
+
                 ultravox_voice_id = ultravox_response.get("voiceId") or ultravox_response.get("id")
                 
                 if not ultravox_voice_id:
+                    logger.error(f"[VOICES] [CREATE] Import response missing voiceId: {ultravox_response}")
                     raise ProviderError(
                         provider="ultravox",
                         message="Ultravox response missing voiceId",
-                        http_status=500,
+                        http_status=502,
+                        details={"response": ultravox_response}
                     )
                 
+                logger.info(f"[VOICES] [CREATE] Import successful | ultravox_voice_id={ultravox_voice_id}")
+
                 # Update database record
                 update_data = {
                     "status": "active",
