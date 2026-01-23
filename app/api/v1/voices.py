@@ -1720,7 +1720,7 @@ async def preview_voice(
     
     try:
         voice = db.get_voice(voice_id, client_id)
-        except Exception as e:
+    except Exception as e:
             import traceback
             import json
             error_details_raw = {
