@@ -103,7 +103,18 @@ async def ingest_logs(
             "logged": len(log_batch.logs),
         }
     except Exception as e:
-        logger.error(f"Failed to ingest logs: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "operation": "ingest_logs",
+            "log_count": len(log_batch.logs) if hasattr(log_batch, 'logs') else 0,
+        }
+        logger.error(f"[LOGS] Failed to ingest logs (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         return {
             "success": False,
             "error": str(e),

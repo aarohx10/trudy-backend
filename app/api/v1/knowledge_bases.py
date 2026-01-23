@@ -103,6 +103,19 @@ async def create_knowledge_base(
         kb_record["status"] = "ready"
         
     except Exception as e:
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "kb_id": kb_id,
+            "kb_data": kb_data if 'kb_data' in locals() else None,
+        }
+        logger.error(f"[KB] [CREATE] Failed to create knowledge base (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+        
         db.update(
             "knowledge_documents",
             {"id": kb_id},
@@ -268,7 +281,18 @@ async def ingest_kb_files(
                 )
                 kb["ultravox_tool_id"] = ultravox_tool_id
         except Exception as e:
-            logger.error(f"Failed to create Ultravox tool for KB {kb_id}: {e}", exc_info=True)
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_traceback": traceback.format_exc(),
+                "kb_id": kb_id,
+                "kb": kb if 'kb' in locals() else None,
+            }
+            logger.error(f"[KB] [CREATE] Failed to create Ultravox tool (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
             raise ValidationError(f"Failed to register knowledge base tool: {str(e)}")
     
     results = []
@@ -352,7 +376,19 @@ async def ingest_kb_files(
             })
             
         except Exception as e:
-            logger.error(f"Failed to ingest document {doc_id}: {e}", exc_info=True)
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_traceback": traceback.format_exc(),
+                "doc_id": doc_id,
+                "kb_id": kb_id if 'kb_id' in locals() else None,
+            }
+            logger.error(f"[KB] [INGEST] Failed to ingest document (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+            
             db.update(
                 "knowledge_base_documents",
                 {"id": doc_id},
@@ -683,7 +719,23 @@ async def add_content_to_knowledge_base(
         # Re-raise known errors
         raise
     except Exception as e:
-        logger.error(f"[KB] [ADD-CONTENT] Failed to add content | doc_id={doc_id} | kb_id={kb_id} | error={str(e)}", exc_info=True)
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+            "error_module": getattr(e, '__module__', None),
+            "error_class": type(e).__name__,
+            "full_traceback": traceback.format_exc(),
+            "doc_id": doc_id,
+            "kb_id": kb_id,
+            "content_type": content_type if 'content_type' in locals() else None,
+        }
+        logger.error(f"[KB] [ADD-CONTENT] Failed to add content (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+        
         # Update document status to failed
         try:
             db.update(
@@ -695,8 +747,16 @@ async def add_content_to_knowledge_base(
                     "updated_at": datetime.utcnow().isoformat(),
                 },
             )
-        except Exception:
-            pass
+        except Exception as update_error:
+            import traceback
+            import json
+            update_error_details = {
+                "error_type": type(update_error).__name__,
+                "error_message": str(update_error),
+                "full_traceback": traceback.format_exc(),
+                "doc_id": doc_id,
+            }
+            logger.error(f"[KB] [ADD-CONTENT] Failed to update document status (RAW ERROR): {json.dumps(update_error_details, indent=2, default=str)}", exc_info=True)
         raise ValidationError(f"Failed to add content to knowledge base: {str(e)}")
 
 
@@ -756,7 +816,19 @@ async def query_knowledge_base(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to query knowledge base: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+            "full_traceback": traceback.format_exc(),
+            "kb_id": kb_id,
+            "query": query if 'query' in locals() else None,
+        }
+        logger.error(f"[KB] [QUERY] Failed to query knowledge base (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 

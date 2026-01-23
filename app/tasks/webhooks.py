@@ -110,12 +110,52 @@ async def trigger_crm_webhook(
                 )
                 return False
                 
-    except httpx.TimeoutException:
-        logger.error(f"CRM webhook timeout for call {call_id} to {crm_webhook_url}")
+    except httpx.TimeoutException as e:
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "call_id": call_id,
+            "agent_id": agent_id,
+            "crm_webhook_url": crm_webhook_url,
+            "timeout": timeout,
+        }
+        logger.error(f"[TASKS] [WEBHOOKS] CRM webhook timeout (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         return False
     except httpx.RequestError as e:
-        logger.error(f"CRM webhook request error for call {call_id}: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "call_id": call_id,
+            "agent_id": agent_id,
+            "crm_webhook_url": crm_webhook_url,
+        }
+        logger.error(f"[TASKS] [WEBHOOKS] CRM webhook request error (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         return False
     except Exception as e:
-        logger.error(f"Unexpected error sending CRM webhook for call {call_id}: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+            "error_module": getattr(e, '__module__', None),
+            "error_class": type(e).__name__,
+            "full_traceback": traceback.format_exc(),
+            "call_id": call_id,
+            "agent_id": agent_id,
+            "crm_webhook_url": crm_webhook_url,
+        }
+        logger.error(f"[TASKS] [WEBHOOKS] Unexpected error sending CRM webhook (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         return False

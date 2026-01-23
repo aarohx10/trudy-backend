@@ -113,6 +113,17 @@ async def check_client_quota(client_id: str, operation_type: str) -> bool:
         return True
         
     except Exception as e:
-        logger.error(f"Error checking client quota: {e}")
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "client_id": client_id,
+            "operation_type": operation_type,
+        }
+        logger.error(f"[RATE_LIMITING] Error checking client quota (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         return True  # Fail open
 

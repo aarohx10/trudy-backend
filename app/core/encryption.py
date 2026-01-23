@@ -38,7 +38,16 @@ def get_fernet():
             _fernet = Fernet(key)
             logger.info("Fernet encryption initialized successfully")
         except Exception as e:
-            logger.error(f"Failed to create Fernet instance: {e}")
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_traceback": traceback.format_exc(),
+            }
+            logger.error(f"[ENCRYPTION] Failed to create Fernet instance (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
             return None
     
     return _fernet
@@ -67,7 +76,17 @@ def encrypt_api_key(plaintext: str, key_id: Optional[str] = None) -> Optional[st
         encrypted = fernet.encrypt(plaintext.encode())
         return encrypted.decode()
     except Exception as e:
-        logger.error(f"Encryption error: {e}")
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "key_id": key_id,
+        }
+        logger.error(f"[ENCRYPTION] Encryption error (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         return None
 
 
@@ -95,6 +114,16 @@ def decrypt_api_key(ciphertext: str, key_id: Optional[str] = None) -> Optional[s
         decrypted = fernet.decrypt(ciphertext.encode())
         return decrypted.decode()
     except Exception as e:
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "key_id": key_id,
+        }
         # Try as plaintext (backward compatibility)
-        logger.warning(f"Decryption error (trying as plaintext): {e}")
+        logger.warning(f"[ENCRYPTION] Decryption error (trying as plaintext) (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         return ciphertext

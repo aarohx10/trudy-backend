@@ -144,12 +144,35 @@ async def verify_clerk_jwt(token: str) -> Dict[str, Any]:
         return claims
         
     except jwt.InvalidTokenError as e:
-        logger.warning(f"Clerk JWT verification failed: {e}")
-        debug_logger.log_error("TOKEN_VERIFY", e, {"provider": "clerk"})
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "provider": "clerk",
+        }
+        logger.warning(f"[AUTH] Clerk JWT verification failed (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+        debug_logger.log_error("TOKEN_VERIFY", e, {"provider": "clerk", "raw_error": error_details_raw})
         raise UnauthorizedError("Invalid or expired Clerk token")
     except Exception as e:
-        logger.error(f"Clerk JWT verification error: {e}")
-        debug_logger.log_error("TOKEN_VERIFY", e, {"provider": "clerk"})
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+            "error_module": getattr(e, '__module__', None),
+            "error_class": type(e).__name__,
+            "full_traceback": traceback.format_exc(),
+            "provider": "clerk",
+        }
+        logger.error(f"[AUTH] Clerk JWT verification error (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+        debug_logger.log_error("TOKEN_VERIFY", e, {"provider": "clerk", "raw_error": error_details_raw})
         raise UnauthorizedError("Clerk token verification failed")
 
 

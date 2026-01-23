@@ -115,10 +115,19 @@ async def create_call(
             call_record["ultravox_call_id"] = ultravox_response.get("id")
             
         except Exception as e:
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_traceback": traceback.format_exc(),
+                "call_id": call_id,
+                "ultravox_call_id": ultravox_response.get("id") if 'ultravox_response' in locals() else None,
+            }
             # Log error but don't fail the request - call is created in DB
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.warning(f"Failed to create call in Ultravox: {e}")
+            logger.warning(f"[CALLS] [CREATE] Failed to create call in Ultravox (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
             # Update call status to failed
             db.update(
                 "calls",
@@ -260,10 +269,19 @@ async def get_call(
                 # Refresh call data
                 call = db.get_call(call_id, current_user["client_id"])
         except Exception as e:
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_traceback": traceback.format_exc(),
+                "call_id": call_id,
+                "ultravox_call_id": call.get("ultravox_call_id"),
+            }
             # Log error but don't fail the request
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.error(f"Failed to refresh call status from Ultravox: {e}")
+            logger.error(f"[CALLS] [GET] Failed to refresh call status from Ultravox (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
     
     return {
         "data": CallResponse(**call),
@@ -301,6 +319,18 @@ async def get_call_transcript(
             # Update cache
             db.update("calls", {"id": call_id}, {"transcript": transcript_data})
         except Exception as e:
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_traceback": traceback.format_exc(),
+                "call_id": call_id,
+                "ultravox_call_id": call.get("ultravox_call_id"),
+            }
+            logger.error(f"[CALLS] [GET_TRANSCRIPT] Failed to fetch transcript (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
             raise NotFoundError("transcript")
     
     return {
@@ -381,10 +411,34 @@ async def get_call_recording(
             
             recording_url = storage_url
         except httpx.HTTPError as e:
-            logger.error(f"Failed to download recording from Ultravox: {e}")
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "status_code": e.response.status_code if hasattr(e, 'response') and hasattr(e.response, 'status_code') else None,
+                "full_traceback": traceback.format_exc(),
+                "call_id": call_id,
+                "ultravox_call_id": call.get("ultravox_call_id"),
+            }
+            logger.error(f"[CALLS] [GET_RECORDING] Failed to download recording from Ultravox (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
             raise NotFoundError("recording")
         except Exception as e:
-            logger.error(f"Error processing call recording: {e}", exc_info=True)
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+                "full_traceback": traceback.format_exc(),
+                "call_id": call_id,
+                "ultravox_call_id": call.get("ultravox_call_id"),
+            }
+            logger.error(f"[CALLS] [GET_RECORDING] Error processing call recording (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
             raise NotFoundError("recording")
     
     return {
@@ -485,7 +539,17 @@ async def bulk_delete_calls(
             db.delete("calls", {"id": call_id})
             deleted_ids.append(call_id)
         except Exception as e:
-            logger.error(f"Failed to delete call {call_id}: {e}")
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_traceback": traceback.format_exc(),
+                "call_id": call_id,
+            }
+            logger.error(f"[CALLS] [BULK_DELETE] Failed to delete call (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
             failed_ids.append(call_id)
     
     return {

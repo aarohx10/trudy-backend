@@ -131,7 +131,20 @@ async def serve_file(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error serving file: {e}")
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+            "full_traceback": traceback.format_exc(),
+            "bucket_type": bucket_type,
+            "key": key,
+            "endpoint": request.url.path if request else None,
+        }
+        logger.error(f"[FILES] [SERVE] Error serving file (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -220,6 +233,20 @@ async def upload_file(
             
             logger.info(f"Uploaded file: {file_path} ({total_bytes} bytes)")
         except Exception as stream_error:
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(stream_error).__name__,
+                "error_message": str(stream_error),
+                "error_args": stream_error.args if hasattr(stream_error, 'args') else None,
+                "error_dict": stream_error.__dict__ if hasattr(stream_error, '__dict__') else None,
+                "full_traceback": traceback.format_exc(),
+                "file_path": file_path,
+                "bucket_type": bucket_type,
+                "key": key,
+            }
+            logger.error(f"[FILES] [UPLOAD] Stream error (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+            
             # Clean up partial file on error
             if os.path.exists(file_path):
                 try:
@@ -247,8 +274,24 @@ async def upload_file(
         raise
     except Exception as e:
         import traceback
-        error_traceback = traceback.format_exc()
-        logger.error(f"Error uploading file: {e}\n{error_traceback}")
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+            "error_module": getattr(e, '__module__', None),
+            "error_class": type(e).__name__,
+            "full_traceback": traceback.format_exc(),
+            "bucket_type": bucket_type,
+            "key": key,
+            "operation": operation,
+            "endpoint": request.url.path if request else None,
+            "method": request.method if request else None,
+        }
+        logger.error(f"[FILES] [UPLOAD] Error uploading file (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+        
         # Create error response with CORS headers
         error_response = Response(
             status_code=500,

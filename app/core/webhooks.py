@@ -34,7 +34,18 @@ def verify_ultravox_signature(
         # Constant-time comparison
         return hmac.compare_digest(signature, expected_signature)
     except Exception as e:
-        logger.error(f"Signature verification error: {e}")
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "signature": signature,
+            "timestamp": timestamp,
+        }
+        logger.error(f"[WEBHOOKS] Signature verification error (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         return False
 
 
@@ -171,7 +182,18 @@ def verify_stripe_signature(
         return hmac.compare_digest(sig, expected_sig)
         
     except Exception as e:
-        logger.error(f"Stripe signature verification error: {e}")
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "signature": signature,
+            "payload": payload[:500] if payload else None,
+        }
+        logger.error(f"[WEBHOOKS] Stripe signature verification error (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         return False
 
 
@@ -207,6 +229,17 @@ async def deliver_webhook(
     except httpx.TimeoutException:
         return False, None, "Request timeout"
     except Exception as e:
-        logger.error(f"Webhook delivery error: {e}")
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "url": url,
+            "timeout": timeout,
+        }
+        logger.error(f"[WEBHOOKS] Webhook delivery error (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         return False, None, str(e)
 

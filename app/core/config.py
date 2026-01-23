@@ -188,8 +188,18 @@ except Exception as e:
     # If .env file parsing fails, try again without .env file
     # This handles cases where Railway creates an empty/invalid .env file
     import logging
+    import traceback
+    import json
     logger = logging.getLogger(__name__)
-    logger.warning(f"Failed to load .env file: {e}. Continuing with environment variables only.")
+    error_details_raw = {
+        "error_type": type(e).__name__,
+        "error_message": str(e),
+        "error_args": e.args if hasattr(e, 'args') else None,
+        "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+        "full_traceback": traceback.format_exc(),
+        "operation": "load_settings",
+    }
+    logger.warning(f"[CONFIG] Failed to load .env file (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}. Continuing with environment variables only.")
     
     # Create a new model_config without env_file
     config_no_env = ConfigDict(

@@ -385,15 +385,39 @@ def log_error(
             ip_address = request.client.host
         user_agent = request.headers.get("User-Agent")
     
-    # Get stack trace
+    # Get stack trace and RAW error details
     error_type = type(error).__name__
     error_message = str(error)
     stack_trace = traceback.format_exc()
+    
+    # Log RAW error to console with full details
+    import json
+    error_details_raw = {
+        "error_type": error_type,
+        "error_message": error_message,
+        "error_args": error.args if hasattr(error, 'args') else None,
+        "error_dict": error.__dict__ if hasattr(error, '__dict__') else None,
+        "full_error_object": json.dumps(error.__dict__, default=str) if hasattr(error, '__dict__') else str(error),
+        "error_module": getattr(error, '__module__', None),
+        "error_class": error_type,
+        "error_mro": [cls.__name__ for cls in type(error).__mro__] if hasattr(type(error), '__mro__') else None,
+        "stack_trace": stack_trace,
+        "request_id": request_id,
+        "client_id": client_id,
+        "user_id": user_id,
+        "endpoint": endpoint,
+        "method": method,
+        "additional_context": additional_context,
+    }
+    
+    # Log to console with RAW error
+    logger.error(f"[DB_LOGGING] Error logged (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
     
     error_details = {
         "error_type": error_type,
         "error_message": error_message,
         "stack_trace": stack_trace,
+        "raw_error": error_details_raw,  # Include raw error in database log
     }
     
     context = additional_context or {}

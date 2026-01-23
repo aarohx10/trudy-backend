@@ -47,6 +47,17 @@ async def sync_client_id_to_org_metadata(clerk_org_id: str, client_id: str) -> b
             logger.info(f"Synced client_id {client_id} to Clerk org {clerk_org_id} metadata")
             return True
     except Exception as e:
-        logger.error(f"Failed to sync client_id to Clerk org metadata: {e}")
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "clerk_org_id": clerk_org_id,
+            "client_id": client_id,
+        }
+        logger.error(f"[CLERK_SYNC] Failed to sync client_id to Clerk org metadata (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         return False
 

@@ -866,8 +866,18 @@ async def create_agent(
                 else:
                     logger.warning(f"Failed to sync voice {voice_id} with Ultravox - response missing ID")
             except Exception as e:
-                # Log error but don't fail - agent can be created without Ultravox
-                logger.warning(f"Failed to create voice in Ultravox for agent (non-critical): {e}")
+                import traceback
+                import json
+                error_details_raw = {
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "error_args": e.args if hasattr(e, 'args') else None,
+                    "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                    "full_traceback": traceback.format_exc(),
+                    "voice_id": voice_id,
+                    "agent_id": agent_id if 'agent_id' in locals() else None,
+                }
+                logger.warning(f"[AGENTS] [CREATE] Failed to create voice in Ultravox for agent (non-critical) (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         else:
             logger.info("Ultravox API key not configured. Agent will be created without Ultravox integration.")
     
@@ -1032,8 +1042,20 @@ async def create_agent(
         agent_db_record.update(update_data)
         
     except Exception as e:
-        # Step 4: Rollback - delete the temporary record and return error
-        logger.error(f"Failed to create agent in Ultravox: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+            "full_traceback": traceback.format_exc(),
+            "agent_id": agent_id,
+            "client_id": current_user.get("client_id"),
+            "agent_data": agent_data if 'agent_data' in locals() else None,
+        }
+        logger.error(f"[AGENTS] [CREATE] Failed to create agent in Ultravox (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         
         # Rollback: Delete the temporary record
         db.delete("agents", {"id": agent_id, "client_id": current_user["client_id"]})
@@ -1137,7 +1159,18 @@ async def update_agent(
                         )
                         voice["ultravox_voice_id"] = ultravox_response.get("id")
                 except Exception as e:
-                    logger.warning(f"Failed to sync voice {agent_data.voice_id} with Ultravox during agent update (non-critical): {e}")
+                    import traceback
+                    import json
+                    error_details_raw = {
+                        "error_type": type(e).__name__,
+                        "error_message": str(e),
+                        "error_args": e.args if hasattr(e, 'args') else None,
+                        "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                        "full_traceback": traceback.format_exc(),
+                        "voice_id": agent_data.voice_id,
+                        "agent_id": agent_id if 'agent_id' in locals() else None,
+                    }
+                    logger.warning(f"[AGENTS] [UPDATE] Failed to sync voice with Ultravox during agent update (non-critical) (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
     elif agent.get("voice_id"):
         # Voice ID not changed, but we might need current voice for voice settings update
         # Check if voice settings are being updated
@@ -1243,8 +1276,19 @@ async def update_agent(
                 if ultravox_update:
                     await ultravox_client.update_agent(agent["ultravox_agent_id"], ultravox_update)
         except Exception as e:
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_traceback": traceback.format_exc(),
+                "agent_id": agent_id,
+                "ultravox_agent_id": agent.get("ultravox_agent_id"),
+            }
             # Log error but don't fail the request
-            logger.warning(f"Failed to update agent in Ultravox (non-critical): {e}")
+            logger.warning(f"[AGENTS] [UPDATE] Failed to update agent in Ultravox (non-critical) (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
     
     # Get updated agent
     updated_agent = db.get_agent(agent_id, current_user["client_id"])
@@ -1287,8 +1331,18 @@ async def list_agents(
         try:
             agent_responses.append(AgentResponse(**agent))
         except Exception as e:
-            logger.error(f"Failed to create AgentResponse for agent {agent.get('id')}: {e}")
-            logger.error(f"Agent data: {agent}")
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_traceback": traceback.format_exc(),
+                "agent_id": agent.get('id'),
+                "agent_data": agent,
+            }
+            logger.error(f"[AGENTS] [LIST] Failed to create AgentResponse (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
             # Skip invalid agents but continue processing others
             continue
     
@@ -1361,7 +1415,19 @@ async def sync_agent_with_ultravox(
                     )
                     voice["ultravox_voice_id"] = ultravox_response.get("id")
             except Exception as e:
-                logger.error(f"Failed to create voice in Ultravox during sync: {e}", exc_info=True)
+                import traceback
+                import json
+                error_details_raw = {
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "error_args": e.args if hasattr(e, 'args') else None,
+                    "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                    "full_traceback": traceback.format_exc(),
+                    "voice_id": voice.get("id"),
+                    "agent_id": agent_id,
+                }
+                logger.error(f"[AGENTS] [SYNC] Failed to create voice in Ultravox during sync (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+                
                 error_msg = str(e)
                 if "404" in error_msg:
                     error_msg = "Ultravox API endpoint not found. Please check ULTRAVOX_BASE_URL and ULTRAVOX_API_KEY configuration."
@@ -1466,7 +1532,19 @@ async def sync_agent_with_ultravox(
         else:
             raise ValidationError("Failed to create agent in Ultravox - response missing ID")
     except Exception as e:
-        logger.error(f"Failed to sync agent {agent_id} with Ultravox: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+            "full_traceback": traceback.format_exc(),
+            "agent_id": agent_id,
+            "agent": agent if 'agent' in locals() else None,
+        }
+        logger.error(f"[AGENTS] [SYNC] Failed to sync agent with Ultravox (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         raise ValidationError("Failed to sync agent with Ultravox", {"error": str(e)})
 
 
@@ -1518,8 +1596,19 @@ async def get_agent(
                     # Refresh agent data
                     agent = db.get_agent(agent_id, current_user["client_id"])
         except Exception as e:
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_traceback": traceback.format_exc(),
+                "agent_id": agent_id,
+                "ultravox_agent_id": agent.get("ultravox_agent_id"),
+            }
             # Log error but don't fail the request
-            logger.warning(f"Failed to refresh agent {agent_id} from Ultravox: {e}")
+            logger.warning(f"[AGENTS] [GET] Failed to refresh agent from Ultravox (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
     
     return {
         "data": AgentResponse(**agent),
@@ -1563,17 +1652,48 @@ async def bulk_delete_agents(
                             await ultravox_client.delete_agent(agent["ultravox_agent_id"], force=False)
                             logger.info(f"Successfully deleted agent {agent_id} from Ultravox (Ultravox ID: {agent.get('ultravox_agent_id')})")
                         except Exception as e:
+                            import traceback
+                            import json
+                            error_details_raw = {
+                                "error_type": type(e).__name__,
+                                "error_message": str(e),
+                                "error_args": e.args if hasattr(e, 'args') else None,
+                                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                                "full_traceback": traceback.format_exc(),
+                                "agent_id": agent_id,
+                                "ultravox_agent_id": agent.get("ultravox_agent_id"),
+                            }
                             # Log error but continue with local deletion
-                            logger.warning(f"Failed to delete agent {agent_id} from Ultravox (non-critical): {e}")
+                            logger.warning(f"[AGENTS] [BULK_DELETE] Failed to delete agent from Ultravox (non-critical) (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
                             logger.info(f"Continuing with local database deletion for agent {agent_id}")
                 except Exception as e:
-                    logger.warning(f"Error during Ultravox deletion for agent {agent_id}: {e}")
+                    import traceback
+                    import json
+                    error_details_raw = {
+                        "error_type": type(e).__name__,
+                        "error_message": str(e),
+                        "error_args": e.args if hasattr(e, 'args') else None,
+                        "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                        "full_traceback": traceback.format_exc(),
+                        "agent_id": agent_id,
+                    }
+                    logger.warning(f"[AGENTS] [BULK_DELETE] Error during Ultravox deletion (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
             
             # Delete from database
             db.delete("agents", {"id": agent_id, "client_id": current_user["client_id"]})
             deleted_ids.append(agent_id)
         except Exception as e:
-            logger.error(f"Failed to delete agent {agent_id}: {e}")
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_traceback": traceback.format_exc(),
+                "agent_id": agent_id,
+            }
+            logger.error(f"[AGENTS] [BULK_DELETE] Failed to delete agent (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
             failed_ids.append(agent_id)
     
     return {
@@ -1681,7 +1801,19 @@ async def test_agent_webrtc(
             ),
         }
     except Exception as e:
-        logger.error(f"Failed to create WebRTC test call for agent {agent_id}: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+            "full_traceback": traceback.format_exc(),
+            "agent_id": agent_id,
+        }
+        logger.error(f"[AGENTS] [TEST_CALL] Failed to create WebRTC test call (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+        
         if isinstance(e, (ValidationError, NotFoundError, ForbiddenError)):
             raise
         from app.core.exceptions import ProviderError
@@ -1717,11 +1849,33 @@ async def delete_agent(
                     await ultravox_client.delete_agent(agent["ultravox_agent_id"], force=False)
                     logger.info(f"Successfully deleted agent {agent_id} from Ultravox (Ultravox ID: {agent.get('ultravox_agent_id')})")
                 except Exception as e:
+                    import traceback
+                    import json
+                    error_details_raw = {
+                        "error_type": type(e).__name__,
+                        "error_message": str(e),
+                        "error_args": e.args if hasattr(e, 'args') else None,
+                        "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                        "full_traceback": traceback.format_exc(),
+                        "agent_id": agent_id,
+                        "ultravox_agent_id": agent.get("ultravox_agent_id"),
+                    }
                     # Log error but continue with local deletion
                     # Ultravox deletion failure shouldn't prevent local deletion
-                    logger.warning(f"Failed to delete agent {agent_id} from Ultravox (non-critical): {e}")
+                    logger.warning(f"[AGENTS] [DELETE] Failed to delete agent from Ultravox (non-critical) (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
                     logger.info(f"Continuing with local database deletion for agent {agent_id}")
         except Exception as e:
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_traceback": traceback.format_exc(),
+                "agent_id": agent_id,
+            }
+            logger.error(f"[AGENTS] [DELETE] Failed to delete agent (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
             logger.warning(f"Error during Ultravox deletion for agent {agent_id}: {e}")
     
     # Delete from database

@@ -50,7 +50,16 @@ def verify_clerk_webhook(request_body: bytes, svix_id: str, svix_timestamp: str,
         # Compare signatures (constant-time comparison)
         return hmac.compare_digest(signature, expected_signature)
     except Exception as e:
-        logger.error(f"Error verifying Clerk webhook signature: {e}")
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+        }
+        logger.error(f"[WEBHOOKS] [CLERK] Error verifying webhook signature (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         return False
 
 
@@ -102,7 +111,21 @@ async def handle_clerk_webhook(
         return {"received": True}
         
     except Exception as e:
-        logger.error(f"Error handling Clerk webhook: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+            "error_module": getattr(e, '__module__', None),
+            "error_class": type(e).__name__,
+            "full_traceback": traceback.format_exc(),
+            "event_type": event_type if 'event_type' in locals() else None,
+            "svix_id": svix_id,
+        }
+        logger.error(f"[WEBHOOKS] [CLERK] Error handling webhook (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Webhook processing failed")
 
 
@@ -224,6 +247,18 @@ async def handle_organization_membership_created(admin_db, data: dict):
             # Sync client_id to organization metadata
             await sync_client_id_to_org_metadata(clerk_org_id, client_id)
         except Exception as e:
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_traceback": traceback.format_exc(),
+                "clerk_org_id": clerk_org_id if 'clerk_org_id' in locals() else None,
+            }
+            logger.error(f"[WEBHOOKS] [CLERK] Error creating client in webhook (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+            
             # If insert fails (e.g., duplicate key), try to fetch existing client one more time
             error_str = str(e)
             if "23505" in error_str or "duplicate" in error_str.lower() or "unique" in error_str.lower():

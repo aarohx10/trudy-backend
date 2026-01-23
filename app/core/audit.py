@@ -58,8 +58,22 @@ async def log_audit_event(
         )
         
     except Exception as e:
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "action": action,
+            "table_name": table_name,
+            "record_id": record_id,
+            "user_id": user_id,
+            "client_id": client_id,
+        }
         # Log error but don't fail the request
-        logger.error(f"Failed to log audit event: {e}")
+        logger.error(f"[AUDIT] Failed to log audit event (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
 
 
 def audit_log_middleware(action: str, table_name: str):

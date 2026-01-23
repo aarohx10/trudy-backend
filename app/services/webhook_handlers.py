@@ -91,7 +91,18 @@ async def handle_call_ended(event_data: Dict[str, Any], db: DatabaseService) -> 
             # Fallback to data field
             recording_url = data.get("recording_url") or event_data.get("recording_url")
     except Exception as e:
-        logger.error(f"Failed to fetch transcript/recording for call {ultravox_call_id}: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "ultravox_call_id": ultravox_call_id,
+            "call_id": call.get("id") if call else None,
+        }
+        logger.error(f"[WEBHOOK_HANDLERS] [CALL_ENDED] Failed to fetch transcript/recording (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         # Continue with available data
     
     # Extract other call data
@@ -179,7 +190,17 @@ async def handle_call_ended(event_data: Dict[str, Any], db: DatabaseService) -> 
                 )
             )
         except Exception as e:
-            logger.error(f"Failed to trigger call analysis for {call['id']}: {e}", exc_info=True)
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_traceback": traceback.format_exc(),
+                "call_id": call.get("id"),
+            }
+            logger.error(f"[WEBHOOK_HANDLERS] [CALL_ENDED] Failed to trigger call analysis (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
             # Don't fail the webhook - analysis is secondary
     
     return client_id
@@ -205,7 +226,18 @@ async def _process_call_analysis_and_webhook(
         if analysis_result.get("is_success") and agent_id:
             await trigger_crm_webhook(call_id, agent_id, analysis_result)
     except Exception as e:
-        logger.error(f"Error in background call analysis task for {call_id}: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "call_id": call_id,
+            "agent_id": agent_id,
+        }
+        logger.error(f"[WEBHOOK_HANDLERS] [CALL_ANALYSIS] Error in background call analysis task (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
 
 
 async def handle_call_failed(event_data: Dict[str, Any], db: DatabaseService) -> Optional[str]:
@@ -312,7 +344,17 @@ async def handle_batch_status_changed(event_data: Dict[str, Any], db: DatabaseSe
             db.update("campaigns", {"id": campaign["id"]}, update_data)
             logger.info(f"Updated campaign {campaign['id']} stats from batch {batch_id}")
     except Exception as e:
-        logger.error(f"Failed to fetch batch status for {batch_id}: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "batch_id": batch_id,
+        }
+        logger.error(f"[WEBHOOK_HANDLERS] [BATCH_STATUS] Failed to fetch batch status (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
     
     return client_id
 

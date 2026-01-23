@@ -94,7 +94,19 @@ class ElevenLabsClient:
                 http_status=e.response.status_code,
             )
         except httpx.RequestError as e:
-            logger.error(f"[ELEVENLABS] Request error: {e}")
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_traceback": traceback.format_exc(),
+                "provider": "elevenlabs",
+                "operation": "voice_clone",
+                "name": name,
+            }
+            logger.error(f"[ELEVENLABS] Request error (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
             raise ProviderError(
                 provider="elevenlabs",
                 message=f"ElevenLabs API request failed: {e}",
@@ -208,6 +220,8 @@ class UltravoxClient:
         try:
             return await retry_with_backoff(_make_request)
         except httpx.HTTPStatusError as e:
+            import traceback
+            import json
             # Get error details from response if available
             error_detail = "Unknown error"
             error_details = {}
@@ -221,7 +235,7 @@ class UltravoxClient:
                 else:
                     error_detail = str(e)
                     error_details = {"raw_response": str(error_body)}
-            except:
+            except Exception as parse_error:
                 # Not JSON, likely HTML error page (like 404 Not Found page)
                 error_text = e.response.text[:1000] if e.response.text else "No response body"
                 error_detail = f"HTTP {e.response.status_code}: {error_text[:200]}"
@@ -230,9 +244,32 @@ class UltravoxClient:
                     "response_body": error_text,
                     "request_url": str(e.request.url),
                     "method": e.request.method,
+                    "parse_error": str(parse_error),
                 }
             
-            logger.error(f"[ULTRAVOX] HTTP Status Error: {e.response.status_code} - {error_detail[:200]} | url={url}", exc_info=True)
+            # Log RAW error with full details
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+                "http_status_code": e.response.status_code,
+                "http_status_text": e.response.reason_phrase if hasattr(e.response, 'reason_phrase') else None,
+                "response_headers": dict(e.response.headers) if hasattr(e.response, 'headers') else None,
+                "response_text": e.response.text[:2000] if e.response.text else None,
+                "response_text_full": e.response.text if e.response.text else None,
+                "request_url": str(e.request.url) if hasattr(e, 'request') else url,
+                "request_method": e.request.method if hasattr(e, 'request') else method,
+                "request_headers": dict(e.request.headers) if hasattr(e, 'request') and hasattr(e.request, 'headers') else None,
+                "error_detail": error_detail,
+                "error_details": error_details,
+                "full_traceback": traceback.format_exc(),
+                "url": url,
+                "method": method,
+            }
+            logger.error(f"[ULTRAVOX] HTTP Status Error (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+            
             raise ProviderError(
                 provider="ultravox",
                 message=f"Ultravox API error: {e.response.status_code} - {error_detail[:200]}",
@@ -241,7 +278,22 @@ class UltravoxClient:
                 details=error_details,
             )
         except httpx.RequestError as e:
-            logger.error(f"[ULTRAVOX] Request Error: {e} | url={url}", exc_info=True)
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+                "error_module": getattr(e, '__module__', None),
+                "error_class": type(e).__name__,
+                "full_traceback": traceback.format_exc(),
+                "request_url": url,
+                "request_method": method,
+            }
+            logger.error(f"[ULTRAVOX] Request Error (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+            
             raise ProviderError(
                 provider="ultravox",
                 message=f"Ultravox API request failed: {e}",
@@ -251,6 +303,7 @@ class UltravoxClient:
                     "error_message": str(e),
                     "request_url": url,
                     "method": method,
+                    "raw_error": error_details_raw,
                 },
             )
     
@@ -523,7 +576,27 @@ class UltravoxClient:
                     "method": e.request.method,
                 }
             
-            logger.error(f"[ULTRAVOX] Preview HTTP Status Error: {e.response.status_code} - {error_detail[:200]} | url={url}", exc_info=True)
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+                "http_status_code": e.response.status_code,
+                "http_status_text": e.response.reason_phrase if hasattr(e.response, 'reason_phrase') else None,
+                "response_headers": dict(e.response.headers) if hasattr(e.response, 'headers') else None,
+                "response_text": e.response.text[:2000] if e.response.text else None,
+                "request_url": str(e.request.url) if hasattr(e, 'request') else url,
+                "request_method": e.request.method if hasattr(e, 'request') else "GET",
+                "error_detail": error_detail,
+                "error_details": error_details,
+                "full_traceback": traceback.format_exc(),
+                "url": url,
+                "operation": "preview_voice",
+            }
+            logger.error(f"[ULTRAVOX] Preview HTTP Status Error (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
             raise ProviderError(
                 provider="ultravox",
                 message=f"Ultravox API error: {e.response.status_code} - {error_detail[:200]}",
@@ -532,7 +605,20 @@ class UltravoxClient:
                 details=error_details,
             )
         except httpx.RequestError as e:
-            logger.error(f"[ULTRAVOX] Preview Request Error: {e} | url={url}", exc_info=True)
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+                "full_traceback": traceback.format_exc(),
+                "request_url": url,
+                "request_method": "GET",
+                "operation": "preview_voice",
+            }
+            logger.error(f"[ULTRAVOX] Preview Request Error (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
             raise ProviderError(
                 provider="ultravox",
                 message=f"Ultravox API request failed: {e}",
@@ -774,7 +860,19 @@ class UltravoxClient:
             return webhook_id
             
         except Exception as e:
-            logger.error(f"Failed to register webhook with Ultravox: {e}", exc_info=True)
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+                "full_traceback": traceback.format_exc(),
+                "webhook_url": webhook_url,
+                "operation": "register_webhook",
+            }
+            logger.error(f"[ULTRAVOX] Failed to register webhook (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
             return None
     
     # Tools

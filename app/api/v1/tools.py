@@ -41,7 +41,17 @@ async def list_tools(
             ),
         }
     except Exception as e:
-        logger.error(f"Failed to list tools from Ultravox: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+            "full_traceback": traceback.format_exc(),
+        }
+        logger.error(f"[TOOLS] [LIST] Failed to list tools from Ultravox (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         if isinstance(e, ProviderError):
             raise
         raise ProviderError(
@@ -69,7 +79,18 @@ async def get_tool(
             ),
         }
     except Exception as e:
-        logger.error(f"Failed to get tool {tool_id} from Ultravox: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+            "full_traceback": traceback.format_exc(),
+            "tool_id": tool_id,
+        }
+        logger.error(f"[TOOLS] [GET] Failed to get tool from Ultravox (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         if isinstance(e, ProviderError):
             raise
         raise ProviderError(
@@ -131,7 +152,18 @@ async def create_tool(
         
         return response_data
     except Exception as e:
-        logger.error(f"Failed to create tool in Ultravox: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+            "full_traceback": traceback.format_exc(),
+            "tool_data": tool_data if 'tool_data' in locals() else None,
+        }
+        logger.error(f"[TOOLS] [CREATE] Failed to create tool in Ultravox (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         if isinstance(e, ProviderError):
             raise
         raise ProviderError(
@@ -164,7 +196,19 @@ async def update_tool(
             ),
         }
     except Exception as e:
-        logger.error(f"Failed to update tool {tool_id} in Ultravox: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+            "full_traceback": traceback.format_exc(),
+            "tool_id": tool_id,
+            "tool_data": tool_data if 'tool_data' in locals() else None,
+        }
+        logger.error(f"[TOOLS] [UPDATE] Failed to update tool in Ultravox (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         if isinstance(e, ProviderError):
             raise
         raise ProviderError(
@@ -195,7 +239,18 @@ async def delete_tool(
             ),
         }
     except Exception as e:
-        logger.error(f"Failed to delete tool {tool_id} from Ultravox: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+            "full_traceback": traceback.format_exc(),
+            "tool_id": tool_id,
+        }
+        logger.error(f"[TOOLS] [DELETE] Failed to delete tool from Ultravox (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         if isinstance(e, ProviderError):
             raise
         raise ProviderError(
@@ -227,7 +282,19 @@ async def test_tool(
             ),
         }
     except Exception as e:
-        logger.error(f"Failed to test tool {tool_id} in Ultravox: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+            "full_traceback": traceback.format_exc(),
+            "tool_id": tool_id,
+            "test_data": test_data if 'test_data' in locals() else None,
+        }
+        logger.error(f"[TOOLS] [TEST] Failed to test tool in Ultravox (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         if isinstance(e, ProviderError):
             raise
         raise ProviderError(

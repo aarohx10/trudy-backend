@@ -83,10 +83,32 @@ async def extract_text_from_url(url: str) -> str:
             
             return text
     except httpx.HTTPStatusError as e:
-        logger.error(f"HTTP error fetching URL {url}: {e.response.status_code}")
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "url": url,
+            "status_code": e.response.status_code if e.response else None,
+            "response_text": e.response.text[:500] if e.response and e.response.text else None,
+        }
+        logger.error(f"[TEXT_EXTRACTION] HTTP error fetching URL (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         raise ValueError(f"Failed to fetch URL: HTTP {e.response.status_code}")
     except Exception as e:
-        logger.error(f"Failed to extract text from URL {url}: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "url": url,
+        }
+        logger.error(f"[TEXT_EXTRACTION] Failed to extract text from URL (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         raise
 
 
@@ -188,7 +210,17 @@ async def _extract_docx(file_path: str) -> str:
         logger.error("python-docx is not installed. Install with: pip install python-docx")
         raise
     except Exception as e:
-        logger.error(f"DOCX extraction failed: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "file_path": file_path,
+        }
+        logger.error(f"[TEXT_EXTRACTION] DOCX extraction failed (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         raise
 
 
@@ -203,8 +235,30 @@ async def _extract_text(file_path: str) -> str:
             with open(file_path, 'r', encoding='latin-1') as f:
                 return f.read()
         except Exception as e:
-            logger.error(f"Text extraction failed: {e}", exc_info=True)
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_traceback": traceback.format_exc(),
+                "file_path": file_path,
+                "encoding": "latin-1",
+            }
+            logger.error(f"[TEXT_EXTRACTION] Text extraction failed (latin-1 encoding) (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
             raise
     except Exception as e:
-        logger.error(f"Text extraction failed: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "file_path": file_path,
+            "encoding": "utf-8",
+        }
+        logger.error(f"[TEXT_EXTRACTION] Text extraction failed (utf-8 encoding) (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         raise

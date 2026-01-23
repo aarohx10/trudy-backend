@@ -31,7 +31,17 @@ async def health_check():
             status_code=200
         )
     except Exception as e:
-        logger.error(f"Health check failed: {e}")
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "operation": "health_check",
+        }
+        logger.error(f"[INTERNAL] Health check failed (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         return JSONResponse(
             content={
                 "status": "unhealthy",
@@ -63,7 +73,17 @@ async def readiness_check():
             status_code=200
         )
     except Exception as e:
-        logger.error(f"Readiness check failed: {e}")
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "operation": "readiness_check",
+        }
+        logger.error(f"[INTERNAL] Readiness check failed (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         return JSONResponse(
             content={
                 "status": "not_ready",

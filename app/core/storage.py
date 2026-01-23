@@ -107,7 +107,19 @@ def generate_presigned_url(
         return url
         
     except Exception as e:
-        logger.error(f"Error generating signed URL: {e}")
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "bucket": bucket,
+            "key": key,
+            "operation": operation,
+        }
+        logger.error(f"[STORAGE] Error generating signed URL (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         raise
 
 
@@ -187,7 +199,19 @@ def upload_bytes(
         logger.info(f"Uploaded {len(data)} bytes to: {file_path}")
         return file_url
     except Exception as e:
-        logger.error(f"Error uploading bytes: {e}")
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "bucket": bucket,
+            "key": key,
+            "data_size": len(data) if data else 0,
+        }
+        logger.error(f"[STORAGE] Error uploading bytes (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         raise
 
 

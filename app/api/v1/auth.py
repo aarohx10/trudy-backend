@@ -121,6 +121,22 @@ async def get_me(
                     debug_logger.log_step("AUTH_ME", "Created new client for Clerk org", {"client_id": client_id})
                     break  # Successfully created, exit retry loop
                 except Exception as e:
+                    import traceback
+                    import json
+                    error_details_raw = {
+                        "error_type": type(e).__name__,
+                        "error_message": str(e),
+                        "error_args": e.args if hasattr(e, 'args') else None,
+                        "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                        "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+                        "full_traceback": traceback.format_exc(),
+                        "attempt": attempt,
+                        "max_retries": max_retries,
+                        "clerk_org_id": clerk_org_id,
+                        "client_data": client_data,
+                    }
+                    logger.error(f"[AUTH] [ME] Client creation error (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+                    
                     # If it's a duplicate key error (23505), fetch the existing client instead
                     error_str = str(e)
                     error_code = None
@@ -152,7 +168,18 @@ async def get_me(
                             if attempt == max_retries - 1:
                                 raise e
                         except Exception as fetch_error:
-                            logger.error(f"Error fetching existing client: {fetch_error}")
+                            import traceback
+                            import json
+                            fetch_error_details = {
+                                "error_type": type(fetch_error).__name__,
+                                "error_message": str(fetch_error),
+                                "error_args": fetch_error.args if hasattr(fetch_error, 'args') else None,
+                                "error_dict": fetch_error.__dict__ if hasattr(fetch_error, '__dict__') else None,
+                                "full_traceback": traceback.format_exc(),
+                                "clerk_org_id": clerk_org_id,
+                                "client_data_email": client_data.get("email"),
+                            }
+                            logger.error(f"[AUTH] [ME] Error fetching existing client (RAW ERROR): {json.dumps(fetch_error_details, indent=2, default=str)}", exc_info=True)
                             # If this is the last attempt, raise the original error
                             if attempt == max_retries - 1:
                                 raise e
@@ -194,6 +221,18 @@ async def get_me(
                 logger.info(f"Created new client: {client_id}")
                 debug_logger.log_step("AUTH_ME", "Created new standalone client", {"client_id": client_id})
             except Exception as e:
+                import traceback
+                import json
+                error_details_raw = {
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "error_args": e.args if hasattr(e, 'args') else None,
+                    "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                    "full_traceback": traceback.format_exc(),
+                    "client_data": client_data,
+                }
+                logger.error(f"[AUTH] [ME] Error creating standalone client (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+                
                 # If it's a duplicate key error (23505), fetch the existing client instead
                 error_str = str(e)
                 error_code = None
@@ -213,7 +252,17 @@ async def get_me(
                         else:
                             raise e
                     except Exception as fetch_error:
-                        logger.error(f"Error fetching existing client: {fetch_error}")
+                        import traceback
+                        import json
+                        fetch_error_details = {
+                            "error_type": type(fetch_error).__name__,
+                            "error_message": str(fetch_error),
+                            "error_args": fetch_error.args if hasattr(fetch_error, 'args') else None,
+                            "error_dict": fetch_error.__dict__ if hasattr(fetch_error, '__dict__') else None,
+                            "full_traceback": traceback.format_exc(),
+                            "client_data_email": client_data.get("email"),
+                        }
+                        logger.error(f"[AUTH] [ME] Error fetching existing standalone client (RAW ERROR): {json.dumps(fetch_error_details, indent=2, default=str)}", exc_info=True)
                         raise e
                 else:
                     raise e
@@ -459,8 +508,18 @@ async def update_tts_provider(
         if ultravox_response:
             logger.debug(f"Ultravox TTS config response: {ultravox_response}")
     except Exception as e:
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "provider": provider_data.provider if 'provider_data' in locals() else None,
+        }
         # Log error but don't fail the request - database update already succeeded
-        logger.error(f"Failed to update TTS configuration in Ultravox: {e}", exc_info=True)
+        logger.error(f"[AUTH] [TTS_CONFIG] Failed to update TTS configuration in Ultravox (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         logger.warning("TTS configuration saved to database but Ultravox update failed. Configuration may not be active in Ultravox.")
     
     return {

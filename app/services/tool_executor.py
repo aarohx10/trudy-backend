@@ -83,16 +83,50 @@ async def execute_tool_test(
             if not result["success"]:
                 result["error_message"] = f"HTTP {response.status_code}: {response_body_snippet}"
     
-    except httpx.TimeoutException:
+    except httpx.TimeoutException as e:
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "url": url,
+            "timeout": timeout,
+        }
         result["error_message"] = f"Request timeout after {timeout}s"
         result["response_time_ms"] = int((time.time() - start_time) * 1000)
-        logger.warning(f"Tool execution timeout: {url} (timeout: {timeout}s)")
+        logger.warning(f"[TOOL_EXECUTOR] Tool execution timeout (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}")
     except httpx.RequestError as e:
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "url": url,
+            "method": method,
+        }
         result["error_message"] = f"Request error: {str(e)}"
         result["response_time_ms"] = int((time.time() - start_time) * 1000)
-        logger.warning(f"Tool execution request error: {url} - {str(e)}")
+        logger.warning(f"[TOOL_EXECUTOR] Tool execution request error (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}")
     except Exception as e:
-        logger.error(f"Unexpected error executing tool test: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+            "full_traceback": traceback.format_exc(),
+            "url": url,
+            "method": method,
+        }
+        logger.error(f"[TOOL_EXECUTOR] Unexpected error executing tool test (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         result["error_message"] = f"Unexpected error: {str(e)}"
         result["response_time_ms"] = int((time.time() - start_time) * 1000)
     
@@ -150,6 +184,21 @@ async def execute_tool_with_logging(
         return result
     
     except Exception as e:
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+            "full_traceback": traceback.format_exc(),
+            "tool_id": tool_id,
+            "agent_id": agent_id,
+            "call_id": call_id,
+        }
+        logger.error(f"[TOOL_EXECUTOR] Error executing tool (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+        
         # Log error
         await log_tool_execution(
             db_admin=db_admin,

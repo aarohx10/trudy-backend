@@ -66,8 +66,20 @@ async def retry_with_backoff(
             
             await asyncio.sleep(final_delay)
         except Exception as e:
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+                "full_traceback": traceback.format_exc(),
+                "attempt": attempt,
+                "max_attempts": max_attempts,
+            }
             # Non-HTTP errors: don't retry
-            logger.error(f"Non-retryable error: {e}")
+            logger.error(f"[RETRY] Non-retryable error (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
             raise
     
     # Should not reach here, but just in case

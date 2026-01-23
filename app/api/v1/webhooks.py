@@ -88,7 +88,16 @@ async def ultravox_webhook(
     try:
         event_data = json.loads(body_str)
     except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse Ultravox webhook JSON: {e}")
+        import traceback
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "body_str": body_str[:500] if 'body_str' in locals() else None,
+        }
+        logger.error(f"[WEBHOOKS] [ULTRAVOX] Failed to parse webhook JSON (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         raise ValidationError("Invalid JSON payload")
     
     event_type = event_data.get("event") or event_data.get("eventType")
@@ -113,7 +122,18 @@ async def ultravox_webhook(
             },
         )
     except Exception as e:
-        logger.error(f"Failed to log webhook event: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "event_type": event_type if 'event_type' in locals() else None,
+            "event_id": event_id if 'event_id' in locals() else None,
+        }
+        logger.error(f"[WEBHOOKS] [ULTRAVOX] Failed to log webhook event (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         # Continue processing even if logging fails
     
     # Route to appropriate handler (Strategy Pattern)
@@ -130,8 +150,20 @@ async def ultravox_webhook(
             logger.warning(f"Unknown Ultravox webhook event type: {event_type}")
             # Log but don't fail - new event types may be added by Ultravox
     except Exception as e:
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+            "full_traceback": traceback.format_exc(),
+            "event_type": event_type,
+            "event_id": event_id if 'event_id' in locals() else None,
+        }
         processing_error = str(e)
-        logger.error(f"Error processing Ultravox webhook {event_type}: {e}", exc_info=True)
+        logger.error(f"[WEBHOOKS] [ULTRAVOX] Error processing webhook (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         # Don't raise - we want to return 200 to Ultravox even if processing fails
         # This prevents Ultravox from retrying
     
@@ -148,7 +180,17 @@ async def ultravox_webhook(
             },
         )
     except Exception as e:
-        logger.error(f"Failed to update webhook log: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "log_id": log_id if 'log_id' in locals() else None,
+        }
+        logger.error(f"[WEBHOOKS] [ULTRAVOX] Failed to update webhook log (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
     
     # Trigger egress webhooks
     if client_id_for_webhook:
@@ -159,7 +201,17 @@ async def ultravox_webhook(
                 event_data=event_data,
             )
         except Exception as e:
-            logger.error(f"Failed to trigger egress webhooks: {e}", exc_info=True)
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_traceback": traceback.format_exc(),
+                "event_type": event_type,
+            }
+            logger.error(f"[WEBHOOKS] [ULTRAVOX] Failed to trigger egress webhooks (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
             # Don't fail the webhook - egress is secondary
     
     return {"status": "ok"}
@@ -243,7 +295,18 @@ async def trigger_egress_webhooks(
                 )
                 
         except Exception as e:
-            logger.error(f"Error delivering webhook: {e}")
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_traceback": traceback.format_exc(),
+                "endpoint_id": endpoint_id if 'endpoint_id' in locals() else None,
+                "webhook_url": endpoint.get("url") if 'endpoint' in locals() else None,
+            }
+            logger.error(f"[WEBHOOKS] [DELIVER] Error delivering webhook (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
             db.update(
                 "webhook_deliveries",
                 {"id": delivery_id},
@@ -413,7 +476,16 @@ async def telnyx_webhook(
         
         return {"status": "ok"}
     except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse Telnyx webhook body: {e}")
+        import traceback
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "body_str": body_str[:500] if 'body_str' in locals() else None,
+        }
+        logger.error(f"[WEBHOOKS] [TELNYX] Failed to parse webhook body (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         raise ValidationError("Invalid JSON payload")
 
 

@@ -42,7 +42,19 @@ async def publish_event(
         return True
         
     except Exception as e:
-        logger.error(f"Error logging event {event_type}: {e}")
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "event_type": event_type,
+            "event_data": event_data,
+            "source": source,
+        }
+        logger.error(f"[EVENTS] Error logging event (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         return False
 
 

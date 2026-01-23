@@ -40,6 +40,18 @@ async def get_telephony_config(
             ),
         }
     except Exception as e:
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "operation": "get_telephony_config",
+            "client_id": current_user.get("client_id") if current_user else None,
+        }
+        logger.error(f"[TELEPHONY] Error getting telephony config (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         # If Ultravox doesn't support this endpoint yet, return default
         return {
             "data": {
@@ -87,7 +99,20 @@ async def list_phone_numbers(
             },
         }
     except Exception as e:
-        logger.error(f"Failed to list phone numbers: {e}")
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "operation": "list_phone_numbers",
+            "limit": limit,
+            "offset": offset,
+            "client_id": current_user.get("client_id") if current_user else None,
+        }
+        logger.error(f"[TELEPHONY] Failed to list phone numbers (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         # Return empty list on error
         return {
             "data": [],

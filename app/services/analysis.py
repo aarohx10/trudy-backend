@@ -159,7 +159,18 @@ Respond with a JSON object in this exact format:
         }
         
     except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse analysis JSON for call {call_id}: {e}", exc_info=True)
+        import traceback
+        import json as json_module
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "call_id": call_id,
+            "agent_id": agent_id,
+        }
+        logger.error(f"[ANALYSIS] Failed to parse analysis JSON (RAW ERROR): {json_module.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         return {
             "summary": None,
             "sentiment": "neutral",
@@ -169,7 +180,20 @@ Respond with a JSON object in this exact format:
             "analysis_error": f"Failed to parse analysis response: {str(e)}",
         }
     except openai.APIStatusError as e:
-        logger.error(f"OpenAI API error during call analysis: {e}", exc_info=True)
+        import traceback
+        import json as json_module
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "status_code": e.status_code if hasattr(e, 'status_code') else None,
+            "response": e.response if hasattr(e, 'response') else None,
+            "full_traceback": traceback.format_exc(),
+            "call_id": call_id,
+            "agent_id": agent_id,
+        }
+        logger.error(f"[ANALYSIS] OpenAI API error (RAW ERROR): {json_module.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         return {
             "summary": None,
             "sentiment": "neutral",
@@ -179,7 +203,21 @@ Respond with a JSON object in this exact format:
             "analysis_error": f"OpenAI API error: {e.status_code} - {str(e)}",
         }
     except Exception as e:
-        logger.error(f"Unexpected error during call analysis: {e}", exc_info=True)
+        import traceback
+        import json as json_module
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_error_object": json_module.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+            "error_module": getattr(e, '__module__', None),
+            "error_class": type(e).__name__,
+            "full_traceback": traceback.format_exc(),
+            "call_id": call_id,
+            "agent_id": agent_id,
+        }
+        logger.error(f"[ANALYSIS] Unexpected error during call analysis (RAW ERROR): {json_module.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         return {
             "summary": None,
             "sentiment": "neutral",

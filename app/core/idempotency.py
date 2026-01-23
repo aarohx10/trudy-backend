@@ -96,7 +96,18 @@ async def check_idempotency_key(
         return None
         
     except Exception as e:
-        logger.error(f"Error checking idempotency key: {e}")
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "client_id": client_id,
+            "idempotency_key": idempotency_key,
+        }
+        logger.error(f"[IDEMPOTENCY] Error checking idempotency key (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         # On error, continue without idempotency (fail open)
         return None
 
@@ -141,11 +152,22 @@ async def store_idempotency_response(
         )
         
     except Exception as e:
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "client_id": client_id,
+            "idempotency_key": idempotency_key,
+        }
         # Handle unique constraint violation (key already exists)
         if "unique" in str(e).lower() or "duplicate" in str(e).lower():
-            logger.warning(f"Idempotency key already exists: {idempotency_key}")
+            logger.warning(f"[IDEMPOTENCY] Idempotency key already exists (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}")
         else:
-            logger.error(f"Error storing idempotency key: {e}")
+            logger.error(f"[IDEMPOTENCY] Error storing idempotency key (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
 
 
 async def get_idempotency_key_header(

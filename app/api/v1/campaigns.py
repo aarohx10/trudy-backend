@@ -207,6 +207,17 @@ async def upload_campaign_contacts(
                     "custom_fields": {k: v for k, v in row.items() if k not in ["phone_number", "first_name", "last_name", "email"]},
                 })
         except Exception as e:
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_traceback": traceback.format_exc(),
+                "campaign_id": campaign_id,
+            }
+            logger.error(f"[CAMPAIGNS] [ADD_CONTACTS] Failed to parse CSV (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
             raise ValidationError(f"Failed to parse CSV: {str(e)}")
     elif contacts_data.contacts:
         contacts = [c.dict() for c in contacts_data.contacts]
@@ -386,8 +397,19 @@ async def schedule_campaign(
         )
         
     except Exception as e:
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
+            "full_traceback": traceback.format_exc(),
+            "campaign_id": campaign_id,
+        }
         # ROLLBACK: Revert to draft status and return specific error
-        logger.error(f"Failed to schedule campaign {campaign_id}: {e}", exc_info=True)
+        logger.error(f"[CAMPAIGNS] [SCHEDULE] Failed to schedule campaign (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         
         db.update(
             "campaigns",
@@ -505,7 +527,18 @@ async def list_campaigns(
                                 else:
                                     all_completed = False
                             except Exception as e:
-                                logger.warning(f"Failed to fetch batch {batch_id} for campaign {campaign['id']}: {e}")
+                                import traceback
+                                import json
+                                error_details_raw = {
+                                    "error_type": type(e).__name__,
+                                    "error_message": str(e),
+                                    "error_args": e.args if hasattr(e, 'args') else None,
+                                    "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                                    "full_traceback": traceback.format_exc(),
+                                    "batch_id": batch_id,
+                                    "campaign_id": campaign['id'],
+                                }
+                                logger.warning(f"[CAMPAIGNS] [LIST] Failed to fetch batch (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
                                 all_completed = False
                     else:
                         logger.warning(f"Cannot reconcile campaign {campaign['id']}: agent {agent_id} has no ultravox_agent_id")
@@ -528,7 +561,17 @@ async def list_campaigns(
                             },
                         )
                 except Exception as e:
-                    logger.warning(f"Failed to reconcile campaign {campaign['id']}: {e}")
+                    import traceback
+                    import json
+                    error_details_raw = {
+                        "error_type": type(e).__name__,
+                        "error_message": str(e),
+                        "error_args": e.args if hasattr(e, 'args') else None,
+                        "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                        "full_traceback": traceback.format_exc(),
+                        "campaign_id": campaign['id'],
+                    }
+                    logger.warning(f"[CAMPAIGNS] [LIST] Failed to reconcile campaign (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
             else:
                 # For non-active campaigns, just update local stats
                 db.update_campaign_stats(campaign["id"])
@@ -613,7 +656,18 @@ async def get_campaign(
                                 else:
                                     all_completed = False
                             except Exception as e:
-                                logger.warning(f"Failed to fetch batch {batch_id} from Ultravox: {e}")
+                                import traceback
+                                import json
+                                error_details_raw = {
+                                    "error_type": type(e).__name__,
+                                    "error_message": str(e),
+                                    "error_args": e.args if hasattr(e, 'args') else None,
+                                    "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                                    "full_traceback": traceback.format_exc(),
+                                    "batch_id": batch_id,
+                                    "campaign_id": campaign_id,
+                                }
+                                logger.warning(f"[CAMPAIGNS] [GET] Failed to fetch batch from Ultravox (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
                                 all_completed = False
                     
                     # Update campaign stats with live Ultravox data
@@ -637,8 +691,18 @@ async def get_campaign(
                     
                     campaign["stats"] = ultravox_stats
         except Exception as e:
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_traceback": traceback.format_exc(),
+                "campaign_id": campaign_id,
+            }
             # Log error but don't fail the request - return cached stats
-            logger.warning(f"Failed to reconcile campaign {campaign_id} with Ultravox: {e}")
+            logger.warning(f"[CAMPAIGNS] [GET] Failed to reconcile campaign with Ultravox (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
     else:
         # For non-active campaigns, just update local stats
         db.update_campaign_stats(campaign_id)
@@ -885,7 +949,17 @@ async def bulk_delete_campaigns(
             db.delete("campaigns", {"id": campaign_id})
             deleted_ids.append(campaign_id)
         except Exception as e:
-            logger.error(f"Failed to delete campaign {campaign_id}: {e}")
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_traceback": traceback.format_exc(),
+                "campaign_id": campaign_id,
+            }
+            logger.error(f"[CAMPAIGNS] [BULK_DELETE] Failed to delete campaign (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
             failed_ids.append(campaign_id)
     
     return {

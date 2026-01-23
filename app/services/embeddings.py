@@ -41,7 +41,17 @@ async def generate_embedding(text: str) -> List[float]:
         )
         return response.data[0].embedding
     except Exception as e:
-        logger.error(f"Failed to generate embedding: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "text_length": len(text) if text else 0,
+        }
+        logger.error(f"[EMBEDDINGS] Failed to generate embedding (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         raise
 
 
@@ -74,7 +84,19 @@ async def generate_embeddings_batch(texts: List[str], batch_size: int = 100) -> 
             batch_embeddings = [item.embedding for item in response.data]
             all_embeddings.extend(batch_embeddings)
         except Exception as e:
-            logger.error(f"Failed to generate embeddings batch: {e}", exc_info=True)
+            import traceback
+            import json
+            error_details_raw = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_args": e.args if hasattr(e, 'args') else None,
+                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+                "full_traceback": traceback.format_exc(),
+                "batch_size": len(batch),
+                "batch_index": i,
+                "total_texts": len(texts),
+            }
+            logger.error(f"[EMBEDDINGS] Failed to generate embeddings batch (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
             raise
     
     return all_embeddings

@@ -258,6 +258,25 @@ def add_cors_headers_if_allowed(response: JSONResponse, origin: str) -> None:
 @app.exception_handler(TrudyException)
 async def trudy_exception_handler(request: Request, exc: TrudyException):
     """Handle Trudy-specific exceptions with CORS headers"""
+    # Log RAW error to console with full details
+    import traceback
+    import json
+    error_details_raw = {
+        "error_type": type(exc).__name__,
+        "error_code": exc.code,
+        "error_message": exc.message,
+        "error_details": exc.details,
+        "error_status_code": exc.status_code,
+        "error_timestamp": exc.timestamp.isoformat() if hasattr(exc, 'timestamp') else None,
+        "error_args": exc.args if hasattr(exc, 'args') else None,
+        "error_dict": exc.__dict__ if hasattr(exc, '__dict__') else None,
+        "full_error_object": json.dumps(exc.__dict__, default=str) if hasattr(exc, '__dict__') else str(exc),
+        "request_id": getattr(request.state, "request_id", None),
+        "endpoint": request.url.path if request else None,
+        "method": request.method if request else None,
+    }
+    logger.error(f"[BACKEND] [TRUDY_EXCEPTION] Raw error (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+    
     # Log error to database
     log_error(
         request,
@@ -266,6 +285,7 @@ async def trudy_exception_handler(request: Request, exc: TrudyException):
         additional_context={
             "error_code": exc.code,
             "error_details": exc.details,
+            "raw_error": error_details_raw,
         },
     )
     
@@ -292,7 +312,28 @@ async def trudy_exception_handler(request: Request, exc: TrudyException):
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     """Handle general exceptions with CORS headers"""
-    logger.exception(f"Unhandled exception: {exc}")
+    import traceback
+    import json
+    
+    # Log RAW error to console with full details
+    error_details_raw = {
+        "error_type": type(exc).__name__,
+        "error_message": str(exc),
+        "error_args": exc.args if hasattr(exc, 'args') else None,
+        "error_dict": exc.__dict__ if hasattr(exc, '__dict__') else None,
+        "full_error_object": json.dumps(exc.__dict__, default=str) if hasattr(exc, '__dict__') else str(exc),
+        "error_module": getattr(exc, '__module__', None),
+        "error_class": type(exc).__name__,
+        "error_mro": [cls.__name__ for cls in type(exc).__mro__] if hasattr(type(exc), '__mro__') else None,
+        "full_traceback": traceback.format_exc(),
+        "request_id": getattr(request.state, "request_id", None),
+        "endpoint": request.url.path if request else None,
+        "method": request.method if request else None,
+        "client_id": getattr(request.state, "client_id", None) if request else None,
+        "user_id": getattr(request.state, "user_id", None) if request else None,
+    }
+    logger.error(f"[BACKEND] [GENERAL_EXCEPTION] Unhandled exception (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+    
     request_id = getattr(request.state, "request_id", None)
     
     # Log error to database with full stack trace
@@ -302,6 +343,7 @@ async def general_exception_handler(request: Request, exc: Exception):
         None,  # No background tasks in exception handler
         additional_context={
             "error_type": "unhandled_exception",
+            "raw_error": error_details_raw,
         },
     )
     
