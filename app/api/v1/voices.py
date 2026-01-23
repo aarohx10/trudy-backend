@@ -30,7 +30,17 @@ async def create_voice(
     """
     Create voice - SIMPLE: Just HTTP requests
     
-    FormData (multipart/form-data):
+    Supports both JSON and multipart/form-data:
+    
+    JSON (for imports):
+    {
+        "name": "Voice name",
+        "strategy": "external",
+        "source": {"provider_voice_id": "..."},
+        "provider_overrides": {"provider": "elevenlabs"}
+    }
+    
+    FormData (multipart/form-data for clones):
     - name: Voice name (required)
     - strategy: "native" (clone) or "external" (import)
     - files: Audio files (for native) - required for native
@@ -46,13 +56,28 @@ async def create_voice(
     db = DatabaseService(current_user["token"])
     db.set_auth(current_user["token"])
     
-    # Parse form data
-    form = await request.form()
-    name = form.get("name")
-    strategy = form.get("strategy")
-    provider = form.get("provider", "elevenlabs")
-    provider_voice_id = form.get("provider_voice_id")
-    files = form.getlist("files")
+    # Determine if JSON or multipart
+    content_type = request.headers.get("content-type", "")
+    is_json = "application/json" in content_type
+    
+    if is_json:
+        # JSON request (for imports)
+        body = await request.json()
+        name = body.get("name")
+        strategy = body.get("strategy")
+        source = body.get("source", {})
+        provider_overrides = body.get("provider_overrides", {})
+        provider = provider_overrides.get("provider", "elevenlabs")
+        provider_voice_id = source.get("provider_voice_id")
+        files = []
+    else:
+        # Multipart form data (for clones)
+        form = await request.form()
+        name = form.get("name")
+        strategy = form.get("strategy")
+        provider = form.get("provider", "elevenlabs")
+        provider_voice_id = form.get("provider_voice_id")
+        files = form.getlist("files")
     
     if not name:
         raise ValidationError("Voice name is required")
