@@ -482,28 +482,87 @@ async def preview_voice(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """Preview voice - from Ultravox"""
+    """Preview voice - from Ultravox. ALWAYS uses ultravox_voice_id, never provider_voice_id or local voice_id."""
     if not settings.ULTRAVOX_API_KEY:
         raise ValidationError("Ultravox API key not configured")
     
     db = DatabaseService(current_user["token"])
     db.set_auth(current_user["token"])
     
-    # Try to get voice from DB
+    # Get voice from DB - this is required for custom voices (cloned/imported)
     voice = None
     try:
         voice = db.get_voice(voice_id, current_user["client_id"])
-    except:
-        pass
+        if voice:
+            logger.info(f"[VOICES] Preview: Found voice in DB | voice_id={voice_id} | ultravox_voice_id={voice.get('ultravox_voice_id')} | provider_voice_id={voice.get('provider_voice_id')}")
+        else:
+            logger.info(f"[VOICES] Preview: Voice not found in DB | voice_id={voice_id}")
+    except Exception as e:
+        logger.warning(f"[VOICES] Preview: Exception getting voice from DB | voice_id={voice_id} | error={str(e)} | type={type(e).__name__}")
+        voice = None
+    
+    # Determine ultravox_voice_id - CRITICAL: Always use ultravox_voice_id, NEVER provider_voice_id
+    ultravox_voice_id = None
     
     if voice:
+        # Custom voice (cloned or imported) - MUST use ultravox_voice_id from DB
         ultravox_voice_id = voice.get("ultravox_voice_id")
+        
         if not ultravox_voice_id:
-            raise ValidationError("Voice does not have an Ultravox ID")
+            # This is a critical error - custom voices MUST have ultravox_voice_id
+            logger.error(f"[VOICES] Preview: CRITICAL - Voice in DB but missing ultravox_voice_id | voice_id={voice_id} | voice_keys={list(voice.keys())} | voice={voice}")
+            raise ValidationError(
+                f"Voice does not have an Ultravox ID. This voice cannot be previewed. Voice ID: {voice_id}, Name: {voice.get('name', 'Unknown')}"
+            )
+        
+        # Double-check we're not accidentally using provider_voice_id
+        provider_voice_id = voice.get("provider_voice_id")
+        if ultravox_voice_id == provider_voice_id:
+            logger.warning(f"[VOICES] Preview: WARNING - ultravox_voice_id equals provider_voice_id | voice_id={voice_id} | id={ultravox_voice_id}")
+        
+        logger.info(f"[VOICES] Preview: Using ultravox_voice_id from DB | voice_id={voice_id} | ultravox_voice_id={ultravox_voice_id}")
     else:
+        # Voice not in DB - might be a default Ultravox voice (from explore section)
+        # In this case, voice_id should already be the ultravox_voice_id
+        logger.info(f"[VOICES] Preview: Voice not in DB, using voice_id as ultravox_voice_id (default Ultravox voice) | voice_id={voice_id}")
         ultravox_voice_id = voice_id
     
-    audio_bytes = await ultravox_client.get_voice_preview(ultravox_voice_id)
+    # Validate ultravox_voice_id is not empty
+    if not ultravox_voice_id:
+        logger.error(f"[VOICES] Preview: CRITICAL - ultravox_voice_id is empty | voice_id={voice_id}")
+        raise ValidationError("Ultravox voice ID is required for preview")
+    
+    # Always use ultravox_voice_id for preview - NEVER use provider_voice_id
+    logger.info(f"[VOICES] Preview: Calling Ultravox API | ultravox_voice_id={ultravox_voice_id} | voice_id={voice_id}")
+    
+    try:
+        audio_bytes = await ultravox_client.get_voice_preview(ultravox_voice_id)
+        logger.info(f"[VOICES] Preview: Success | ultravox_voice_id={ultravox_voice_id} | audio_size={len(audio_bytes)} bytes")
+    except httpx.HTTPStatusError as e:
+        # HTTP error from Ultravox API
+        error_msg = f"Ultravox API error: {e.response.status_code}"
+        if e.response.text:
+            try:
+                error_data = e.response.json()
+                error_msg += f" - {error_data.get('message', e.response.text[:200])}"
+            except:
+                error_msg += f" - {e.response.text[:200]}"
+        
+        logger.error(f"[VOICES] Preview: Ultravox API HTTP error | ultravox_voice_id={ultravox_voice_id} | status={e.response.status_code} | error={error_msg}")
+        raise ProviderError(
+            provider="ultravox",
+            message=error_msg,
+            http_status=502,
+            details={"ultravox_voice_id": ultravox_voice_id, "status_code": e.response.status_code},
+        )
+    except Exception as e:
+        logger.error(f"[VOICES] Preview: Unexpected error calling Ultravox | ultravox_voice_id={ultravox_voice_id} | error={str(e)} | type={type(e).__name__}")
+        raise ProviderError(
+            provider="ultravox",
+            message=f"Failed to get voice preview: {str(e)}",
+            http_status=502,
+            details={"ultravox_voice_id": ultravox_voice_id},
+        )
     
     return Response(
         content=audio_bytes,
