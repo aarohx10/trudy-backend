@@ -9,7 +9,6 @@ import uuid
 import json
 import logging
 import httpx
-import asyncio
 
 from app.core.auth import get_current_user
 from app.core.database import DatabaseService, DatabaseAdminService
@@ -42,6 +41,9 @@ async def clone_voice(
     x_client_id: Optional[str] = Header(None),
 ):
     """
+    DEPRECATED: Use POST /voices with strategy="native" instead.
+    This endpoint is kept for backward compatibility only.
+    
     Muscular voice cloning endpoint: File Upload → ElevenLabs Clone → Ultravox Sync → Supabase Record
     
     FormData (multipart/form-data):
@@ -50,6 +52,7 @@ async def clone_voice(
     
     Returns immediately with voice record. Processing happens in background.
     """
+    logger.warning(f"[VOICES] [CLONE] Deprecated endpoint used | client_id={current_user.get('client_id')} | user_id={current_user.get('user_id')}. Please use POST /voices with strategy='native' instead.")
     client_id = current_user.get("client_id")
     user_id = current_user.get("user_id")
     
@@ -113,7 +116,7 @@ async def clone_voice(
         "provider": "elevenlabs",
         "type": "custom",
         "language": "en-US",
-        "status": "processing",
+        "status": "training",
         "training_info": {
             "progress": 0,
             "message": "Voice cloning queued. Processing will begin shortly...",
@@ -126,55 +129,52 @@ async def clone_voice(
     db.insert("voices", voice_db_record)
     logger.info(f"[VOICES] [CLONE] Voice record created | voice_id={voice_id} | name={name}")
     
-    # Get client info for background task
-    client_dict = client if client else {}
-    
-    # Process cloning in background - return immediately
+    # Process cloning in background using unified function - return immediately
     background_tasks.add_task(
-        _process_voice_cloning_background,
+        _process_voice_cloning_unified,
         voice_id=voice_id,
         name=name,
-        audio_content=audio_content,
-        filename=filename,
-        content_type=content_type,
+        audio_files=[audio_content],
+        filenames=[filename],
+        content_types=[content_type],
         user_id=user_id,
         client_id=client_id,
-        client_dict=client_dict,
     )
     
     logger.info(f"[VOICES] [CLONE] Voice cloning queued for background processing | voice_id={voice_id} | name={name}")
     
-    # Return immediately with "processing" status
+    # Return immediately with "training" status
     return {
         "data": VoiceResponse(**voice_db_record),
         "meta": ResponseMeta(request_id=str(uuid.uuid4()), ts=datetime.utcnow()),
     }
 
 
-async def _process_voice_cloning_background(
+async def _process_voice_cloning_unified(
     voice_id: str,
     name: str,
-    audio_content: bytes,
-    filename: str,
-    content_type: str,
+    audio_files: List[bytes],
+    filenames: List[str],
+    content_types: List[str],
     user_id: str,
     client_id: str,
-    client_dict: dict,
 ):
     """
-    Background task to process voice cloning with ElevenLabs and Ultravox.
+    Unified background task to process voice cloning with ElevenLabs and Ultravox.
+    Handles both single file (from /voices/clone) and multiple files (from /voices).
     Uses DatabaseAdminService to bypass RLS since we don't have user token in background.
     """
     from app.core.database import DatabaseAdminService
     
     db = DatabaseAdminService()
+    elevenlabs_voice_id = None
     
     try:
-        logger.info(f"[VOICES] [BACKGROUND] Starting voice clone processing | voice_id={voice_id} | name={name}")
+        logger.info(f"[VOICES] [BACKGROUND] Starting unified voice clone processing | voice_id={voice_id} | name={name} | files_count={len(audio_files)}")
         
-        # Update status to processing
+        # Update status to training
         db.update("voices", {"id": voice_id}, {
-            "status": "processing",
+            "status": "training",
             "training_info": {
                 "progress": 10,
                 "message": "Starting ElevenLabs voice cloning...",
@@ -183,12 +183,16 @@ async def _process_voice_cloning_background(
             "updated_at": datetime.utcnow().isoformat(),
         })
         
-        # Action A: Direct HTTP POST to ElevenLabs
-        logger.info(f"[VOICES] [BACKGROUND] Starting ElevenLabs clone | voice_id={voice_id}")
+        # Step 1: Clone voice in ElevenLabs
+        logger.info(f"[VOICES] [BACKGROUND] Starting ElevenLabs clone | voice_id={voice_id} | files_count={len(audio_files)}")
         elevenlabs_url = "https://api.elevenlabs.io/v1/voices/add"
         
         async with httpx.AsyncClient(timeout=120.0) as http_client:
-            files = [("files", (filename, audio_content, content_type or "audio/mpeg"))]
+            # Build multipart form data for ElevenLabs
+            files = []
+            for i, (audio_content, filename, content_type) in enumerate(zip(audio_files, filenames, content_types)):
+                files.append(("files", (filename or f"sample_{i}.mp3", audio_content, content_type or "audio/mpeg")))
+            
             data = {"name": name}
             
             elevenlabs_response = await http_client.post(
@@ -211,7 +215,7 @@ async def _process_voice_cloning_background(
                     "request_method": "POST",
                     "voice_id": voice_id,
                     "name": name,
-                    "filename": filename,
+                    "files_count": len(audio_files),
                 }
                 logger.error(f"[VOICES] [BACKGROUND] ElevenLabs error (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
                 raise ProviderError(
@@ -242,7 +246,7 @@ async def _process_voice_cloning_background(
             "updated_at": datetime.utcnow().isoformat(),
         })
         
-        # Action B: Direct HTTP POST to Ultravox
+        # Step 2: Import to Ultravox
         logger.info(f"[VOICES] [BACKGROUND] Starting Ultravox sync | voice_id={voice_id} | elevenlabs_voice_id={elevenlabs_voice_id}")
         
         # Normalize name for Ultravox
@@ -295,21 +299,24 @@ async def _process_voice_cloning_background(
                 logger.error(f"[VOICES] [BACKGROUND] Ultravox error (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
                 
                 # Clean up ElevenLabs voice on Ultravox failure
-                try:
-                    async with httpx.AsyncClient(timeout=30.0) as cleanup_client:
-                        await cleanup_client.delete(
-                            f"https://api.elevenlabs.io/v1/voices/{elevenlabs_voice_id}",
-                            headers={"xi-api-key": settings.ELEVENLABS_API_KEY},
-                        )
-                except Exception as cleanup_error:
-                    import traceback
-                    cleanup_error_details = {
-                        "error_type": type(cleanup_error).__name__,
-                        "error_message": str(cleanup_error),
-                        "full_traceback": traceback.format_exc(),
-                        "elevenlabs_voice_id": elevenlabs_voice_id,
-                    }
-                    logger.error(f"[VOICES] [BACKGROUND] Cleanup error (RAW ERROR): {json.dumps(cleanup_error_details, indent=2, default=str)}", exc_info=True)
+                if elevenlabs_voice_id:
+                    try:
+                        async with httpx.AsyncClient(timeout=30.0) as cleanup_client:
+                            await cleanup_client.delete(
+                                f"https://api.elevenlabs.io/v1/voices/{elevenlabs_voice_id}",
+                                headers={"xi-api-key": settings.ELEVENLABS_API_KEY},
+                            )
+                            logger.info(f"[VOICES] [BACKGROUND] Cleaned up ElevenLabs voice | elevenlabs_voice_id={elevenlabs_voice_id}")
+                    except Exception as cleanup_error:
+                        import traceback
+                        import json
+                        cleanup_error_details = {
+                            "error_type": type(cleanup_error).__name__,
+                            "error_message": str(cleanup_error),
+                            "full_traceback": traceback.format_exc(),
+                            "elevenlabs_voice_id": elevenlabs_voice_id,
+                        }
+                        logger.error(f"[VOICES] [BACKGROUND] Cleanup error (RAW ERROR): {json.dumps(cleanup_error_details, indent=2, default=str)}", exc_info=True)
                 
                 raise ProviderError(
                     provider="ultravox",
@@ -329,7 +336,7 @@ async def _process_voice_cloning_background(
         
         logger.info(f"[VOICES] [BACKGROUND] Ultravox sync completed | voice_id={voice_id} | ultravox_voice_id={ultravox_voice_id}")
         
-        # Action C: Update database record
+        # Step 3: Update database record
         update_data = {
             "status": "active",
             "provider_voice_id": elevenlabs_voice_id,
@@ -344,9 +351,26 @@ async def _process_voice_cloning_background(
         db.update("voices", {"id": voice_id}, update_data)
         logger.info(f"[VOICES] [BACKGROUND] Database updated | voice_id={voice_id} | status=active")
         
-        # Deduct credits (get fresh client data)
+        # Step 4: Deduct credits (get fresh client data)
         current_client = db.select_one("clients", {"id": client_id})
         if current_client:
+            # Log credit transaction
+            try:
+                db.insert(
+                    "credit_transactions",
+                    {
+                        "client_id": client_id,
+                        "type": "spent",
+                        "amount": 50,
+                        "reference_type": "voice_cloning",
+                        "reference_id": voice_id,
+                        "description": f"Voice cloning: {name}",
+                    },
+                )
+            except Exception as tx_error:
+                logger.warning(f"[VOICES] [BACKGROUND] Failed to log credit transaction (non-critical): {str(tx_error)}")
+            
+            # Deduct credits
             db.update("clients", {"id": client_id}, {
                 "credits_balance": current_client.get("credits_balance", 0) - 50,
                 "updated_at": datetime.utcnow().isoformat(),
@@ -371,7 +395,7 @@ async def _process_voice_cloning_background(
             "name": name,
             "user_id": user_id,
             "client_id": client_id,
-            "filename": filename,
+            "files_count": len(audio_files),
         }
         logger.error(f"[VOICES] [BACKGROUND] Provider error (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         db.update("voices", {"id": voice_id}, {
@@ -399,7 +423,7 @@ async def _process_voice_cloning_background(
             "name": name,
             "user_id": user_id,
             "client_id": client_id,
-            "filename": filename,
+            "files_count": len(audio_files),
         }
         logger.error(f"[VOICES] [BACKGROUND] Unexpected error (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         db.update("voices", {"id": voice_id}, {
@@ -409,118 +433,6 @@ async def _process_voice_cloning_background(
                 "message": f"Unexpected error: {str(e)}",
                 "error_at": datetime.utcnow().isoformat(),
             },
-            "updated_at": datetime.utcnow().isoformat(),
-        })
-
-
-async def _process_voice_cloning(
-    voice_id: str,
-    name: str,
-    audio_files: List[bytes],
-    user_id: str,
-    client_id: str,
-    client: dict,
-    db: DatabaseService,
-):
-    """Background task to process voice cloning with ElevenLabs and Ultravox (legacy - uses DatabaseService)"""
-    try:
-        logger.info(f"[VOICES] [BACKGROUND] Starting voice clone processing | voice_id={voice_id} | name={name}")
-        
-        # Send directly to ElevenLabs
-        logger.info(f"[VOICES] [BACKGROUND] Starting ElevenLabs voice clone | voice_id={voice_id} | files_count={len(audio_files)}")
-        elevenlabs_response = await elevenlabs_client.clone_voice(
-            name=name,
-            audio_files=audio_files,
-            description=f"Voice clone for user {user_id}",
-        )
-        elevenlabs_voice_id = elevenlabs_response.get("voice_id")
-        logger.info(f"[VOICES] [BACKGROUND] ElevenLabs clone completed | voice_id={voice_id} | elevenlabs_voice_id={elevenlabs_voice_id}")
-        
-        if not elevenlabs_voice_id:
-            raise ProviderError(
-                provider="elevenlabs",
-                message="ElevenLabs response missing voice_id",
-                http_status=500,
-            )
-        
-        # Import to Ultravox
-        logger.info(f"[VOICES] [BACKGROUND] Starting Ultravox import | voice_id={voice_id} | elevenlabs_voice_id={elevenlabs_voice_id}")
-        ultravox_response = await ultravox_client.import_voice_from_provider(
-            name=name,
-            provider="elevenlabs",
-            provider_voice_id=elevenlabs_voice_id,
-            description=f"Cloned voice: {name}",
-        )
-        ultravox_voice_id = ultravox_response.get("voiceId") or ultravox_response.get("id")
-        logger.info(f"[VOICES] [BACKGROUND] Ultravox import completed | voice_id={voice_id} | ultravox_voice_id={ultravox_voice_id}")
-        
-        if not ultravox_voice_id:
-            raise ProviderError(
-                provider="ultravox",
-                message="Ultravox response missing voiceId",
-                http_status=500,
-            )
-        
-        # Update database record
-        update_data = {
-            "status": "active",
-            "provider_voice_id": elevenlabs_voice_id,
-            "ultravox_voice_id": ultravox_voice_id,
-            "updated_at": datetime.utcnow().isoformat(),
-        }
-        db.update("voices", {"id": voice_id}, update_data)
-        logger.info(f"[VOICES] [BACKGROUND] Database updated | voice_id={voice_id} | status=active")
-        
-        # Deduct credits
-        db.update("clients", {"id": client_id}, {
-            "credits_balance": client.get("credits_balance", 0) - 50,
-            "updated_at": datetime.utcnow().isoformat(),
-        })
-        logger.info(f"[VOICES] [BACKGROUND] Credits deducted | voice_id={voice_id} | client_id={client_id} | amount=50")
-        logger.info(f"[VOICES] [BACKGROUND] Voice cloning completed successfully | voice_id={voice_id} | name={name}")
-        
-    except ProviderError as e:
-        import traceback
-        import json
-        error_details_raw = {
-            "error_type": type(e).__name__,
-            "error_message": str(e),
-            "error_args": e.args if hasattr(e, 'args') else None,
-            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
-            "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
-            "full_traceback": traceback.format_exc(),
-            "voice_id": voice_id,
-            "name": name,
-            "user_id": user_id,
-            "client_id": client_id,
-            "audio_files_count": len(audio_files),
-        }
-        logger.error(f"[VOICES] [BACKGROUND] Provider error (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
-        db.update("voices", {"id": voice_id}, {
-            "status": "failed",
-            "updated_at": datetime.utcnow().isoformat(),
-        })
-    except Exception as e:
-        import traceback
-        import json
-        error_details_raw = {
-            "error_type": type(e).__name__,
-            "error_message": str(e),
-            "error_args": e.args if hasattr(e, 'args') else None,
-            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
-            "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
-            "error_module": getattr(e, '__module__', None),
-            "error_class": type(e).__name__,
-            "full_traceback": traceback.format_exc(),
-            "voice_id": voice_id,
-            "name": name,
-            "user_id": user_id,
-            "client_id": client_id,
-            "audio_files_count": len(audio_files),
-        }
-        logger.error(f"[VOICES] [BACKGROUND] Unexpected error (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
-        db.update("voices", {"id": voice_id}, {
-            "status": "failed",
             "updated_at": datetime.utcnow().isoformat(),
         })
 
@@ -637,9 +549,10 @@ async def create_voice(
                 "provider": provider or "elevenlabs",
                 "type": "custom",
                 "language": "en-US",
-                "status": "creating",
+                "status": "training",
                 "training_info": {
                     "progress": 0,
+                    "message": "Voice cloning queued. Processing will begin shortly...",
                     "started_at": now.isoformat(),
                 },
                 "created_at": now.isoformat(),
@@ -650,18 +563,26 @@ async def create_voice(
             logger.info(f"[VOICES] [CREATE] Voice record created | voice_id={voice_id} | name={name} | strategy=native")
             
             # Add background task to process cloning (returns immediately)
+            # Build filenames and content_types lists for unified function
+            filenames = []
+            content_types_list = []
+            for file_item in files:
+                if isinstance(file_item, UploadFile):
+                    filenames.append(file_item.filename or "audio.mp3")
+                    content_types_list.append(file_item.content_type or "audio/mpeg")
+            
             background_tasks.add_task(
-                _process_voice_cloning,
+                _process_voice_cloning_unified,
                 voice_id=voice_id,
                 name=name,
                 audio_files=audio_files,
+                filenames=filenames,
+                content_types=content_types_list,
                 user_id=user_id,
                 client_id=client_id,
-                client=client,
-                db=db,
             )
             
-            # Return immediately with "creating" status
+            # Return immediately with "training" status
             response_data = {
                 "data": VoiceResponse(**voice_db_record),
                 "meta": ResponseMeta(request_id=str(uuid.uuid4()), ts=datetime.utcnow()),
@@ -690,7 +611,7 @@ async def create_voice(
                 "provider": provider or "elevenlabs",
                 "type": "reference",
                 "language": "en-US",
-                "status": "creating",
+                "status": "active",
                 "created_at": now.isoformat(),
                 "updated_at": now.isoformat(),
             }
@@ -840,9 +761,10 @@ async def create_voice(
             "provider": provider,
             "type": voice_type,
             "language": "en-US",
-            "status": "creating",
+            "status": "training" if voice_data.strategy == "native" else "active",
             "training_info": {
                 "progress": 0,
+                "message": "Voice cloning queued. Processing will begin shortly...",
                 "started_at": now.isoformat(),
             } if voice_data.strategy == "native" else {},
             "created_at": now.isoformat(),
@@ -853,7 +775,7 @@ async def create_voice(
         db.insert("voices", voice_db_record)
         
         try:
-            # NATIVE (Voice Clone): Clone in ElevenLabs → Import to Ultravox
+            # NATIVE (Voice Clone): Process in background (legacy JSON path - now uses background processing)
             if voice_data.strategy == "native":
                 
                 # Validate requirements
@@ -864,8 +786,11 @@ async def create_voice(
                 if not voice_data.source.samples or len(voice_data.source.samples) == 0:
                     raise ValidationError("At least one audio sample is required for voice cloning.")
                 
-                # Step 1: Download audio files from storage (legacy path)
+                # Download audio files from storage for background processing
                 audio_files = []
+                filenames = []
+                content_types = []
+                
                 for sample in voice_data.source.samples:
                     if not check_object_exists(settings.STORAGE_BUCKET_UPLOADS, sample.storage_key):
                         raise NotFoundError("voice sample", sample.storage_key)
@@ -883,45 +808,32 @@ async def create_voice(
                         response = await http_client.get(audio_url)
                         response.raise_for_status()
                         audio_files.append(response.content)
+                        # Extract filename from storage key or use default
+                        filename = sample.storage_key.split('/')[-1] if '/' in sample.storage_key else sample.storage_key
+                        filenames.append(filename)
+                        # Try to infer content type from filename
+                        content_type = "audio/mpeg"
+                        if filename.lower().endswith('.wav'):
+                            content_type = "audio/wav"
+                        elif filename.lower().endswith('.webm'):
+                            content_type = "audio/webm"
+                        elif filename.lower().endswith('.ogg'):
+                            content_type = "audio/ogg"
+                        content_types.append(content_type)
                 
-                elevenlabs_response = await elevenlabs_client.clone_voice(
+                # Process cloning in background - return immediately with "training" status
+                background_tasks.add_task(
+                    _process_voice_cloning_unified,
+                    voice_id=voice_id,
                     name=voice_data.name,
                     audio_files=audio_files,
-                    description=f"Voice clone for user {user_id}",
+                    filenames=filenames,
+                    content_types=content_types,
+                    user_id=user_id,
+                    client_id=client_id,
                 )
-                elevenlabs_voice_id = elevenlabs_response.get("voice_id")
                 
-                if not elevenlabs_voice_id:
-                    raise ProviderError(
-                        provider="elevenlabs",
-                        message="ElevenLabs response missing voice_id",
-                        http_status=500,
-                    )
-                
-                ultravox_response = await ultravox_client.import_voice_from_provider(
-                    name=voice_data.name,
-                    provider="elevenlabs",
-                    provider_voice_id=elevenlabs_voice_id,
-                    description=f"Cloned voice: {voice_data.name}",
-                )
-                ultravox_voice_id = ultravox_response.get("voiceId") or ultravox_response.get("id")
-                
-                if not ultravox_voice_id:
-                    raise ProviderError(
-                        provider="ultravox",
-                        message="Ultravox response missing voiceId",
-                        http_status=500,
-                    )
-                
-                # Update database record
-                update_data = {
-                    "status": "active",  # Voice cloning is complete
-                    "provider_voice_id": elevenlabs_voice_id,
-                    "ultravox_voice_id": ultravox_voice_id,
-                    "updated_at": now.isoformat(),
-                }
-                db.update("voices", {"id": voice_id}, update_data)
-                voice_db_record.update(update_data)
+                logger.info(f"[VOICES] [CREATE] Voice creation initiated (processing in background) | voice_id={voice_id} | name={voice_data.name} | strategy=native (JSON path)")
             
             # EXTERNAL (Import existing voice): Import to Ultravox
             else:
@@ -1028,24 +940,8 @@ async def create_voice(
         voice_record["created_at"] = now
         voice_record["updated_at"] = now
         
-        # Debit credits for native voice cloning
-        if voice_data.strategy == "native" and client:
-            db.insert(
-                "credit_transactions",
-                {
-                    "client_id": client_id,
-                    "type": "spent",
-                    "amount": 50,
-                    "reference_type": "voice_cloning",
-                    "reference_id": voice_id,
-                    "description": f"Voice cloning: {voice_data.name}",
-                },
-            )
-            db.update(
-                "clients",
-                {"id": client_id},
-                {"credits_balance": client["credits_balance"] - 50},
-            )
+        # Note: Credits are deducted in background task for native strategy
+        # External imports don't require credits, so no deduction needed here
         
         response_data = {
             "data": VoiceResponse(**voice_record),
