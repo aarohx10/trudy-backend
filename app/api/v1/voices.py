@@ -258,7 +258,9 @@ async def create_voice(
                 
             except ProviderError as pe:
                 # Re-raise ProviderError as-is
-                logger.error(f"[VOICES] ProviderError during import | provider={pe.provider} | message={pe.message} | http_status={pe.http_status}")
+                provider = pe.details.get("provider", "unknown") if pe.details else "unknown"
+                http_status = pe.details.get("httpStatus", 500) if pe.details else 500
+                logger.error(f"[VOICES] ProviderError during import | provider={provider} | message={pe.message} | http_status={http_status}")
                 raise
             except Exception as e:
                 # Log the actual error
