@@ -297,15 +297,32 @@ async def list_voices(
     client_id = current_user.get("client_id")
     now = datetime.utcnow()
     
-    # Custom voices: from database
+    # Custom voices: from database (includes both cloned "custom" and imported "reference" voices)
     if source == "custom":
         db = DatabaseService(current_user["token"])
         db.set_auth(current_user["token"])
         
-        custom_voices = db.select("voices", {"client_id": client_id, "type": "custom"}, order_by="created_at")
+        # Get both cloned voices (type: "custom") and imported voices (type: "reference")
+        # These are all "my voices" - voices owned by this client
+        cloned_voices = db.select("voices", {"client_id": client_id, "type": "custom"}, order_by="created_at DESC")
+        imported_voices = db.select("voices", {"client_id": client_id, "type": "reference"}, order_by="created_at DESC")
+        
+        # Combine both lists (both are already sorted DESC, so we maintain order)
+        all_voices = cloned_voices + imported_voices
+        
+        # Sort by created_at descending (newest first) - handle both ISO strings and datetime objects
+        def get_sort_key(voice):
+            created_at = voice.get("created_at", "")
+            if isinstance(created_at, str):
+                return created_at
+            elif hasattr(created_at, "isoformat"):
+                return created_at.isoformat()
+            return ""
+        
+        all_voices.sort(key=get_sort_key, reverse=True)
         
         voices_data = []
-        for voice_record in custom_voices:
+        for voice_record in all_voices:
             try:
                 voices_data.append(VoiceResponse(**voice_record))
             except Exception as e:
