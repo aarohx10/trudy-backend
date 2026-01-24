@@ -26,16 +26,18 @@
   - ✅ `DELETE /kb/{id}` - Delete KB and Ultravox tool
   - ✅ `POST /kb/{id}/fetch` - Fetch content for Ultravox (API key auth)
 
-### 4. File Upload Flow ✅
-1. Frontend sends FormData with `name`, `description`, `file`
-2. Backend validates file type (PDF, TXT, DOCX, MD) and size (max 50MB)
-3. Backend creates KB record with status='creating'
-4. Backend saves file temporarily
-5. Backend extracts text using `text_extraction.py`
-6. Backend stores extracted text in `content` field, updates status='ready'
-7. Backend creates Ultravox tool (non-blocking)
-8. Backend returns KB record
-9. Temp file is cleaned up
+### 4. File Upload Flow ✅ (Base64 JSON Pattern - Same as Voice Cloning)
+1. Frontend converts File to base64 using FileReader
+2. Frontend sends JSON payload: `{name, description, file: {filename, data: base64, content_type}}`
+3. Backend receives JSON Body, decodes base64 to bytes
+4. Backend validates file type (PDF, TXT, DOCX, MD) and size (max 50MB)
+5. Backend creates KB record with status='creating'
+6. Backend saves file temporarily
+7. Backend extracts text using `text_extraction.py`
+8. Backend stores extracted text in `content` field, updates status='ready'
+9. Backend creates Ultravox tool (non-blocking)
+10. Backend returns KB record
+11. Temp file is cleaned up
 
 ### 5. Text Extraction ✅
 - **File**: `z-backend/app/services/text_extraction.py`

@@ -2,7 +2,7 @@
 Knowledge Base API Endpoints
 Handles document upload, text extraction, content management, and Ultravox tool integration.
 """
-from fastapi import APIRouter, Depends, File, Form, UploadFile, Header, Request, Body, HTTPException
+from fastapi import APIRouter, Depends, Header, Body, HTTPException
 from fastapi.responses import Response, PlainTextResponse
 from typing import Optional, List, Dict, Any
 from datetime import datetime
@@ -10,6 +10,7 @@ import uuid
 import logging
 import os
 import tempfile
+import base64
 from pathlib import Path
 from pydantic import BaseModel
 
@@ -49,17 +50,39 @@ class KnowledgeBaseFetchRequest(BaseModel):
     kb_id: str
 
 
+class FileData(BaseModel):
+    """File data with base64 encoding"""
+    filename: str
+    data: str  # Base64 encoded file data
+    content_type: str = "application/octet-stream"
+
+
+class KnowledgeBaseCreateRequest(BaseModel):
+    """Request model for creating knowledge base with base64 file"""
+    name: str
+    description: Optional[str] = None
+    file: FileData
+
+
 @router.post("")
 async def create_knowledge_base(
-    request: Request,
-    name: str = Form(...),
-    description: Optional[str] = Form(None),
-    file: UploadFile = File(...),
+    request_data: KnowledgeBaseCreateRequest = Body(...),
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
     """
-    Create new knowledge base with document upload.
+    Create new knowledge base with document upload (base64 encoded).
+    
+    JSON Request Body:
+    {
+        "name": "KB Name",
+        "description": "Optional description",
+        "file": {
+            "filename": "document.pdf",
+            "data": "base64_encoded_file_data",
+            "content_type": "application/pdf"
+        }
+    }
     
     Validates file, extracts text, stores in database, and creates Ultravox tool.
     """
@@ -69,12 +92,16 @@ async def create_knowledge_base(
         if current_user["role"] not in ["client_admin", "agency_admin"]:
             raise ForbiddenError("Insufficient permissions")
         
-        # Validate file
-        if not file.filename:
+        # Validate input
+        name = request_data.name.strip()
+        if not name:
+            raise ValidationError("Name is required")
+        
+        if not request_data.file:
             raise ValidationError("File is required")
         
         # Check file extension
-        file_ext = Path(file.filename).suffix.lower()
+        file_ext = Path(request_data.file.filename).suffix.lower()
         if file_ext not in ALLOWED_EXTENSIONS:
             raise ValidationError(
                 f"Invalid file type. Allowed types: PDF, TXT, DOCX, MD",
@@ -82,16 +109,20 @@ async def create_knowledge_base(
             )
         
         # Determine file type
-        content_type = file.content_type or ""
+        content_type = request_data.file.content_type or ""
         file_type = ALLOWED_FILE_TYPES.get(content_type)
         if not file_type:
             # Try to infer from extension
             ext_map = {'.pdf': 'pdf', '.txt': 'txt', '.docx': 'docx', '.doc': 'docx', '.md': 'md'}
             file_type = ext_map.get(file_ext, 'txt')
         
-        # Read file content
-        file_content = await file.read()
-        file_size = len(file_content)
+        # Decode base64 file data to bytes
+        try:
+            file_content = base64.b64decode(request_data.file.data)
+            file_size = len(file_content)
+        except Exception as decode_error:
+            logger.error(f"[KB] Failed to decode base64 file data: {decode_error}", exc_info=True)
+            raise ValidationError(f"Invalid base64 file data: {str(decode_error)}")
         
         # Validate file size
         if file_size > MAX_FILE_SIZE:
@@ -112,10 +143,10 @@ async def create_knowledge_base(
             "id": kb_id,
             "client_id": client_id,
             "name": name,
-            "description": description,
+            "description": request_data.description,
             "language": "en-US",
             "status": "creating",
-            "file_name": file.filename,
+            "file_name": request_data.file.filename,
             "file_type": file_type,
             "file_size": file_size,
             "created_at": now.isoformat(),
@@ -137,7 +168,7 @@ async def create_knowledge_base(
                 file_type=file_type,
                 kb_id=kb_id,
                 client_id=client_id,
-                file_name=file.filename,
+                file_name=request_data.file.filename,
                 file_size=file_size
             )
             
