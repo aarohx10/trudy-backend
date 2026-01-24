@@ -62,19 +62,12 @@ async def create_call(
     db = DatabaseService(current_user["token"])
     db.set_auth(current_user["token"])
     
-    # Validate agent
-    agent = db.get_agent(call_data.agent_id, current_user["client_id"])
-    if not agent:
-        raise NotFoundError("agent", call_data.agent_id)
-    if agent.get("status") != "active":
-        raise ValidationError("Agent must be active", {"agent_status": agent.get("status")})
-    
     # Create call record
     call_id = str(uuid.uuid4())
     call_record = {
         "id": call_id,
         "client_id": current_user["client_id"],
-        "agent_id": call_data.agent_id,
+        "agent_id": call_data.agent_id if call_data.agent_id else None,
         "phone_number": call_data.phone_number,
         "direction": call_data.direction.value,
         "status": "queued",
@@ -85,7 +78,8 @@ async def create_call(
     db.insert("calls", call_record)
     
     # Call Ultravox API
-    ultravox_agent_id = agent.get("ultravox_agent_id")
+    # Note: ultravox_agent_id must be provided directly in call_data or call_settings
+    ultravox_agent_id = getattr(call_data, 'ultravox_agent_id', None) or (call_data.call_settings.dict() if call_data.call_settings else {}).get('ultravox_agent_id')
     if ultravox_agent_id:
         try:
             ultravox_data = {
@@ -127,10 +121,10 @@ async def create_call(
             )
             call_record["status"] = "failed"
     else:
-        # Agent doesn't have ultravox_agent_id - call created but marked as failed
+        # No ultravox_agent_id provided - call created but marked as failed
         import logging
         logger = logging.getLogger(__name__)
-        logger.warning(f"Agent {call_data.agent_id} does not have ultravox_agent_id - call created without Ultravox integration")
+        logger.warning(f"No ultravox_agent_id provided - call created without Ultravox integration")
         db.update(
             "calls",
             {"id": call_id},
@@ -143,7 +137,6 @@ async def create_call(
         await emit_call_created(
             call_id=call_id,
             client_id=current_user["client_id"],
-            agent_id=call_data.agent_id,
             ultravox_call_id=call_record["ultravox_call_id"],
             phone_number=call_data.phone_number,
             direction=call_data.direction.value,
@@ -192,8 +185,7 @@ async def list_calls(
     
     # Build filters
     filters = {"client_id": current_user["client_id"]}
-    if agent_id:
-        filters["agent_id"] = agent_id
+    # Note: agent_id filtering removed - agent functionality has been removed
     if status:
         filters["status"] = status
     if direction:

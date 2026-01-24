@@ -23,7 +23,7 @@ except ImportError:
 async def analyze_call_transcript(
     call_id: str,
     transcript_text: str,
-    agent_id: str,
+    agent_id: Optional[str] = None,
     success_criteria: Optional[str] = None,
     extraction_schema: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -59,18 +59,11 @@ async def analyze_call_transcript(
         }
     
     try:
-        # Get agent info for context
-        admin_db = DatabaseAdminService()
-        agent = admin_db.select_one("agents", {"id": agent_id})
-        agent_name = agent.get("name", "Agent") if agent else "Agent"
-        
         # Build analysis prompt
         analysis_prompt = f"""Analyze the following call transcript and extract key information.
 
 Call Transcript:
 {transcript_text}
-
-Agent: {agent_name}
 
 Please provide:
 1. A brief 2-sentence summary of the call
@@ -269,35 +262,13 @@ async def process_call_metadata(
         else:
             transcript_text = ""
     
-    # Get agent data for success criteria and extraction schema
+    # Get agent_id from call (optional - for context only)
     agent_id = call.get("agent_id")
-    if not agent_id:
-        logger.error(f"Call {call_id} has no agent_id")
-        admin_db.update(
-            "calls",
-            {"id": call_id},
-            {
-                "analysis_status": "failed",
-                "analysis_error": "Call has no agent_id",
-            },
-        )
-        return {"error": "Call has no agent_id"}
     
-    agent = admin_db.select_one("agents", {"id": agent_id})
-    if not agent:
-        logger.error(f"Agent {agent_id} not found for call {call_id}")
-        admin_db.update(
-            "calls",
-            {"id": call_id},
-            {
-                "analysis_status": "failed",
-                "analysis_error": "Agent not found",
-            },
-        )
-        return {"error": "Agent not found"}
-    
-    success_criteria = agent.get("success_criteria")
-    extraction_schema = agent.get("extraction_schema") or {}
+    # Note: success_criteria and extraction_schema should come from call settings or campaign
+    # For now, use defaults since agents table is no longer available
+    success_criteria = call.get("success_criteria") or None
+    extraction_schema = call.get("extraction_schema") or {}
     
     # Analyze transcript
     analysis_result = await analyze_call_transcript(

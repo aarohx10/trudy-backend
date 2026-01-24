@@ -115,40 +115,13 @@ async def emit_voice_created(voice_id: str, client_id: str, ultravox_voice_id: s
     )
 
 
-async def emit_agent_created(agent_id: str, client_id: str, ultravox_agent_id: str) -> bool:
-    """Emit agent.created event"""
-    return await publish_event(
-        "agent.created",
-        {
-            "agent_id": agent_id,
-            "client_id": client_id,
-            "ultravox_agent_id": ultravox_agent_id,
-            "timestamp": datetime.utcnow().isoformat(),
-        },
-    )
-
-
-async def emit_agent_updated(agent_id: str, client_id: str, changes: Dict[str, Any]) -> bool:
-    """Emit agent.updated event"""
-    return await publish_event(
-        "agent.updated",
-        {
-            "agent_id": agent_id,
-            "client_id": client_id,
-            "changes": changes,
-            "timestamp": datetime.utcnow().isoformat(),
-        },
-    )
-
-
-async def emit_call_created(call_id: str, client_id: str, agent_id: str, ultravox_call_id: str, phone_number: str, direction: str) -> bool:
+async def emit_call_created(call_id: str, client_id: str, ultravox_call_id: str, phone_number: str, direction: str) -> bool:
     """Emit call.created event"""
     return await publish_event(
         "call.created",
         {
             "call_id": call_id,
             "client_id": client_id,
-            "agent_id": agent_id,
             "ultravox_call_id": ultravox_call_id,
             "phone_number": phone_number,
             "direction": direction,
@@ -200,14 +173,13 @@ async def emit_call_failed(call_id: str, client_id: str, error_message: Optional
     )
 
 
-async def emit_campaign_created(campaign_id: str, client_id: str, agent_id: str, name: str) -> bool:
+async def emit_campaign_created(campaign_id: str, client_id: str, name: str) -> bool:
     """Emit campaign.created event"""
     return await publish_event(
         "campaign.created",
         {
             "campaign_id": campaign_id,
             "client_id": client_id,
-            "agent_id": agent_id,
             "name": name,
             "status": "draft",
             "timestamp": datetime.utcnow().isoformat(),

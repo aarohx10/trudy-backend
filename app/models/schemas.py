@@ -184,7 +184,7 @@ class VoicePresignRequest(BaseModel):
 
 
 # ============================================
-# Agent Models
+# Inactivity Message Models (used by other features)
 # ============================================
 
 class EndBehavior(str, Enum):
@@ -199,150 +199,6 @@ class InactivityMessage(BaseModel):
     endBehavior: Optional[EndBehavior] = Field(EndBehavior.UNSPECIFIED, description="Behavior when message finishes")
 
 
-class AgentTool(BaseModel):
-    tool_id: str
-    enabled: bool = True
-    parameters: Optional[Dict[str, Any]] = None
-
-
-class AgentCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    description: Optional[str] = Field(None, max_length=500)
-    voice_id: Optional[str] = None
-    system_prompt: str = Field(..., min_length=10, max_length=5000)
-    model: str = Field(default="fixie-ai/ultravox-v0_4-8k")
-    tools: Optional[List[AgentTool]] = Field(default=[])
-    # New fields for Ultravox API integration
-    agentLanguage: Optional[str] = Field(None, description="Agent language: english, spanish, french")
-    firstMessage: Optional[str] = Field(None, description="First message/greeting")
-    disableInterruptions: Optional[bool] = Field(False, description="Disable interruptions during first message")
-    selectedLLM: Optional[str] = Field(None, description="Selected LLM model: glm-4.5-air, gpt-4, claude-3")
-    temperature: Optional[float] = Field(None, ge=0.0, le=2.0, description="Temperature (0.0-2.0)")
-    stability: Optional[float] = Field(None, ge=0.0, le=1.0, description="Voice stability (0.0-1.0)")
-    similarity: Optional[float] = Field(None, ge=0.0, le=1.0, description="Voice similarity boost (0.0-1.0)")
-    speed: Optional[float] = Field(None, ge=0.25, le=4.0, description="Voice speed (0.25-4.0, OpenAI only)")
-    turnTimeout: Optional[int] = Field(None, ge=10, le=300, description="Turn timeout in seconds (10-300)")
-    maxConversationDuration: Optional[int] = Field(None, ge=1, description="Max conversation duration in seconds")
-    # New fields from Ultravox UI
-    firstMessageDelay: Optional[int] = Field(None, ge=0, description="First message delay in seconds")
-    firstSpeaker: Optional[str] = Field(None, description="First speaker: agent or user")
-    joinTimeout: Optional[int] = Field(None, ge=0, description="Join timeout in seconds")
-    timeExceededMessage: Optional[str] = Field(None, description="Time exceeded message")
-    # Voice Activity Detection parameters
-    turnEndpointDelay: Optional[int] = Field(None, ge=0, description="Turn endpoint delay in milliseconds")
-    minimumTurnDuration: Optional[int] = Field(None, ge=0, description="Minimum turn duration in milliseconds")
-    minimumInterruptionDuration: Optional[int] = Field(None, ge=0, description="Minimum interruption duration in milliseconds")
-    frameActivationThreshold: Optional[float] = Field(None, ge=0.1, le=1.0, description="Frame activation threshold (0.1-1.0)")
-    # Additional Ultravox API fields
-    confidenceThreshold: Optional[float] = Field(None, ge=0.0, le=1.0, description="Confidence threshold (0.0-1.0)")
-    fallbackResponse: Optional[str] = Field(None, description="Fallback response message")
-    timezone: Optional[str] = Field(None, description="Timezone (e.g., 'UTC', 'America/New_York')")
-    personality: Optional[str] = Field(None, description="Personality: professional, friendly, casual, expert, empathetic")
-    voicePitch: Optional[float] = Field(None, ge=-20, le=20, description="Voice pitch in semitones (-20 to 20)")
-    voiceStyle: Optional[float] = Field(None, ge=0.0, le=1.0, description="Voice style (0.0-1.0, ElevenLabs only)")
-    useSpeakerBoost: Optional[bool] = Field(None, description="Use speaker boost (ElevenLabs only)")
-    # Additional ElevenLabs fields
-    elevenLabsModel: Optional[str] = Field(None, description="ElevenLabs model (e.g., 'eleven_multilingual_v2')")
-    pronunciationDictionaries: Optional[List[Dict[str, str]]] = Field(None, description="Pronunciation dictionaries for ElevenLabs")
-    optimizeStreamingLatency: Optional[int] = Field(None, ge=0, le=4, description="Optimize streaming latency (0-4, ElevenLabs)")
-    maxSampleRate: Optional[int] = Field(None, description="Max sample rate for ElevenLabs")
-    # Cartesia voice provider fields
-    cartesiaModel: Optional[str] = Field(None, description="Cartesia model")
-    cartesiaSpeed: Optional[float] = Field(None, description="Cartesia speed")
-    cartesiaEmotion: Optional[str] = Field(None, description="Cartesia emotion")
-    cartesiaEmotions: Optional[List[str]] = Field(None, description="Cartesia emotions list")
-    cartesiaGenerationConfig: Optional[Dict[str, Any]] = Field(None, description="Cartesia generation config (volume, speed, emotion)")
-    # LMNT voice provider fields
-    lmntModel: Optional[str] = Field(None, description="LMNT model")
-    lmntSpeed: Optional[float] = Field(None, description="LMNT speed")
-    lmntConversational: Optional[bool] = Field(None, description="LMNT conversational mode")
-    # First speaker settings additional fields
-    userFallbackPrompt: Optional[str] = Field(None, description="User fallback prompt for firstSpeakerSettings")
-    userFallbackText: Optional[str] = Field(None, description="User fallback text for firstSpeakerSettings")
-    agentPrompt: Optional[str] = Field(None, description="Agent prompt for firstSpeakerSettings")
-    # Recording and output settings
-    recordingEnabled: Optional[bool] = Field(None, description="Enable call recording")
-    initialOutputMedium: Optional[str] = Field(None, description="Initial output medium (e.g., 'MESSAGE_MEDIUM_VOICE')")
-    # Inactivity messages
-    inactivityMessages: Optional[List[Dict[str, Any]]] = Field(None, description="Inactivity messages with duration, message, and endBehavior")
-
-
-class AgentUpdate(BaseModel):
-    name: Optional[str] = Field(None, min_length=1, max_length=100)
-    description: Optional[str] = Field(None, max_length=500)
-    system_prompt: Optional[str] = Field(None, min_length=10, max_length=5000)
-    voice_id: Optional[str] = None
-    tools: Optional[List[AgentTool]] = None
-    # New fields for Ultravox API integration
-    agentLanguage: Optional[str] = Field(None, description="Agent language: english, spanish, french")
-    firstMessage: Optional[str] = Field(None, description="First message/greeting")
-    disableInterruptions: Optional[bool] = Field(None, description="Disable interruptions during first message")
-    selectedLLM: Optional[str] = Field(None, description="Selected LLM model: glm-4.5-air, gpt-4, claude-3")
-    temperature: Optional[float] = Field(None, ge=0.0, le=2.0, description="Temperature (0.0-2.0)")
-    stability: Optional[float] = Field(None, ge=0.0, le=1.0, description="Voice stability (0.0-1.0)")
-    similarity: Optional[float] = Field(None, ge=0.0, le=1.0, description="Voice similarity boost (0.0-1.0)")
-    speed: Optional[float] = Field(None, ge=0.25, le=4.0, description="Voice speed (0.25-4.0, OpenAI only)")
-    turnTimeout: Optional[int] = Field(None, ge=10, le=300, description="Turn timeout in seconds (10-300)")
-    maxConversationDuration: Optional[int] = Field(None, ge=1, description="Max conversation duration in seconds")
-    # New fields from Ultravox UI
-    firstMessageDelay: Optional[int] = Field(None, ge=0, description="First message delay in seconds")
-    firstSpeaker: Optional[str] = Field(None, description="First speaker: agent or user")
-    joinTimeout: Optional[int] = Field(None, ge=0, description="Join timeout in seconds")
-    timeExceededMessage: Optional[str] = Field(None, description="Time exceeded message")
-    # Voice Activity Detection parameters
-    turnEndpointDelay: Optional[int] = Field(None, ge=0, description="Turn endpoint delay in milliseconds")
-    minimumTurnDuration: Optional[int] = Field(None, ge=0, description="Minimum turn duration in milliseconds")
-    minimumInterruptionDuration: Optional[int] = Field(None, ge=0, description="Minimum interruption duration in milliseconds")
-    frameActivationThreshold: Optional[float] = Field(None, ge=0.1, le=1.0, description="Frame activation threshold (0.1-1.0)")
-    # Additional Ultravox API fields
-    confidenceThreshold: Optional[float] = Field(None, ge=0.0, le=1.0, description="Confidence threshold (0.0-1.0)")
-    fallbackResponse: Optional[str] = Field(None, description="Fallback response message")
-    timezone: Optional[str] = Field(None, description="Timezone (e.g., 'UTC', 'America/New_York')")
-    personality: Optional[str] = Field(None, description="Personality: professional, friendly, casual, expert, empathetic")
-    voicePitch: Optional[float] = Field(None, ge=-20, le=20, description="Voice pitch in semitones (-20 to 20)")
-    voiceStyle: Optional[float] = Field(None, ge=0.0, le=1.0, description="Voice style (0.0-1.0, ElevenLabs only)")
-    useSpeakerBoost: Optional[bool] = Field(None, description="Use speaker boost (ElevenLabs only)")
-    # Additional ElevenLabs fields
-    elevenLabsModel: Optional[str] = Field(None, description="ElevenLabs model (e.g., 'eleven_multilingual_v2')")
-    pronunciationDictionaries: Optional[List[Dict[str, str]]] = Field(None, description="Pronunciation dictionaries for ElevenLabs")
-    optimizeStreamingLatency: Optional[int] = Field(None, ge=0, le=4, description="Optimize streaming latency (0-4, ElevenLabs)")
-    maxSampleRate: Optional[int] = Field(None, description="Max sample rate for ElevenLabs")
-    # Cartesia voice provider fields
-    cartesiaModel: Optional[str] = Field(None, description="Cartesia model")
-    cartesiaSpeed: Optional[float] = Field(None, description="Cartesia speed")
-    cartesiaEmotion: Optional[str] = Field(None, description="Cartesia emotion")
-    cartesiaEmotions: Optional[List[str]] = Field(None, description="Cartesia emotions list")
-    cartesiaGenerationConfig: Optional[Dict[str, Any]] = Field(None, description="Cartesia generation config (volume, speed, emotion)")
-    # LMNT voice provider fields
-    lmntModel: Optional[str] = Field(None, description="LMNT model")
-    lmntSpeed: Optional[float] = Field(None, description="LMNT speed")
-    lmntConversational: Optional[bool] = Field(None, description="LMNT conversational mode")
-    # First speaker settings additional fields
-    userFallbackPrompt: Optional[str] = Field(None, description="User fallback prompt for firstSpeakerSettings")
-    userFallbackText: Optional[str] = Field(None, description="User fallback text for firstSpeakerSettings")
-    agentPrompt: Optional[str] = Field(None, description="Agent prompt for firstSpeakerSettings")
-    # Recording and output settings
-    recordingEnabled: Optional[bool] = Field(None, description="Enable call recording")
-    initialOutputMedium: Optional[str] = Field(None, description="Initial output medium (e.g., 'MESSAGE_MEDIUM_VOICE')")
-    # Inactivity messages
-    inactivityMessages: Optional[List[InactivityMessage]] = Field(None, description="Inactivity messages with duration, message, and endBehavior")
-
-
-class AgentResponse(BaseModel):
-    id: str
-    client_id: str
-    ultravox_agent_id: Optional[str] = None
-    name: str
-    description: Optional[str] = None
-    voice_id: Optional[str] = None
-    system_prompt: str
-    model: str
-    tools: List[Dict[str, Any]]
-    status: str
-    created_at: datetime
-    updated_at: datetime
-
-
 # ============================================
 # Call Models
 # ============================================
@@ -354,7 +210,7 @@ class CallSettings(BaseModel):
 
 
 class CallCreate(BaseModel):
-    agent_id: str
+    agent_id: Optional[str] = None
     phone_number: str = Field(..., pattern=r"^\+[1-9]\d{1,14}$")
     direction: CallDirection
     call_settings: Optional[CallSettings] = None
@@ -369,7 +225,7 @@ class CallUpdate(BaseModel):
 class CallResponse(BaseModel):
     id: str
     client_id: str
-    agent_id: str
+    agent_id: Optional[str] = None
     ultravox_call_id: Optional[str] = None
     phone_number: str
     direction: str
@@ -416,7 +272,7 @@ class BulkDeleteResponse(BaseModel):
 
 class CampaignCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
-    agent_id: str
+    agent_id: Optional[str] = None
     schedule_type: CampaignScheduleType
     scheduled_at: Optional[datetime] = None
     timezone: str = Field(default="UTC")
@@ -460,7 +316,7 @@ class CampaignUpdate(BaseModel):
 class CampaignResponse(BaseModel):
     id: str
     client_id: str
-    agent_id: str
+    agent_id: Optional[str] = None
     name: str
     schedule_type: str
     scheduled_at: Optional[datetime] = None
@@ -613,3 +469,169 @@ class SubscriptionTierResponse(BaseModel):
     features: List[str]
     created_at: datetime
     updated_at: datetime
+
+
+# ============================================
+# Agent Template Models
+# ============================================
+
+class AgentTemplateResponse(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    system_prompt: str
+    category: Optional[str] = None
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+# ============================================
+# Agent Models
+# ============================================
+
+class MessageMedium(str, Enum):
+    VOICE = "MESSAGE_MEDIUM_VOICE"
+    TEXT = "MESSAGE_MEDIUM_TEXT"
+    UNSPECIFIED = "MESSAGE_MEDIUM_UNSPECIFIED"
+
+
+class FirstSpeaker(str, Enum):
+    AGENT = "agent"
+    USER = "user"
+
+
+class GreetingSettings(BaseModel):
+    first_speaker: FirstSpeaker = Field(FirstSpeaker.AGENT, description="Who speaks first: agent or user")
+    text: Optional[str] = Field(None, description="First message text (if agent speaks first)")
+    prompt: Optional[str] = Field(None, description="Prompt for generating first message")
+    delay: Optional[str] = Field(None, description="Delay before first message (e.g., '2s')")
+    uninterruptible: Optional[bool] = Field(False, description="Whether first message is uninterruptible")
+    fallback_delay: Optional[str] = Field(None, description="Fallback delay if user doesn't speak")
+    fallback_text: Optional[str] = Field(None, description="Fallback text if user doesn't speak")
+    fallback_prompt: Optional[str] = Field(None, description="Fallback prompt if user doesn't speak")
+
+
+class VADSettings(BaseModel):
+    turn_endpoint_delay: Optional[str] = Field(None, description="Turn endpoint delay (e.g., '500ms')")
+    minimum_turn_duration: Optional[str] = Field(None, description="Minimum turn duration (e.g., '200ms')")
+    minimum_interruption_duration: Optional[str] = Field(None, description="Minimum interruption duration (e.g., '100ms')")
+    frame_activation_threshold: Optional[float] = Field(None, ge=0, le=1, description="Frame activation threshold (0-1)")
+
+
+class AgentCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    description: Optional[str] = None
+    voice_id: str = Field(..., description="UUID of the voice to use")
+    system_prompt: str = Field(..., min_length=1)
+    model: str = Field(default="fixie-ai/ultravox-v0_4-8k")
+    tools: Optional[List[str]] = Field(default=[], description="List of tool IDs")
+    knowledge_bases: Optional[List[str]] = Field(default=[], description="List of knowledge base IDs")
+    template_id: Optional[str] = Field(None, description="Template ID used to create this agent")
+    
+    # Call template fields
+    call_template_name: Optional[str] = None
+    greeting_settings: Optional[GreetingSettings] = None
+    inactivity_messages: Optional[List[InactivityMessage]] = Field(default=[])
+    temperature: Optional[float] = Field(0.3, ge=0, le=1)
+    language_hint: Optional[str] = Field("en-US", description="BCP47 language code")
+    time_exceeded_message: Optional[str] = None
+    recording_enabled: Optional[bool] = False
+    join_timeout: Optional[str] = Field("30s")
+    max_duration: Optional[str] = Field("3600s")
+    initial_output_medium: Optional[MessageMedium] = MessageMedium.VOICE
+    vad_settings: Optional[VADSettings] = None
+    
+    # Legacy fields (kept for compatibility)
+    success_criteria: Optional[str] = None
+    extraction_schema: Optional[Dict[str, Any]] = None
+    crm_webhook_url: Optional[str] = None
+    crm_webhook_secret: Optional[str] = None
+
+
+class AgentUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    description: Optional[str] = None
+    voice_id: Optional[str] = None
+    system_prompt: Optional[str] = Field(None, min_length=1)
+    model: Optional[str] = None
+    tools: Optional[List[str]] = None
+    knowledge_bases: Optional[List[str]] = None
+    
+    # Call template fields
+    call_template_name: Optional[str] = None
+    greeting_settings: Optional[GreetingSettings] = None
+    inactivity_messages: Optional[List[InactivityMessage]] = None
+    temperature: Optional[float] = Field(None, ge=0, le=1)
+    language_hint: Optional[str] = None
+    time_exceeded_message: Optional[str] = None
+    recording_enabled: Optional[bool] = None
+    join_timeout: Optional[str] = None
+    max_duration: Optional[str] = None
+    initial_output_medium: Optional[MessageMedium] = None
+    vad_settings: Optional[VADSettings] = None
+    
+    # Legacy fields
+    success_criteria: Optional[str] = None
+    extraction_schema: Optional[Dict[str, Any]] = None
+    crm_webhook_url: Optional[str] = None
+    crm_webhook_secret: Optional[str] = None
+
+
+class AgentResponse(BaseModel):
+    id: str
+    client_id: str
+    ultravox_agent_id: Optional[str] = None
+    name: str
+    description: Optional[str] = None
+    voice_id: str
+    system_prompt: str
+    model: str
+    tools: List[str]
+    knowledge_bases: List[str]
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    
+    # Call template fields
+    call_template_name: Optional[str] = None
+    greeting_settings: Optional[Dict[str, Any]] = None
+    inactivity_messages: Optional[List[Dict[str, Any]]] = None
+    temperature: Optional[float] = None
+    language_hint: Optional[str] = None
+    time_exceeded_message: Optional[str] = None
+    recording_enabled: Optional[bool] = None
+    join_timeout: Optional[str] = None
+    max_duration: Optional[str] = None
+    initial_output_medium: Optional[str] = None
+    vad_settings: Optional[Dict[str, Any]] = None
+    template_id: Optional[str] = None
+    
+    # Legacy fields
+    configuration: Optional[Dict[str, Any]] = None
+    success_criteria: Optional[str] = None
+    extraction_schema: Optional[Dict[str, Any]] = None
+    crm_webhook_url: Optional[str] = None
+    crm_webhook_secret: Optional[str] = None
+
+
+class AgentTestCallRequest(BaseModel):
+    pass  # No additional parameters needed, uses agent configuration
+
+
+class AgentTestCallResponse(BaseModel):
+    call_id: str
+    join_url: str
+    agent_id: str
+    created_at: datetime
+
+
+class AgentAIAssistRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, description="User's prompt/question")
+    context: Optional[Dict[str, Any]] = Field(None, description="Current agent data for context")
+    action: Optional[str] = Field(None, description="Action type: improve_prompt, suggest_greeting, etc.")
+
+
+class AgentAIAssistResponse(BaseModel):
+    suggestion: str = Field(..., description="AI-generated suggestion")
+    improved_content: Optional[str] = Field(None, description="Improved content if applicable")

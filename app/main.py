@@ -78,7 +78,7 @@ async def lifespan(app: FastAPI):
         else:
             logger.warning("⚠️  WEBHOOK_BASE_URL or ULTRAVOX_WEBHOOK_SECRET not configured - webhooks will not be auto-registered")
     else:
-        logger.warning("⚠️  Ultravox API Key: NOT CONFIGURED - Voice and Agent syncing will be disabled")
+        logger.warning("⚠️  Ultravox API Key: NOT CONFIGURED - Voice syncing will be disabled")
         logger.warning("⚠️  Please set ULTRAVOX_API_KEY in your .env file")
         debug_logger.log_step("ULTRAVOX_CONFIG", "Ultravox NOT configured", {})
     
@@ -388,7 +388,7 @@ async def stream_call_events(
                     "feature": "WebSocket/SSE streaming for Ultravox tool-use events",
                     "planned_features": [
                         "Stream tool-use events in real-time",
-                        "Show agent thinking status",
+                        "Show thinking status",
                         "Display tool execution progress",
                         "Webhook-to-WebSocket bridge",
                     ],

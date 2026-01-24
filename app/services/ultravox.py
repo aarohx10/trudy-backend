@@ -173,7 +173,7 @@ class UltravoxClient:
         self.api_key = settings.ULTRAVOX_API_KEY
         if not self.api_key:
             logger.warning("⚠️  ULTRAVOX_API_KEY is not set. Ultravox features will be disabled.")
-            logger.warning("⚠️  Please set ULTRAVOX_API_KEY in your .env file to enable voice and agent syncing.")
+            logger.warning("⚠️  Please set ULTRAVOX_API_KEY in your .env file to enable voice syncing.")
         else:
             logger.info(f"✅ Ultravox client initialized with base URL: {self.base_url}")
         self.headers = {
@@ -403,24 +403,6 @@ class UltravoxClient:
                 drift["drift_details"]["missing_ultravox_id"] = ultravox_object.get("id")
                 drift["recommended_action"] = "sync_ultravox_id"
         
-        elif resource_type == "agent":
-            # Check status drift
-            local_status = local_record.get("status", "").lower()
-            ultravox_status = ultravox_object.get("status", "").lower()
-            
-            if ultravox_status in ["active", "ready"] and local_status != "active":
-                drift["has_drift"] = True
-                drift["drift_details"]["status"] = {
-                    "local": local_status,
-                    "ultravox": ultravox_status,
-                }
-                drift["recommended_action"] = "update_status"
-            
-            # Check if Ultravox ID is missing locally
-            if not local_record.get("ultravox_agent_id") and ultravox_object.get("id"):
-                drift["has_drift"] = True
-                drift["drift_details"]["missing_ultravox_id"] = ultravox_object.get("id")
-                drift["recommended_action"] = "sync_ultravox_id"
         
         return drift
     
@@ -636,28 +618,6 @@ class UltravoxClient:
                 },
             )
     
-    # Agents
-    async def create_agent(self, agent_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Create agent in Ultravox"""
-        response = await self._request("POST", "/api/agents", data=agent_data)
-        return response
-    
-    async def get_agent(self, agent_id: str) -> Dict[str, Any]:
-        """Get agent from Ultravox"""
-        response = await self._request("GET", f"/api/agents/{agent_id}")
-        return response
-    
-    async def update_agent(self, agent_id: str, agent_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Update agent in Ultravox"""
-        response = await self._request("PATCH", f"/api/agents/{agent_id}", data=agent_data)
-        return response
-    
-    async def delete_agent(self, agent_id: str, force: bool = False) -> Dict[str, Any]:
-        """Delete agent from Ultravox"""
-        params = {"force": "true"} if force else {}
-        response = await self._request("DELETE", f"/api/agents/{agent_id}", params=params)
-        return response
-    
     # Corpora Management
     async def create_corpus(self, corpus_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create corpus in Ultravox"""
@@ -689,26 +649,6 @@ class UltravoxClient:
         response = await self._request("POST", "/api/calls", data=call_data)
         return response
     
-    async def create_test_call(
-        self,
-        agent_id: str,
-        context: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        """
-        Create a WebRTC test call for agent testing.
-        Returns joinUrl for browser WebRTC session initialization.
-        """
-        call_data = {
-            "agentId": agent_id,
-            "medium": {"webRtc": {}},
-            "context": {
-                **(context or {}),
-                "is_test": True,  # Flag to bypass billing logic
-            },
-        }
-        response = await self._request("POST", "/api/calls", data=call_data)
-        return response
-    
     async def get_call(self, call_id: str) -> Dict[str, Any]:
         """Get call from Ultravox"""
         response = await self._request("GET", f"/api/calls/{call_id}")
@@ -727,7 +667,7 @@ class UltravoxClient:
     # Campaigns (Batches)
     async def create_scheduled_batch(
         self,
-        agent_id: str,
+        agent_id: str,  # Note: This is ultravox_agent_id (Ultravox's agent ID), not our Agent entity
         batch_data: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
@@ -745,7 +685,8 @@ class UltravoxClient:
     async def get_batch(self, agent_id: str, batch_id: str) -> Dict[str, Any]:
         """
         Get batch status from Ultravox.
-        Requires agent_id as batches are scoped to agents.
+        Note: agent_id parameter is ultravox_agent_id (Ultravox's agent ID), not our Agent entity.
+        Batches are scoped to Ultravox agents in their API.
         """
         # Ultravox API structure: /api/agents/{agent_id}/scheduled-batches/{batch_id}
         response = await self._request("GET", f"/api/agents/{agent_id}/scheduled-batches/{batch_id}")
@@ -762,7 +703,7 @@ class UltravoxClient:
         url: str,
         events: List[str],
         secrets: Optional[List[str]] = None,
-        agent_id: Optional[str] = None,
+        agent_id: Optional[str] = None,  # Note: This is ultravox_agent_id (Ultravox's agent ID), not our Agent entity
     ) -> Dict[str, Any]:
         """Create a webhook in Ultravox"""
         webhook_data = {
@@ -962,6 +903,71 @@ class UltravoxClient:
             "PATCH",
             "/api/accounts/me/tts_api_keys",
             data={"provider": provider, **api_key_data},
+        )
+        return response
+    
+    # Agent Methods
+    async def create_agent(self, name: str, call_template: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a new agent in Ultravox"""
+        response = await self._request(
+            "POST",
+            "/api/agents",
+            data={"name": name, "callTemplate": call_template},
+        )
+        return response
+    
+    async def get_agent(self, agent_id: str) -> Dict[str, Any]:
+        """Get agent details from Ultravox"""
+        response = await self._request("GET", f"/api/agents/{agent_id}")
+        return response
+    
+    async def update_agent(self, agent_id: str, name: str, call_template: Dict[str, Any]) -> Dict[str, Any]:
+        """Update an agent in Ultravox"""
+        response = await self._request(
+            "PATCH",
+            f"/api/agents/{agent_id}",
+            data={"name": name, "callTemplate": call_template},
+        )
+        return response
+    
+    async def delete_agent(self, agent_id: str) -> None:
+        """Delete an agent from Ultravox"""
+        await self._request("DELETE", f"/api/agents/{agent_id}")
+    
+    async def list_agents(self) -> List[Dict[str, Any]]:
+        """List all agents from Ultravox"""
+        response = await self._request("GET", "/api/agents")
+        # Response might be a list or have a 'agents' key
+        if isinstance(response, list):
+            return response
+        return response.get("agents", [])
+    
+    async def create_agent_call(self, agent_id: str, call_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a call with an agent (for WebRTC testing)
+        
+        Args:
+            agent_id: Ultravox agent ID
+            call_data: Call configuration including medium settings
+            
+        Returns:
+            Dict with callId, joinUrl, etc.
+        """
+        # Ensure WebRTC medium is set with data messages for transcripts
+        if "medium" not in call_data:
+            call_data["medium"] = {}
+        if "webRtc" not in call_data["medium"]:
+            call_data["medium"]["webRtc"] = {}
+        if "dataMessages" not in call_data["medium"]["webRtc"]:
+            call_data["medium"]["webRtc"]["dataMessages"] = {}
+        
+        # Enable transcript and state data messages
+        call_data["medium"]["webRtc"]["dataMessages"]["transcript"] = True
+        call_data["medium"]["webRtc"]["dataMessages"]["state"] = True
+        
+        response = await self._request(
+            "POST",
+            f"/api/agents/{agent_id}/calls",
+            data=call_data,
         )
         return response
     

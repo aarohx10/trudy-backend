@@ -194,14 +194,11 @@ async def _process_call_analysis_and_webhook(
     """
     try:
         from app.services.analysis import process_call_metadata
-        from app.tasks.webhooks import trigger_crm_webhook
         
         # Process analysis
         analysis_result = await process_call_metadata(call_id, transcript_text)
         
-        # If analysis succeeded and call is marked as successful, trigger CRM webhook
-        if analysis_result.get("is_success") and agent_id:
-            await trigger_crm_webhook(call_id, agent_id, analysis_result)
+        # Note: CRM webhook functionality removed - was dependent on agents table
     except Exception as e:
         import traceback
         import json
@@ -285,15 +282,15 @@ async def handle_batch_status_changed(event_data: Dict[str, Any], db: DatabaseSe
     data = event_data.get("data", {})
     new_status = data.get("status") or event_data.get("status")
     
-    # Get agent to fetch batch details
-    agent = db.select_one("agents", {"id": campaign.get("agent_id")})
-    if not agent or not agent.get("ultravox_agent_id"):
-        logger.warning(f"Agent not found or not synced for campaign {campaign['id']}")
+    # Get ultravox_agent_id from campaign (stored directly in campaign data)
+    ultravox_agent_id = campaign.get("ultravox_agent_id")
+    if not ultravox_agent_id:
+        logger.warning(f"Campaign {campaign['id']} has no ultravox_agent_id configured")
         return client_id
     
     try:
         # Fetch latest batch status from Ultravox
-        ultravox_batch = await ultravox_client.get_batch(agent["ultravox_agent_id"], batch_id)
+        ultravox_batch = await ultravox_client.get_batch(ultravox_agent_id, batch_id)
         
         if ultravox_batch:
             # Update campaign stats

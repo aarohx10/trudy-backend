@@ -21,7 +21,6 @@ router = APIRouter()
 async def export_calls(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
-    agent_id: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
     date_from: Optional[str] = Query(None),
     date_to: Optional[str] = Query(None),
@@ -35,8 +34,6 @@ async def export_calls(
     
     # Build filters
     filters = {"client_id": current_user["client_id"]}
-    if agent_id:
-        filters["agent_id"] = agent_id
     if status:
         filters["status"] = status
     
@@ -99,7 +96,7 @@ async def export_calls(
     for call in all_calls:
         writer.writerow([
             call.get("id", ""),
-            call.get("agent_id", ""),
+            call.get("agent_id", "") if call.get("agent_id") else "",
             call.get("phone_number", ""),
             call.get("direction", ""),
             call.get("status", ""),
@@ -131,7 +128,6 @@ async def export_calls(
 async def export_campaigns(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
-    agent_id: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
     date_from: Optional[str] = Query(None),
     date_to: Optional[str] = Query(None),
@@ -145,8 +141,6 @@ async def export_campaigns(
     
     # Build filters
     filters = {"client_id": current_user["client_id"]}
-    if agent_id:
-        filters["agent_id"] = agent_id
     if status:
         filters["status"] = status
     
@@ -215,7 +209,7 @@ async def export_campaigns(
         writer.writerow([
             campaign.get("id", ""),
             campaign.get("name", ""),
-            campaign.get("agent_id", ""),
+            campaign.get("agent_id", "") if campaign.get("agent_id") else "",
             campaign.get("schedule_type", ""),
             campaign.get("scheduled_at", ""),
             campaign.get("timezone", ""),
@@ -244,73 +238,3 @@ async def export_campaigns(
             "Content-Type": "text/csv; charset=utf-8",
         },
     )
-
-
-@router.get("/agents")
-async def export_agents(
-    current_user: dict = Depends(get_current_user),
-    x_client_id: Optional[str] = Header(None),
-    status: Optional[str] = Query(None),
-):
-    """Export agents to CSV"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
-    
-    db = DatabaseService(current_user["token"])
-    db.set_auth(current_user["token"])
-    
-    # Build filters
-    filters = {"client_id": current_user["client_id"]}
-    if status:
-        filters["status"] = status
-    
-    # Get all agents
-    all_agents = db.select("agents", filters, order_by="created_at")
-    
-    # Create CSV
-    output = io.StringIO()
-    writer = csv.writer(output)
-    
-    # Write header
-    writer.writerow([
-        "ID",
-        "Name",
-        "Description",
-        "Voice ID",
-        "Model",
-        "Status",
-        "Ultravox Agent ID",
-        "Created At",
-        "Updated At",
-    ])
-    
-    # Write data
-    for agent in all_agents:
-        writer.writerow([
-            agent.get("id", ""),
-            agent.get("name", ""),
-            agent.get("description", ""),
-            agent.get("voice_id", ""),
-            agent.get("model", ""),
-            agent.get("status", ""),
-            agent.get("ultravox_agent_id", ""),
-            agent.get("created_at", ""),
-            agent.get("updated_at", ""),
-        ])
-    
-    csv_content = output.getvalue()
-    output.close()
-    
-    # Generate filename with timestamp
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    filename = f"agents_export_{timestamp}.csv"
-    
-    return Response(
-        content=csv_content,
-        media_type="text/csv",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            "Content-Type": "text/csv; charset=utf-8",
-        },
-    )
-

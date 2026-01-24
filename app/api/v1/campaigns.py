@@ -66,19 +66,12 @@ async def create_campaign(
     db = DatabaseService(current_user["token"])
     db.set_auth(current_user["token"])
     
-    # Validate agent
-    agent = db.get_agent(campaign_data.agent_id, current_user["client_id"])
-    if not agent:
-        raise NotFoundError("agent", campaign_data.agent_id)
-    if agent.get("status") != "active":
-        raise ValidationError("Agent must be active")
-    
     # Create campaign record
     campaign_id = str(uuid.uuid4())
     campaign_record = {
         "id": campaign_id,
         "client_id": current_user["client_id"],
-        "agent_id": campaign_data.agent_id,
+        "agent_id": campaign_data.agent_id if campaign_data.agent_id else None,
         "name": campaign_data.name,
         "schedule_type": campaign_data.schedule_type.value,
         "scheduled_at": campaign_data.scheduled_at.isoformat() if campaign_data.scheduled_at else None,
@@ -94,7 +87,6 @@ async def create_campaign(
     await emit_campaign_created(
         campaign_id=campaign_id,
         client_id=current_user["client_id"],
-        agent_id=campaign_data.agent_id,
         name=campaign_data.name,
     )
     
@@ -268,7 +260,7 @@ async def schedule_campaign(
 ):
     """
     Schedule campaign with atomic pre-flight checks.
-    Validates agent and credits before calling Ultravox.
+    Validates credits and ultravox_agent_id before calling Ultravox.
     Rolls back to draft status if Ultravox returns an error.
     """
     if current_user["role"] not in ["client_admin", "agency_admin"]:
@@ -291,22 +283,14 @@ async def schedule_campaign(
     if not pending_contacts:
         raise ValidationError("No pending contacts found")
     
-    # PRE-FLIGHT CHECK 1: Verify agent has valid ultravox_agent_id
-    agent = db.get_agent(campaign["agent_id"], current_user["client_id"])
-    if not agent:
-        raise NotFoundError("agent", campaign["agent_id"])
-    
-    if agent.get("status") != "active":
-        raise ValidationError("Agent must be active", {"agent_status": agent.get("status")})
-    
-    ultravox_agent_id = agent.get("ultravox_agent_id")
+    # Check if Ultravox is configured
+    # Note: ultravox_agent_id must be provided directly in campaign data or configuration
+    ultravox_agent_id = campaign.get("ultravox_agent_id")
     if not ultravox_agent_id:
         raise ValidationError(
-            "Agent must be synced with Ultravox to schedule campaigns. Use /agents/{agent_id}/sync first.",
-            {"agent_id": campaign["agent_id"]}
+            "ultravox_agent_id is required to schedule campaigns",
         )
     
-    # Check if Ultravox is configured
     if not settings.ULTRAVOX_API_KEY:
         raise ValidationError("Ultravox API key is not configured")
     
@@ -484,10 +468,8 @@ async def list_campaigns(
                     }
                     all_completed = True
                     
-                    # Get agent_id from campaign for batch lookup
-                    agent_id = campaign.get("agent_id")
-                    agent = db.get_agent(agent_id, current_user["client_id"]) if agent_id else None
-                    ultravox_agent_id = agent.get("ultravox_agent_id") if agent else None
+                    # Get ultravox_agent_id from campaign for batch lookup
+                    ultravox_agent_id = campaign.get("ultravox_agent_id")
                     
                     if ultravox_agent_id:
                         for batch_id in batch_ids:
@@ -609,13 +591,11 @@ async def get_campaign(
                     }
                     all_completed = True
                     
-                    # Get agent_id from campaign for batch lookup
-                    agent_id = campaign.get("agent_id")
-                    agent = db.get_agent(agent_id, current_user["client_id"]) if agent_id else None
-                    ultravox_agent_id = agent.get("ultravox_agent_id") if agent else None
+                    # Get ultravox_agent_id from campaign for batch lookup
+                    ultravox_agent_id = campaign.get("ultravox_agent_id")
                     
                     if not ultravox_agent_id:
-                        logger.warning(f"Cannot reconcile campaign {campaign_id}: agent {agent_id} has no ultravox_agent_id")
+                        logger.warning(f"Cannot reconcile campaign {campaign_id}: no ultravox_agent_id")
                     else:
                         for batch_id in batch_ids:
                             try:
@@ -732,14 +712,6 @@ async def update_campaign(
                 ts=datetime.utcnow(),
             ),
         }
-    
-    # Validate agent if agent_id is being updated
-    if "agent_id" in update_data:
-        agent = db.get_agent(update_data["agent_id"], current_user["client_id"])
-        if not agent:
-            raise NotFoundError("agent", update_data["agent_id"])
-        if agent.get("status") != "active":
-            raise ValidationError("Agent must be active")
     
     # Convert enum to string if needed
     if "schedule_type" in update_data and hasattr(update_data["schedule_type"], "value"):

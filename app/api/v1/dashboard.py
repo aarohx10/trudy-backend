@@ -20,7 +20,6 @@ async def get_dashboard_stats(
     x_client_id: Optional[str] = Header(None),
     date_from: Optional[str] = Query(None, description="Start date (ISO format: YYYY-MM-DD)"),
     date_to: Optional[str] = Query(None, description="End date (ISO format: YYYY-MM-DD)"),
-    agent_id: Optional[str] = Query(None, description="Filter by agent ID"),
 ):
     """Get dashboard statistics"""
     db = DatabaseService(current_user["token"])
@@ -57,8 +56,6 @@ async def get_dashboard_stats(
     
     # Build filters for calls
     call_filters = {"client_id": client_id}
-    if agent_id:
-        call_filters["agent_id"] = agent_id
     
     # Get all calls for the client (we'll filter by date in Python)
     all_calls = db.select("calls", call_filters, order_by="created_at")
@@ -120,8 +117,6 @@ async def get_dashboard_stats(
     
     # Get campaign statistics
     campaign_filters = {"client_id": client_id}
-    if agent_id:
-        campaign_filters["agent_id"] = agent_id
     
     all_campaigns = db.select("campaigns", campaign_filters)
     
@@ -153,12 +148,6 @@ async def get_dashboard_stats(
     active_campaigns = sum(1 for c in filtered_campaigns if c.get("status") in ["running", "scheduled"])
     completed_campaigns = sum(1 for c in filtered_campaigns if c.get("status") == "completed")
     
-    # Get agent statistics
-    agent_filters = {"client_id": client_id}
-    all_agents = db.select("agents", agent_filters)
-    total_agents = len(all_agents)
-    active_agents = sum(1 for a in all_agents if a.get("status") == "active")
-    
     # Get client credit balance
     client = db.get_client(client_id)
     credits_balance = client.get("credits_balance", 0) if client else 0
@@ -185,10 +174,6 @@ async def get_dashboard_stats(
             "total": total_campaigns,
             "active": active_campaigns,
             "completed": completed_campaigns,
-        },
-        "agents": {
-            "total": total_agents,
-            "active": active_agents,
         },
         "cost": {
             "total_usd": round(total_cost_usd, 2),

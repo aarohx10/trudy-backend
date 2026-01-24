@@ -190,45 +190,6 @@ async def update_campaign_stats(
     }
 
 
-@router.post("/agents/{agent_id}/update-status")
-async def update_agent_status(
-    agent_id: str,
-    status_data: dict,
-    _: bool = Depends(verify_internal_request),
-):
-    """Update agent status (called by background jobs or webhooks)"""
-    db = DatabaseAdminService()
-    
-    # Check if agent exists
-    agent = db.select_one("agents", {"id": agent_id})
-    if not agent:
-        raise NotFoundError("agent", agent_id)
-    
-    # Prepare update data
-    update_data = {
-        "updated_at": datetime.utcnow().isoformat(),
-    }
-    
-    if "status" in status_data:
-        update_data["status"] = status_data["status"]
-    
-    if "ultravox_agent_id" in status_data:
-        update_data["ultravox_agent_id"] = status_data["ultravox_agent_id"]
-    
-    # Update agent
-    db.update("agents", {"id": agent_id}, update_data)
-    
-    logger.info(f"Updated agent status: {agent_id} -> {status_data.get('status')}")
-    
-    return {
-        "data": {"agent_id": agent_id, "status": status_data.get("status")},
-        "meta": ResponseMeta(
-            request_id=str(uuid.uuid4()),
-            ts=datetime.utcnow(),
-        ),
-    }
-
-
 @router.post("/calls/{call_id}/update-status")
 async def update_call_status(
     call_id: str,

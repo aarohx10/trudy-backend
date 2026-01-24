@@ -98,7 +98,7 @@ class DatabaseService:
     # Generic CRUD operations
     def select(self, table: str, filters: Optional[Dict[str, Any]] = None, order_by: Optional[str] = None) -> List[Dict[str, Any]]:
         """Select records from table"""
-        # #region agent log
+        # #region debug log
         import json
         try:
             with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
@@ -181,10 +181,6 @@ class DatabaseService:
     def get_voice(self, voice_id: str, client_id: str) -> Optional[Dict[str, Any]]:
         """Get voice by ID"""
         return self.select_one("voices", {"id": voice_id, "client_id": client_id})
-    
-    def get_agent(self, agent_id: str, client_id: str) -> Optional[Dict[str, Any]]:
-        """Get agent by ID"""
-        return self.select_one("agents", {"id": agent_id, "client_id": client_id})
     
     def get_campaign(self, campaign_id: str, client_id: str) -> Optional[Dict[str, Any]]:
         """Get campaign by ID"""
