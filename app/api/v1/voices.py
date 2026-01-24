@@ -97,7 +97,7 @@ async def create_voice(
         is_multipart = "multipart/form-data" in content_type
         
         logger.info(f"[VOICES] Content-Type analysis: is_json={is_json}, is_multipart={is_multipart}")
-        logger.info(f"[VOICES] FastAPI params populated: name={name is not None}, files={files is not None}")
+        logger.info(f"[VOICES] FastAPI params populated: name={name is not None} (files parameter removed - voice cloning removed)")
         
         # PRODUCTION FIX: Use FastAPI's File/Form parameters if multipart, otherwise parse JSON
         # This avoids the request.form() hang issue completely!
@@ -433,13 +433,6 @@ async def create_voice(
             raise ValidationError("Ultravox API key is not configured")
         
         try:
-            if not provider_voice_id:
-                raise ValidationError("Provider voice ID is required for external import")
-            
-            if not settings.ULTRAVOX_API_KEY:
-                raise ValidationError("Ultravox API key is not configured")
-            
-            try:
                 # Step 1: Import to Ultravox
                 logger.info(f"[VOICES] Importing voice from provider | provider={provider} | provider_voice_id={provider_voice_id} | name={name}")
                 ultravox_response = await ultravox_client.import_voice_from_provider(
