@@ -101,16 +101,23 @@ async def create_voice(
                 raise ValidationError("Ultravox API key is not configured")
             
             # Step 1: Clone in ElevenLabs (NO DB, NO CREDITS - matches test script)
+            import time
+            start_time = time.time()
             logger.info(f"[VOICES] Cloning voice in ElevenLabs | name={name}")
             files_data = []
             for file_item in files:
                 if isinstance(file_item, UploadFile):
+                    file_read_start = time.time()
                     content = await file_item.read()
+                    file_read_time = time.time() - file_read_start
+                    logger.info(f"[VOICES] File read completed | filename={file_item.filename} | size={len(content)} bytes | time={file_read_time:.2f}s")
                     filename = file_item.filename or "audio.mp3"
                     content_type = file_item.content_type or "audio/mpeg"
                     files_data.append(("files", (filename, content, content_type)))
             
             try:
+                elevenlabs_start = time.time()
+                logger.info(f"[VOICES] Starting ElevenLabs API call | timeout=120s")
                 async with httpx.AsyncClient(timeout=120.0) as client:
                     elevenlabs_response = await client.post(
                         "https://api.elevenlabs.io/v1/voices/add",
@@ -136,6 +143,8 @@ async def create_voice(
                             message="ElevenLabs response missing voice_id",
                             http_status=500,
                         )
+                elevenlabs_time = time.time() - elevenlabs_start
+                logger.info(f"[VOICES] ElevenLabs API call completed | time={elevenlabs_time:.2f}s")
             except httpx.TimeoutException as e:
                 logger.error(f"[VOICES] ElevenLabs timeout after 120s | error={str(e)}")
                 raise ProviderError(
@@ -151,9 +160,11 @@ async def create_voice(
                     http_status=502,
                 )
             
-            logger.info(f"[VOICES] ElevenLabs clone successful | voice_id={elevenlabs_voice_id}")
+            total_elevenlabs_time = time.time() - start_time
+            logger.info(f"[VOICES] ElevenLabs clone successful | voice_id={elevenlabs_voice_id} | total_time={total_elevenlabs_time:.2f}s")
             
             # Step 2: Import to Ultravox - EXACT COPY OF TEST SCRIPT
+            ultravox_start = time.time()
             logger.info(f"[VOICES] Importing to Ultravox | elevenlabs_voice_id={elevenlabs_voice_id}")
             
             # Normalize name exactly like test script (line 87-92)
@@ -204,6 +215,8 @@ async def create_voice(
                         )
                     
                     ultravox_data = ultravox_response.json()
+                ultravox_time = time.time() - ultravox_start
+                logger.info(f"[VOICES] Ultravox API call completed | time={ultravox_time:.2f}s")
             except httpx.TimeoutException as e:
                 logger.error(f"[VOICES] Ultravox timeout after 120s | error={str(e)}")
                 raise ProviderError(
@@ -236,9 +249,11 @@ async def create_voice(
                     details={"response": ultravox_data},
                 )
             
-            logger.info(f"[VOICES] Ultravox import successful | ultravox_voice_id={ultravox_voice_id}")
+            total_ultravox_time = time.time() - ultravox_start
+            logger.info(f"[VOICES] Ultravox import successful | ultravox_voice_id={ultravox_voice_id} | total_time={total_ultravox_time:.2f}s")
             
             # Step 3: Save to DB (AFTER both API calls succeed - no credit checks, no credit updates)
+            db_start = time.time()
             db = DatabaseService(current_user["token"])
             db.set_auth(current_user["token"])
             
@@ -257,8 +272,9 @@ async def create_voice(
                 "updated_at": now.isoformat(),
             }
             db.insert("voices", voice_record)
-            
-            logger.info(f"[VOICES] Voice cloned successfully | voice_id={voice_id}")
+            db_time = time.time() - db_start
+            total_time = time.time() - start_time
+            logger.info(f"[VOICES] Voice cloned successfully | voice_id={voice_id} | db_time={db_time:.2f}s | total_time={total_time:.2f}s")
             
             return {
                 "data": VoiceResponse(**voice_record),
