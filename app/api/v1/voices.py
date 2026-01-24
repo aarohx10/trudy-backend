@@ -16,6 +16,7 @@ from app.core.exceptions import NotFoundError, ValidationError, ForbiddenError, 
 from app.models.schemas import VoiceResponse, ResponseMeta
 from app.core.config import settings
 from app.services.ultravox import ultravox_client
+from app.core.db_logging import log_to_database
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -50,6 +51,9 @@ async def create_voice(
     try:
         client_id = current_user.get("client_id")
         user_id = current_user.get("user_id")
+        request_id = getattr(request.state, "request_id", None)
+        ip_address = request.client.host if request.client else None
+        user_agent = request.headers.get("user-agent")
         
         if current_user["role"] not in ["client_admin", "agency_admin"]:
             raise ForbiddenError("Insufficient permissions")
@@ -59,7 +63,28 @@ async def create_voice(
         is_json = "application/json" in content_type
         is_multipart = "multipart/form-data" in content_type
         
-        # Log comprehensive request info
+        # Log comprehensive request info to database (for admin panel)
+        await log_to_database(
+            source="backend",
+            level="INFO",
+            category="voice_cloning",
+            message="Voice creation request received",
+            request_id=request_id,
+            client_id=client_id,
+            user_id=user_id,
+            endpoint=str(request.url.path),
+            method=request.method,
+            context={
+                "content_type": content_type,
+                "content_length": request.headers.get("content-length", "unknown"),
+                "is_json": is_json,
+                "is_multipart": is_multipart,
+            },
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+        
+        # Also log to console for debugging
         logger.info("=" * 80)
         logger.info(f"[VOICES] ===== VOICE CREATION REQUEST START =====")
         logger.info(f"[VOICES] Request method: {request.method}")
@@ -68,14 +93,7 @@ async def create_voice(
         logger.info(f"[VOICES] Content-Length: {request.headers.get('content-length', 'unknown')}")
         logger.info(f"[VOICES] Is JSON: {is_json}")
         logger.info(f"[VOICES] Is Multipart: {is_multipart}")
-        logger.info(f"[VOICES] User: {current_user.get('user_id', 'unknown')} | Client: {current_user.get('client_id', 'unknown')}")
-        logger.info(f"[VOICES] All request headers:")
-        for header_name, header_value in request.headers.items():
-            # Mask sensitive headers
-            if header_name.lower() == 'authorization':
-                logger.info(f"[VOICES]   {header_name}: {header_value[:20]}...")
-            else:
-                logger.info(f"[VOICES]   {header_name}: {header_value}")
+        logger.info(f"[VOICES] User: {user_id} | Client: {client_id}")
         logger.info("=" * 80)
         
         import time
@@ -83,9 +101,35 @@ async def create_voice(
         
         if is_json:
             # JSON request (for imports)
+            await log_to_database(
+                source="backend",
+                level="INFO",
+                category="voice_cloning",
+                message="Parsing JSON request body",
+                request_id=request_id,
+                client_id=client_id,
+                user_id=user_id,
+                endpoint=str(request.url.path),
+                method=request.method,
+            )
             logger.info(f"[VOICES] Parsing JSON body...")
             body = await request.json()
             parse_time = time.time() - parse_start
+            await log_to_database(
+                source="backend",
+                level="INFO",
+                category="voice_cloning",
+                message="JSON body parsed successfully",
+                request_id=request_id,
+                client_id=client_id,
+                user_id=user_id,
+                endpoint=str(request.url.path),
+                method=request.method,
+                context={
+                    "body_keys": list(body.keys()) if isinstance(body, dict) else "not_dict",
+                    "parse_time_seconds": round(parse_time, 2),
+                },
+            )
             logger.info(f"[VOICES] JSON body received | body_keys={list(body.keys()) if isinstance(body, dict) else 'not_dict'} | parse_time={parse_time:.2f}s")
             name = body.get("name")
             strategy = body.get("strategy")
@@ -96,15 +140,57 @@ async def create_voice(
             files = []
         else:
             # Multipart form data (for clones) - parse form (FastAPI handles streaming)
+            await log_to_database(
+                source="backend",
+                level="INFO",
+                category="voice_cloning",
+                message="Parsing multipart form data",
+                request_id=request_id,
+                client_id=client_id,
+                user_id=user_id,
+                endpoint=str(request.url.path),
+                method=request.method,
+            )
             logger.info(f"[VOICES] Parsing multipart form data...")
             try:
                 form = await request.form()
                 parse_time = time.time() - parse_start
+                await log_to_database(
+                    source="backend",
+                    level="INFO",
+                    category="voice_cloning",
+                    message="Form data parsed successfully",
+                    request_id=request_id,
+                    client_id=client_id,
+                    user_id=user_id,
+                    endpoint=str(request.url.path),
+                    method=request.method,
+                    context={
+                        "parse_time_seconds": round(parse_time, 2),
+                    },
+                )
                 logger.info(f"[VOICES] Form data parsed | parse_time={parse_time:.2f}s")
             except Exception as form_error:
-                logger.error(f"[VOICES] Failed to parse form data | error={str(form_error)} | type={type(form_error).__name__}")
                 import traceback
-                logger.error(f"[VOICES] Form parse traceback: {traceback.format_exc()}")
+                error_traceback = traceback.format_exc()
+                await log_to_database(
+                    source="backend",
+                    level="ERROR",
+                    category="voice_cloning",
+                    message=f"Failed to parse form data: {str(form_error)}",
+                    request_id=request_id,
+                    client_id=client_id,
+                    user_id=user_id,
+                    endpoint=str(request.url.path),
+                    method=request.method,
+                    error_details={
+                        "error_type": type(form_error).__name__,
+                        "error_message": str(form_error),
+                        "traceback": error_traceback,
+                    },
+                )
+                logger.error(f"[VOICES] Failed to parse form data | error={str(form_error)} | type={type(form_error).__name__}")
+                logger.error(f"[VOICES] Form parse traceback: {error_traceback}")
                 raise ValidationError(f"Failed to parse form data: {str(form_error)}")
             
             name = form.get("name")
@@ -115,10 +201,25 @@ async def create_voice(
             # Extract files - handle both single file and multiple files
             # FastAPI's form.getlist() should return list of UploadFile objects for file fields
             files_raw = form.getlist("files")
-            logger.info(f"[VOICES] Raw files from form.getlist('files') | count={len(files_raw) if files_raw else 0} | types={[type(f).__name__ for f in files_raw] if files_raw else []}")
-            
-            # Debug: Log all form keys to see what we received
             form_keys = list(form.keys()) if hasattr(form, 'keys') else []
+            
+            await log_to_database(
+                source="backend",
+                level="INFO",
+                category="voice_cloning",
+                message="Extracting files from form data",
+                request_id=request_id,
+                client_id=client_id,
+                user_id=user_id,
+                endpoint=str(request.url.path),
+                method=request.method,
+                context={
+                    "raw_files_count": len(files_raw) if files_raw else 0,
+                    "file_types": [type(f).__name__ for f in files_raw] if files_raw else [],
+                    "form_keys": form_keys,
+                },
+            )
+            logger.info(f"[VOICES] Raw files from form.getlist('files') | count={len(files_raw) if files_raw else 0} | types={[type(f).__name__ for f in files_raw] if files_raw else []}")
             logger.info(f"[VOICES] All form keys received | keys={form_keys}")
             
             # Also try direct access in case getlist doesn't work as expected
@@ -127,10 +228,32 @@ async def create_voice(
                 logger.info(f"[VOICES] Trying direct form.get('files') | result={type(single_file).__name__ if single_file else 'None'}")
                 if single_file and isinstance(single_file, UploadFile):
                     files_raw = [single_file]
+                    await log_to_database(
+                        source="backend",
+                        level="INFO",
+                        category="voice_cloning",
+                        message="Found single file via direct access",
+                        request_id=request_id,
+                        client_id=client_id,
+                        user_id=user_id,
+                        endpoint=str(request.url.path),
+                        method=request.method,
+                    )
                     logger.info(f"[VOICES] Found single file via direct access")
             
             # If still no files, try iterating through all form items
             if not files_raw or len(files_raw) == 0:
+                await log_to_database(
+                    source="backend",
+                    level="WARNING",
+                    category="voice_cloning",
+                    message="No files found via getlist, trying form iteration",
+                    request_id=request_id,
+                    client_id=client_id,
+                    user_id=user_id,
+                    endpoint=str(request.url.path),
+                    method=request.method,
+                )
                 logger.warning(f"[VOICES] No files found via getlist or direct access, trying form iteration")
                 all_files = []
                 for key, value in form.items():
@@ -140,26 +263,106 @@ async def create_voice(
                         logger.info(f"[VOICES] Found UploadFile via iteration | key={key} | filename={value.filename}")
                 if all_files:
                     files_raw = all_files
+                    await log_to_database(
+                        source="backend",
+                        level="INFO",
+                        category="voice_cloning",
+                        message=f"Found {len(all_files)} files via form iteration",
+                        request_id=request_id,
+                        client_id=client_id,
+                        user_id=user_id,
+                        endpoint=str(request.url.path),
+                        method=request.method,
+                        context={"files_count": len(all_files)},
+                    )
                     logger.info(f"[VOICES] Found {len(all_files)} files via form iteration")
             
             # Filter to only UploadFile objects and log any non-file items
             files = []
+            file_details = []
             for item in files_raw if files_raw else []:
                 if isinstance(item, UploadFile):
                     files.append(item)
+                    file_details.append({
+                        "filename": item.filename,
+                        "content_type": item.content_type,
+                    })
                     logger.info(f"[VOICES] Valid UploadFile found | filename={item.filename} | content_type={item.content_type}")
                 else:
+                    await log_to_database(
+                        source="backend",
+                        level="WARNING",
+                        category="voice_cloning",
+                        message=f"Non-UploadFile item in files list: {type(item).__name__}",
+                        request_id=request_id,
+                        client_id=client_id,
+                        user_id=user_id,
+                        endpoint=str(request.url.path),
+                        method=request.method,
+                        context={"item_type": type(item).__name__},
+                    )
                     logger.warning(f"[VOICES] Non-UploadFile item in files list | type={type(item).__name__} | value={str(item)[:100]}")
             
+            await log_to_database(
+                source="backend",
+                level="INFO",
+                category="voice_cloning",
+                message="Form fields extracted successfully",
+                request_id=request_id,
+                client_id=client_id,
+                user_id=user_id,
+                endpoint=str(request.url.path),
+                method=request.method,
+                context={
+                    "voice_name": name,
+                    "strategy": strategy,
+                    "valid_files_count": len(files),
+                    "file_details": file_details,
+                },
+            )
             logger.info(f"[VOICES] Form fields extracted | name={name} | strategy={strategy} | valid_files_count={len(files)}")
             logger.info(f"[VOICES] ===== FORM PARSING COMPLETE =====")
+            
             if len(files) == 0:
+                await log_to_database(
+                    source="backend",
+                    level="ERROR",
+                    category="voice_cloning",
+                    message="CRITICAL: No valid files found after parsing!",
+                    request_id=request_id,
+                    client_id=client_id,
+                    user_id=user_id,
+                    endpoint=str(request.url.path),
+                    method=request.method,
+                    context={
+                        "form_keys_available": form_keys,
+                        "raw_files_count": len(files_raw) if files_raw else 0,
+                        "note": "This is likely the root cause of the issue!",
+                    },
+                )
                 logger.error(f"[VOICES] ⚠️⚠️⚠️ CRITICAL: No valid files found after parsing! ⚠️⚠️⚠️")
                 logger.error(f"[VOICES] This is likely the root cause of the issue!")
                 logger.error(f"[VOICES] Form keys available: {form_keys}")
                 logger.error(f"[VOICES] Raw files from getlist: {len(files_raw) if files_raw else 0}")
                 logger.error(f"[VOICES] ===== END CRITICAL ERROR =====")
         
+        await log_to_database(
+            source="backend",
+            level="INFO",
+            category="voice_cloning",
+            message="Request parsed successfully",
+            request_id=request_id,
+            client_id=client_id,
+            user_id=user_id,
+            endpoint=str(request.url.path),
+            method=request.method,
+            context={
+                "voice_name": name,
+                "strategy": strategy,
+                "provider": provider,
+                "has_provider_voice_id": bool(provider_voice_id),
+            },
+        )
         logger.info(f"[VOICES] Parsed request | name={name} | strategy={strategy} | provider={provider} | provider_voice_id={provider_voice_id}")
         
         if not name:
@@ -182,6 +385,21 @@ async def create_voice(
             
             # Step 1: Clone in ElevenLabs (NO DB, NO CREDITS - matches test script)
             start_time = time.time()
+            await log_to_database(
+                source="backend",
+                level="INFO",
+                category="voice_cloning",
+                message="Starting voice cloning process in ElevenLabs",
+                request_id=request_id,
+                client_id=client_id,
+                user_id=user_id,
+                endpoint=str(request.url.path),
+                method=request.method,
+                context={
+                    "voice_name": name,
+                    "files_count": len(files),
+                },
+            )
             logger.info(f"[VOICES] Cloning voice in ElevenLabs | name={name} | files_count={len(files)}")
             
             if not files or len(files) == 0:
@@ -192,6 +410,18 @@ async def create_voice(
             for idx, file_item in enumerate(files):
                 try:
                     if not isinstance(file_item, UploadFile):
+                        await log_to_database(
+                            source="backend",
+                            level="ERROR",
+                            category="voice_cloning",
+                            message=f"File item {idx} is not UploadFile",
+                            request_id=request_id,
+                            client_id=client_id,
+                            user_id=user_id,
+                            endpoint=str(request.url.path),
+                            method=request.method,
+                            context={"item_type": type(file_item).__name__},
+                        )
                         logger.error(f"[VOICES] File item {idx} is not UploadFile | type={type(file_item).__name__}")
                         continue
                     
@@ -200,31 +430,126 @@ async def create_voice(
                     file_read_time = time.time() - file_read_start
                     
                     if len(content) == 0:
+                        await log_to_database(
+                            source="backend",
+                            level="WARNING",
+                            category="voice_cloning",
+                            message=f"File {idx} is empty",
+                            request_id=request_id,
+                            client_id=client_id,
+                            user_id=user_id,
+                            endpoint=str(request.url.path),
+                            method=request.method,
+                            context={"filename": file_item.filename},
+                        )
                         logger.warning(f"[VOICES] File {idx} is empty | filename={file_item.filename}")
                         continue
                     
+                    await log_to_database(
+                        source="backend",
+                        level="INFO",
+                        category="voice_cloning",
+                        message=f"File {idx} read successfully",
+                        request_id=request_id,
+                        client_id=client_id,
+                        user_id=user_id,
+                        endpoint=str(request.url.path),
+                        method=request.method,
+                        context={
+                            "filename": file_item.filename,
+                            "file_size_bytes": len(content),
+                            "read_time_seconds": round(file_read_time, 2),
+                        },
+                    )
                     logger.info(f"[VOICES] File {idx} read completed | filename={file_item.filename} | size={len(content)} bytes | time={file_read_time:.2f}s")
                     filename = file_item.filename or f"audio_{idx}.mp3"
                     content_type = file_item.content_type or "audio/mpeg"
                     files_data.append(("files", (filename, content, content_type)))
                 except Exception as file_error:
-                    logger.error(f"[VOICES] Error reading file {idx} | filename={file_item.filename if hasattr(file_item, 'filename') else 'unknown'} | error={str(file_error)}")
                     import traceback
-                    logger.error(f"[VOICES] File read traceback: {traceback.format_exc()}")
+                    error_traceback = traceback.format_exc()
+                    await log_to_database(
+                        source="backend",
+                        level="ERROR",
+                        category="voice_cloning",
+                        message=f"Error reading file {idx}",
+                        request_id=request_id,
+                        client_id=client_id,
+                        user_id=user_id,
+                        endpoint=str(request.url.path),
+                        method=request.method,
+                        error_details={
+                            "error_type": type(file_error).__name__,
+                            "error_message": str(file_error),
+                            "traceback": error_traceback,
+                        },
+                        context={
+                            "filename": file_item.filename if hasattr(file_item, 'filename') else 'unknown',
+                        },
+                    )
+                    logger.error(f"[VOICES] Error reading file {idx} | filename={file_item.filename if hasattr(file_item, 'filename') else 'unknown'} | error={str(file_error)}")
+                    logger.error(f"[VOICES] File read traceback: {error_traceback}")
                     raise ValidationError(f"Error reading uploaded file: {str(file_error)}")
             
             if len(files_data) == 0:
+                await log_to_database(
+                    source="backend",
+                    level="ERROR",
+                    category="voice_cloning",
+                    message="No valid file data after processing",
+                    request_id=request_id,
+                    client_id=client_id,
+                    user_id=user_id,
+                    endpoint=str(request.url.path),
+                    method=request.method,
+                    context={"original_files_count": len(files)},
+                )
                 logger.error(f"[VOICES] No valid file data after processing | files_count={len(files)}")
                 raise ValidationError("No valid audio file data could be extracted from uploaded files.")
             
+            total_file_size = sum(len(f[1][1]) for f in files_data)
+            file_summary = [{"filename": f[1][0], "size_bytes": len(f[1][1]), "content_type": f[1][2]} for f in files_data]
+            
+            await log_to_database(
+                source="backend",
+                level="INFO",
+                category="voice_cloning",
+                message="Files prepared for ElevenLabs upload",
+                request_id=request_id,
+                client_id=client_id,
+                user_id=user_id,
+                endpoint=str(request.url.path),
+                method=request.method,
+                context={
+                    "files_count": len(files_data),
+                    "total_size_bytes": total_file_size,
+                    "file_details": file_summary,
+                },
+            )
             logger.info(f"[VOICES] Prepared {len(files_data)} files for ElevenLabs upload")
             logger.info(f"[VOICES] ===== FILE PREPARATION COMPLETE =====")
-            logger.info(f"[VOICES] Total file data size: {sum(len(f[1][1]) for f in files_data)} bytes")
+            logger.info(f"[VOICES] Total file data size: {total_file_size} bytes")
             for idx, (field_name, (filename, content, content_type)) in enumerate(files_data):
                 logger.info(f"[VOICES]   File {idx + 1}: {filename} | {len(content)} bytes | {content_type}")
             
             try:
                 elevenlabs_start = time.time()
+                await log_to_database(
+                    source="backend",
+                    level="INFO",
+                    category="elevenlabs_api",
+                    message="Calling ElevenLabs API to clone voice",
+                    request_id=request_id,
+                    client_id=client_id,
+                    user_id=user_id,
+                    endpoint=str(request.url.path),
+                    method=request.method,
+                    context={
+                        "voice_name": name,
+                        "files_count": len(files_data),
+                        "timeout_seconds": 120,
+                    },
+                )
                 logger.info(f"[VOICES] Starting ElevenLabs API call | timeout=120s")
                 async with httpx.AsyncClient(timeout=120.0) as client:
                     elevenlabs_response = await client.post(
@@ -236,6 +561,22 @@ async def create_voice(
                     
                     if elevenlabs_response.status_code >= 400:
                         error_text = elevenlabs_response.text[:500] if elevenlabs_response.text else "No response body"
+                        await log_to_database(
+                            source="backend",
+                            level="ERROR",
+                            category="elevenlabs_api",
+                            message=f"ElevenLabs API error: {error_text}",
+                            request_id=request_id,
+                            client_id=client_id,
+                            user_id=user_id,
+                            endpoint=str(request.url.path),
+                            method=request.method,
+                            status_code=elevenlabs_response.status_code,
+                            context={
+                                "error_text": error_text,
+                                "http_status": elevenlabs_response.status_code,
+                            },
+                        )
                         raise ProviderError(
                             provider="elevenlabs",
                             message=f"ElevenLabs voice cloning failed: {error_text}",
@@ -246,14 +587,57 @@ async def create_voice(
                     elevenlabs_voice_id = elevenlabs_data.get("voice_id")
                     
                     if not elevenlabs_voice_id:
+                        await log_to_database(
+                            source="backend",
+                            level="ERROR",
+                            category="elevenlabs_api",
+                            message="ElevenLabs response missing voice_id",
+                            request_id=request_id,
+                            client_id=client_id,
+                            user_id=user_id,
+                            endpoint=str(request.url.path),
+                            method=request.method,
+                            context={"response_data": elevenlabs_data},
+                        )
                         raise ProviderError(
                             provider="elevenlabs",
                             message="ElevenLabs response missing voice_id",
                             http_status=500,
                         )
                 elevenlabs_time = time.time() - elevenlabs_start
+                await log_to_database(
+                    source="backend",
+                    level="INFO",
+                    category="elevenlabs_api",
+                    message="ElevenLabs API call completed successfully",
+                    request_id=request_id,
+                    client_id=client_id,
+                    user_id=user_id,
+                    endpoint=str(request.url.path),
+                    method=request.method,
+                    duration_ms=int(elevenlabs_time * 1000),
+                    context={
+                        "elevenlabs_voice_id": elevenlabs_voice_id,
+                        "duration_seconds": round(elevenlabs_time, 2),
+                    },
+                )
                 logger.info(f"[VOICES] ElevenLabs API call completed | time={elevenlabs_time:.2f}s")
             except httpx.TimeoutException as e:
+                await log_to_database(
+                    source="backend",
+                    level="ERROR",
+                    category="elevenlabs_api",
+                    message="ElevenLabs API request timed out after 120 seconds",
+                    request_id=request_id,
+                    client_id=client_id,
+                    user_id=user_id,
+                    endpoint=str(request.url.path),
+                    method=request.method,
+                    error_details={
+                        "error_type": "TimeoutException",
+                        "error_message": str(e),
+                    },
+                )
                 logger.error(f"[VOICES] ElevenLabs timeout after 120s | error={str(e)}")
                 raise ProviderError(
                     provider="elevenlabs",
@@ -261,6 +645,21 @@ async def create_voice(
                     http_status=504,
                 )
             except httpx.RequestError as e:
+                await log_to_database(
+                    source="backend",
+                    level="ERROR",
+                    category="elevenlabs_api",
+                    message=f"ElevenLabs request error: {str(e)}",
+                    request_id=request_id,
+                    client_id=client_id,
+                    user_id=user_id,
+                    endpoint=str(request.url.path),
+                    method=request.method,
+                    error_details={
+                        "error_type": type(e).__name__,
+                        "error_message": str(e),
+                    },
+                )
                 logger.error(f"[VOICES] ElevenLabs request error | error={str(e)} | type={type(e).__name__}")
                 raise ProviderError(
                     provider="elevenlabs",
@@ -269,12 +668,42 @@ async def create_voice(
                 )
             
             total_elevenlabs_time = time.time() - start_time
+            await log_to_database(
+                source="backend",
+                level="INFO",
+                category="voice_cloning",
+                message="ElevenLabs clone successful",
+                request_id=request_id,
+                client_id=client_id,
+                user_id=user_id,
+                endpoint=str(request.url.path),
+                method=request.method,
+                context={
+                    "elevenlabs_voice_id": elevenlabs_voice_id,
+                    "total_time_seconds": round(total_elevenlabs_time, 2),
+                },
+            )
             logger.info(f"[VOICES] ===== ELEVENLABS CLONE SUCCESS =====")
             logger.info(f"[VOICES] ElevenLabs clone successful | voice_id={elevenlabs_voice_id} | total_time={total_elevenlabs_time:.2f}s")
             logger.info(f"[VOICES] ElevenLabs response data: {elevenlabs_data}")
             
             # Step 2: Import to Ultravox - EXACT COPY OF TEST SCRIPT
             ultravox_start = time.time()
+            await log_to_database(
+                source="backend",
+                level="INFO",
+                category="ultravox_api",
+                message="Starting Ultravox import",
+                request_id=request_id,
+                client_id=client_id,
+                user_id=user_id,
+                endpoint=str(request.url.path),
+                method=request.method,
+                context={
+                    "elevenlabs_voice_id": elevenlabs_voice_id,
+                    "voice_name": name,
+                },
+            )
             logger.info(f"[VOICES] Importing to Ultravox | elevenlabs_voice_id={elevenlabs_voice_id}")
             
             # Normalize name exactly like test script (line 87-92)
@@ -318,6 +747,22 @@ async def create_voice(
                     
                     if ultravox_response.status_code >= 400:
                         error_text = ultravox_response.text[:500] if ultravox_response.text else "No response body"
+                        await log_to_database(
+                            source="backend",
+                            level="ERROR",
+                            category="ultravox_api",
+                            message=f"Ultravox API error: {error_text}",
+                            request_id=request_id,
+                            client_id=client_id,
+                            user_id=user_id,
+                            endpoint=str(request.url.path),
+                            method=request.method,
+                            status_code=ultravox_response.status_code,
+                            context={
+                                "error_text": error_text,
+                                "http_status": ultravox_response.status_code,
+                            },
+                        )
                         raise ProviderError(
                             provider="ultravox",
                             message=f"Ultravox import failed: {error_text}",
@@ -326,8 +771,38 @@ async def create_voice(
                     
                     ultravox_data = ultravox_response.json()
                 ultravox_time = time.time() - ultravox_start
+                await log_to_database(
+                    source="backend",
+                    level="INFO",
+                    category="ultravox_api",
+                    message="Ultravox API call completed successfully",
+                    request_id=request_id,
+                    client_id=client_id,
+                    user_id=user_id,
+                    endpoint=str(request.url.path),
+                    method=request.method,
+                    duration_ms=int(ultravox_time * 1000),
+                    context={
+                        "duration_seconds": round(ultravox_time, 2),
+                    },
+                )
                 logger.info(f"[VOICES] Ultravox API call completed | time={ultravox_time:.2f}s")
             except httpx.TimeoutException as e:
+                await log_to_database(
+                    source="backend",
+                    level="ERROR",
+                    category="ultravox_api",
+                    message="Ultravox API request timed out after 120 seconds",
+                    request_id=request_id,
+                    client_id=client_id,
+                    user_id=user_id,
+                    endpoint=str(request.url.path),
+                    method=request.method,
+                    error_details={
+                        "error_type": "TimeoutException",
+                        "error_message": str(e),
+                    },
+                )
                 logger.error(f"[VOICES] Ultravox timeout after 120s | error={str(e)}")
                 raise ProviderError(
                     provider="ultravox",
@@ -335,6 +810,21 @@ async def create_voice(
                     http_status=504,
                 )
             except httpx.RequestError as e:
+                await log_to_database(
+                    source="backend",
+                    level="ERROR",
+                    category="ultravox_api",
+                    message=f"Ultravox request error: {str(e)}",
+                    request_id=request_id,
+                    client_id=client_id,
+                    user_id=user_id,
+                    endpoint=str(request.url.path),
+                    method=request.method,
+                    error_details={
+                        "error_type": type(e).__name__,
+                        "error_message": str(e),
+                    },
+                )
                 logger.error(f"[VOICES] Ultravox request error | error={str(e)} | type={type(e).__name__}")
                 raise ProviderError(
                     provider="ultravox",
@@ -352,6 +842,18 @@ async def create_voice(
             )
             
             if not ultravox_voice_id:
+                await log_to_database(
+                    source="backend",
+                    level="ERROR",
+                    category="ultravox_api",
+                    message="Ultravox response missing voiceId",
+                    request_id=request_id,
+                    client_id=client_id,
+                    user_id=user_id,
+                    endpoint=str(request.url.path),
+                    method=request.method,
+                    context={"response_data": ultravox_data},
+                )
                 raise ProviderError(
                     provider="ultravox",
                     message="Ultravox response missing voiceId",
@@ -360,12 +862,42 @@ async def create_voice(
                 )
             
             total_ultravox_time = time.time() - ultravox_start
+            await log_to_database(
+                source="backend",
+                level="INFO",
+                category="voice_cloning",
+                message="Ultravox import successful",
+                request_id=request_id,
+                client_id=client_id,
+                user_id=user_id,
+                endpoint=str(request.url.path),
+                method=request.method,
+                context={
+                    "ultravox_voice_id": ultravox_voice_id,
+                    "total_time_seconds": round(total_ultravox_time, 2),
+                },
+            )
             logger.info(f"[VOICES] ===== ULTRAVOX IMPORT SUCCESS =====")
             logger.info(f"[VOICES] Ultravox import successful | ultravox_voice_id={ultravox_voice_id} | total_time={total_ultravox_time:.2f}s")
             logger.info(f"[VOICES] Ultravox response data: {ultravox_data}")
             
             # Step 3: Save to DB (AFTER both API calls succeed - no credit checks, no credit updates)
             db_start = time.time()
+            await log_to_database(
+                source="backend",
+                level="INFO",
+                category="voice_cloning",
+                message="Saving voice to database",
+                request_id=request_id,
+                client_id=client_id,
+                user_id=user_id,
+                endpoint=str(request.url.path),
+                method=request.method,
+                context={
+                    "voice_id": voice_id,
+                    "voice_name": name,
+                },
+            )
             db = DatabaseService(current_user["token"])
             db.set_auth(current_user["token"])
             
@@ -386,6 +918,31 @@ async def create_voice(
             db.insert("voices", voice_record)
             db_time = time.time() - db_start
             total_time = time.time() - start_time
+            
+            await log_to_database(
+                source="backend",
+                level="INFO",
+                category="voice_cloning",
+                message="Voice cloned successfully - process complete",
+                request_id=request_id,
+                client_id=client_id,
+                user_id=user_id,
+                endpoint=str(request.url.path),
+                method=request.method,
+                status_code=200,
+                duration_ms=int(total_time * 1000),
+                context={
+                    "voice_id": voice_id,
+                    "elevenlabs_voice_id": elevenlabs_voice_id,
+                    "ultravox_voice_id": ultravox_voice_id,
+                    "timing_breakdown": {
+                        "elevenlabs_seconds": round(total_elevenlabs_time, 2),
+                        "ultravox_seconds": round(total_ultravox_time, 2),
+                        "database_seconds": round(db_time, 2),
+                        "total_seconds": round(total_time, 2),
+                    },
+                },
+            )
             logger.info(f"[VOICES] ===== VOICE CREATION COMPLETE =====")
             logger.info(f"[VOICES] Voice cloned successfully | voice_id={voice_id} | db_time={db_time:.2f}s | total_time={total_time:.2f}s")
             logger.info(f"[VOICES] Breakdown:")
@@ -495,6 +1052,34 @@ async def create_voice(
     
     except (ValidationError, ForbiddenError, NotFoundError, ProviderError) as e:
         # Re-raise known errors as-is, but log them first
+        import traceback
+        error_traceback = traceback.format_exc()
+        
+        # Get request context if available
+        request_id = getattr(request.state, "request_id", None) if 'request' in locals() else None
+        client_id = current_user.get("client_id") if 'current_user' in locals() else None
+        user_id = current_user.get("user_id") if 'current_user' in locals() else None
+        endpoint = str(request.url.path) if 'request' in locals() else None
+        method = request.method if 'request' in locals() else None
+        
+        await log_to_database(
+            source="backend",
+            level="ERROR",
+            category="voice_cloning",
+            message=f"Error in voice creation: {type(e).__name__} - {str(e)}",
+            request_id=request_id,
+            client_id=client_id,
+            user_id=user_id,
+            endpoint=endpoint,
+            method=method,
+            error_details={
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "error_details": e.details if hasattr(e, 'details') else None,
+                "traceback": error_traceback,
+            },
+        )
+        
         logger.error("=" * 80)
         logger.error(f"[VOICES] ===== ERROR IN VOICE CREATION =====")
         logger.error(f"[VOICES] Error type: {type(e).__name__}")
@@ -507,12 +1092,38 @@ async def create_voice(
     except Exception as e:
         # Catch any unexpected errors and log them
         import traceback
+        error_traceback = traceback.format_exc()
+        
+        # Get request context if available
+        request_id = getattr(request.state, "request_id", None) if 'request' in locals() else None
+        client_id = current_user.get("client_id") if 'current_user' in locals() else None
+        user_id = current_user.get("user_id") if 'current_user' in locals() else None
+        endpoint = str(request.url.path) if 'request' in locals() else None
+        method = request.method if 'request' in locals() else None
+        
+        await log_to_database(
+            source="backend",
+            level="ERROR",
+            category="voice_cloning",
+            message=f"Unexpected error in voice creation: {type(e).__name__} - {str(e)}",
+            request_id=request_id,
+            client_id=client_id,
+            user_id=user_id,
+            endpoint=endpoint,
+            method=method,
+            error_details={
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "traceback": error_traceback,
+            },
+        )
+        
         logger.error("=" * 80)
         logger.error(f"[VOICES] ===== UNEXPECTED ERROR IN VOICE CREATION =====")
         logger.error(f"[VOICES] Error type: {type(e).__name__}")
         logger.error(f"[VOICES] Error message: {str(e)}")
         logger.error(f"[VOICES] Full traceback:")
-        logger.error(traceback.format_exc())
+        logger.error(error_traceback)
         logger.error(f"[VOICES] ===== END UNEXPECTED ERROR =====")
         logger.error("=" * 80)
         raise ProviderError(
