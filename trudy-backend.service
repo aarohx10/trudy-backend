@@ -8,13 +8,19 @@ User=root
 Group=root
 WorkingDirectory=/opt/backend
 Environment="PATH=/opt/backend/venv/bin:/usr/local/bin:/usr/bin:/bin"
-ExecStart=/opt/backend/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+# MASTER FIX: Increase timeout for long operations (voice cloning, large uploads)
+# --timeout-keep-alive 300 ensures workers don't die during 60-90 second voice cloning
+ExecStart=/opt/backend/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4 --timeout-keep-alive 300
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=trudy-backend
+
+# MASTER FIX: System-level timeout - don't force-kill during long operations
+# Voice cloning can take 2+ minutes (ElevenLabs + Ultravox + file processing)
+TimeoutStopSec=300
 
 # Security settings
 NoNewPrivileges=true
@@ -23,8 +29,8 @@ ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/opt/backend /mnt/storage
 
-# Resource limits
-LimitNOFILE=65536
+# Resource limits - increased for heavy file uploads and multiple simultaneous voice clones
+LimitNOFILE=65535
 LimitNPROC=4096
 
 [Install]

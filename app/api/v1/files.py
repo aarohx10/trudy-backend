@@ -21,51 +21,8 @@ router = APIRouter()
 # Maximum file size for uploads (50MB)
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024
 
-# Compile CORS regex patterns for origin validation
-_cors_compiled_patterns = []
-for pattern in settings.CORS_WILDCARD_PATTERNS:
-    # Ensure patterns are anchored for full string match
-    if not pattern.startswith("^"):
-        pattern = f"^{pattern}"
-    if not pattern.endswith("$"):
-        pattern = f"{pattern}$"
-    try:
-        _cors_compiled_patterns.append(re.compile(pattern))
-    except re.error as e:
-        logger.warning(f"Invalid CORS regex pattern '{pattern}': {e}")
-
-
-def is_origin_allowed(origin: str) -> bool:
-    """
-    Check if an origin is allowed by CORS configuration.
-    Matches the logic in main.py for consistency.
-    """
-    if not origin:
-        return False
-    
-    # Check exact origins first
-    if origin in settings.CORS_ORIGINS:
-        return True
-    
-    # Check regex patterns for dynamic subdomains
-    for pattern in _cors_compiled_patterns:
-        if pattern.match(origin):
-            return True
-    
-    return False
-
-
-def add_cors_headers_if_allowed(response: Response, origin: str) -> None:
-    """
-    Add CORS headers to response only if origin is allowed.
-    Matches the logic in main.py for consistency.
-    """
-    if origin and is_origin_allowed(origin):
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD"
-        response.headers["Access-Control-Allow-Headers"] = "*"
-        response.headers["Access-Control-Max-Age"] = "86400"
+# CORS handling is now unified in app.core.middleware.UnifiedCORSMiddleware
+# No manual CORS header injection needed - middleware handles all responses
 
 
 @router.get("/files/{bucket_type}")
@@ -155,11 +112,9 @@ async def options_file_upload(
 ):
     """
     Handle OPTIONS preflight requests for file uploads.
+    CORS headers added by UnifiedCORSMiddleware.
     """
-    origin = request.headers.get("origin")
-    response = Response(status_code=200)
-    add_cors_headers_if_allowed(response, origin)
-    return response
+    return Response(status_code=200)
 
 
 @router.put("/files/{bucket_type}")
@@ -255,18 +210,12 @@ async def upload_file(
                     pass
             raise stream_error
         
-        # Create response
-        response = Response(
+        # Create response - CORS headers added by UnifiedCORSMiddleware
+        return Response(
             status_code=200,
             content=f"File uploaded successfully: {key}",
             media_type="text/plain"
         )
-        
-        # Add CORS headers for allowed origins (explicit for PUT requests)
-        origin = request.headers.get("origin")
-        add_cors_headers_if_allowed(response, origin)
-        
-        return response
         
     except HTTPException:
         # HTTPException will be handled by exception handlers in main.py which add CORS
@@ -292,13 +241,10 @@ async def upload_file(
         }
         logger.error(f"[FILES] [UPLOAD] Error uploading file (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         
-        # Create error response with CORS headers
-        error_response = Response(
+        # Create error response - CORS headers added by UnifiedCORSMiddleware
+        return Response(
             status_code=500,
             content=f"Internal server error: {str(e)}",
             media_type="text/plain"
         )
-        origin = request.headers.get("origin")
-        add_cors_headers_if_allowed(error_response, origin)
-        return error_response
 
