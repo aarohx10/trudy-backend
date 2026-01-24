@@ -61,12 +61,19 @@ async def get_tool(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """Get tool from Ultravox"""
+    """Get tool from database"""
     try:
-        tool = await ultravox_client.get_tool(tool_id)
+        client_id = current_user.get("client_id")
+        db = DatabaseService()
+        
+        # Fetch tool from database
+        tool_record = db.select_one("tools", {"id": tool_id, "client_id": client_id})
+        
+        if not tool_record:
+            raise NotFoundError("tool", tool_id)
         
         return {
-            "data": tool,
+            "data": tool_record,
             "meta": ResponseMeta(
                 request_id=str(uuid.uuid4()),
                 ts=datetime.utcnow(),
@@ -84,14 +91,10 @@ async def get_tool(
             "full_traceback": traceback.format_exc(),
             "tool_id": tool_id,
         }
-        logger.error(f"[TOOLS] [GET] Failed to get tool from Ultravox (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
-        if isinstance(e, ProviderError):
+        logger.error(f"[TOOLS] [GET] Failed to get tool from database (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+        if isinstance(e, NotFoundError):
             raise
-        raise ProviderError(
-            provider="ultravox",
-            message=f"Failed to get tool: {str(e)}",
-            http_status=500,
-        )
+        raise ValidationError(f"Failed to get tool: {str(e)}")
 
 
 @router.post("")
@@ -214,13 +217,57 @@ async def update_tool(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """Update tool in Ultravox - Full definition replacement (Ultravox standard)"""
+    """Update tool in both Ultravox and database"""
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
     try:
-        # Ultravox requires full definition replacement (PUT, not PATCH)
-        updated_tool = await ultravox_client.update_tool(tool_id, tool_data)
+        client_id = current_user.get("client_id")
+        db = DatabaseService()
+        
+        # First, get the tool from database to get ultravox_tool_id
+        tool_record = db.select_one("tools", {"id": tool_id, "client_id": client_id})
+        if not tool_record:
+            raise NotFoundError("tool", tool_id)
+        
+        ultravox_tool_id = tool_record.get("ultravox_tool_id")
+        
+        # Update in Ultravox if we have ultravox_tool_id
+        if ultravox_tool_id:
+            try:
+                # Ultravox requires full definition replacement (PUT, not PATCH)
+                await ultravox_client.update_tool(ultravox_tool_id, tool_data)
+            except Exception as uv_error:
+                logger.warning(f"[TOOLS] [UPDATE] Failed to update tool in Ultravox (non-critical): {uv_error}", exc_info=True)
+                # Continue to update database even if Ultravox update fails
+        
+        # Update in database
+        now = datetime.utcnow()
+        tool_definition = tool_data.get("definition", {})
+        http_config = tool_definition.get("http", {})
+        
+        update_data = {
+            "updated_at": now.isoformat(),
+        }
+        
+        # Update fields if provided
+        if "name" in tool_data:
+            update_data["name"] = tool_data["name"]
+        if tool_definition.get("description"):
+            update_data["description"] = tool_definition.get("description")
+        if http_config.get("baseUrlPattern") or http_config.get("url"):
+            update_data["endpoint"] = http_config.get("baseUrlPattern") or http_config.get("url")
+        if http_config.get("httpMethod") or http_config.get("method"):
+            update_data["method"] = http_config.get("httpMethod") or http_config.get("method")
+        if tool_definition.get("dynamicParameters"):
+            update_data["parameters"] = tool_definition.get("dynamicParameters")
+        if tool_definition.get("requirements", {}).get("httpSecurityOptions"):
+            update_data["authentication"] = tool_definition.get("requirements", {}).get("httpSecurityOptions")
+        
+        db.update("tools", {"id": tool_id, "client_id": client_id}, update_data)
+        
+        # Fetch updated record
+        updated_tool = db.select_one("tools", {"id": tool_id, "client_id": client_id})
         
         return {
             "data": updated_tool,
@@ -242,14 +289,10 @@ async def update_tool(
             "tool_id": tool_id,
             "tool_data": tool_data if 'tool_data' in locals() else None,
         }
-        logger.error(f"[TOOLS] [UPDATE] Failed to update tool in Ultravox (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
-        if isinstance(e, ProviderError):
+        logger.error(f"[TOOLS] [UPDATE] Failed to update tool (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+        if isinstance(e, NotFoundError):
             raise
-        raise ProviderError(
-            provider="ultravox",
-            message=f"Failed to update tool: {str(e)}",
-            http_status=500,
-        )
+        raise ValidationError(f"Failed to update tool: {str(e)}")
 
 
 @router.delete("/{tool_id}")
@@ -258,12 +301,31 @@ async def delete_tool(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """Delete tool from Ultravox"""
+    """Delete tool from both Ultravox and database"""
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
     try:
-        await ultravox_client.delete_tool(tool_id)
+        client_id = current_user.get("client_id")
+        db = DatabaseService()
+        
+        # Get tool from database to get ultravox_tool_id
+        tool_record = db.select_one("tools", {"id": tool_id, "client_id": client_id})
+        if not tool_record:
+            raise NotFoundError("tool", tool_id)
+        
+        ultravox_tool_id = tool_record.get("ultravox_tool_id")
+        
+        # Delete from Ultravox if we have ultravox_tool_id
+        if ultravox_tool_id:
+            try:
+                await ultravox_client.delete_tool(ultravox_tool_id)
+            except Exception as uv_error:
+                logger.warning(f"[TOOLS] [DELETE] Failed to delete tool from Ultravox (non-critical): {uv_error}", exc_info=True)
+                # Continue to delete from database even if Ultravox delete fails
+        
+        # Delete from database
+        db.delete("tools", {"id": tool_id, "client_id": client_id})
         
         return {
             "data": {"id": tool_id, "deleted": True},
@@ -284,14 +346,10 @@ async def delete_tool(
             "full_traceback": traceback.format_exc(),
             "tool_id": tool_id,
         }
-        logger.error(f"[TOOLS] [DELETE] Failed to delete tool from Ultravox (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
-        if isinstance(e, ProviderError):
+        logger.error(f"[TOOLS] [DELETE] Failed to delete tool (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+        if isinstance(e, NotFoundError):
             raise
-        raise ProviderError(
-            provider="ultravox",
-            message=f"Failed to delete tool: {str(e)}",
-            http_status=500,
-        )
+        raise ValidationError(f"Failed to delete tool: {str(e)}")
 
 
 @router.post("/{tool_id}/test")
