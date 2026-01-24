@@ -61,9 +61,15 @@ CREATE INDEX knowledge_bases_created_at_idx ON knowledge_bases(created_at DESC);
 ALTER TABLE knowledge_bases ENABLE ROW LEVEL SECURITY;
 
 -- Policy: Users can only access their own client's knowledge bases (same pattern as other tables)
+-- USING clause applies to SELECT, UPDATE, DELETE
+-- WITH CHECK clause applies to INSERT, UPDATE
 CREATE POLICY knowledge_bases_policy ON knowledge_bases
     FOR ALL
     USING (
+        jwt_role() = 'agency_admin' OR
+        client_id = jwt_client_id()
+    )
+    WITH CHECK (
         jwt_role() = 'agency_admin' OR
         client_id = jwt_client_id()
     );
