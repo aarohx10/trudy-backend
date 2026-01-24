@@ -2,7 +2,7 @@
 Voice Endpoints - SIMPLIFIED
 Just HTTP requests. That's it.
 """
-from fastapi import APIRouter, Header, Depends, Query, Request, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Header, Depends, Query, Request, HTTPException, UploadFile
 from fastapi.responses import Response
 from typing import Optional, List
 from datetime import datetime
@@ -26,12 +26,6 @@ async def create_voice(
     request: Request,
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
-    # Direct form parameters (non-blocking, streams files)
-    name: Optional[str] = Form(None),
-    strategy: Optional[str] = Form(None),
-    provider: Optional[str] = Form("elevenlabs"),
-    provider_voice_id: Optional[str] = Form(None),
-    files: Optional[List[UploadFile]] = File(None),
 ):
     """
     Create voice - SIMPLE: Just HTTP requests
@@ -70,23 +64,30 @@ async def create_voice(
         parse_start = time.time()
         
         if is_json:
-            # JSON request (for imports) - fallback to request.json() for JSON
+            # JSON request (for imports)
             logger.info(f"[VOICES] Parsing JSON body...")
             body = await request.json()
             parse_time = time.time() - parse_start
             logger.info(f"[VOICES] JSON body received | body_keys={list(body.keys()) if isinstance(body, dict) else 'not_dict'} | parse_time={parse_time:.2f}s")
-            name = body.get("name") or name
-            strategy = body.get("strategy") or strategy
+            name = body.get("name")
+            strategy = body.get("strategy")
             source = body.get("source", {})
             provider_overrides = body.get("provider_overrides", {})
-            provider = provider_overrides.get("provider", provider or "elevenlabs")
-            provider_voice_id = source.get("provider_voice_id") or provider_voice_id
-            files = files or []
+            provider = provider_overrides.get("provider", "elevenlabs")
+            provider_voice_id = source.get("provider_voice_id")
+            files = []
         else:
-            # Multipart form data (for clones) - use direct parameters (non-blocking)
+            # Multipart form data (for clones) - parse form (FastAPI handles streaming)
+            logger.info(f"[VOICES] Parsing multipart form data...")
+            form = await request.form()
             parse_time = time.time() - parse_start
-            logger.info(f"[VOICES] Form parameters received | parse_time={parse_time:.2f}s | name={name} | strategy={strategy} | files_count={len(files) if files else 0}")
-            # Parameters already extracted by FastAPI (non-blocking)
+            logger.info(f"[VOICES] Form data parsed | parse_time={parse_time:.2f}s")
+            name = form.get("name")
+            strategy = form.get("strategy")
+            provider = form.get("provider", "elevenlabs")
+            provider_voice_id = form.get("provider_voice_id")
+            files = form.getlist("files")
+            logger.info(f"[VOICES] Form fields extracted | name={name} | strategy={strategy} | files_count={len(files) if files else 0}")
         
         logger.info(f"[VOICES] Parsed request | name={name} | strategy={strategy} | provider={provider} | provider_voice_id={provider_voice_id}")
         
