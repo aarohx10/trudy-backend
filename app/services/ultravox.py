@@ -455,6 +455,10 @@ class UltravoxClient:
         # Remove any non-alphanumeric characters except underscores
         normalized_name = "".join(c if c.isalnum() or c == "_" else "" for c in normalized_name)
         
+        # Append provider voice ID to ensure unique names (prevents conflicts)
+        # Format: name_provider_voice_id
+        normalized_name = f"{normalized_name}_{provider_voice_id}"
+        
         logger.info(f"[ULTRAVOX] Importing voice from provider | name={normalized_name} | provider={provider} | provider_voice_id={provider_voice_id}")
         
         # Build provider-specific definition

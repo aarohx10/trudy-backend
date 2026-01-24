@@ -103,5 +103,24 @@ else
     exit 1
 fi
 
+# CORS verification
+echo -e "${GREEN}Verifying CORS configuration...${NC}"
+if [ -f "verify-cors.sh" ]; then
+    chmod +x verify-cors.sh
+    bash verify-cors.sh || echo -e "${YELLOW}⚠️  CORS verification had warnings (non-fatal)${NC}"
+else
+    echo -e "${YELLOW}CORS verification script not found, skipping...${NC}"
+fi
+
+# Log CORS configuration
+echo -e "${GREEN}Checking CORS configuration in logs...${NC}"
+sleep 2
+if journalctl -u trudy-backend -n 20 --no-pager | grep -q "CORS Exact Origins"; then
+    echo -e "${GREEN}✅ CORS configuration loaded${NC}"
+    journalctl -u trudy-backend -n 5 --no-pager | grep "CORS" || true
+else
+    echo -e "${YELLOW}⚠️  CORS configuration not found in logs (may need to check manually)${NC}"
+fi
+
 echo -e "${GREEN}✅ Deployment completed successfully!${NC}"
 

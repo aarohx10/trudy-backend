@@ -167,6 +167,10 @@ cors_middleware_config = {
     "max_age": 86400,  # Cache preflight for 24 hours (reduces OPTIONS requests)
 }
 
+# CRITICAL: Ensure CORS headers are ALWAYS added, even for errors/timeouts
+# This prevents CORS errors when gateway timeouts occur
+cors_middleware_config["allow_origin_regex"] = None  # Will be set below if patterns exist
+
 # Add regex pattern if we have wildcard patterns
 if cors_regex_patterns:
     cors_middleware_config["allow_origin_regex"] = "|".join(cors_regex_patterns)
@@ -175,16 +179,16 @@ if cors_regex_patterns:
 logger.info(f"✅ CORS Exact Origins ({len(settings.CORS_ORIGINS)}): {settings.CORS_ORIGINS[:5]}...")  # Log first 5
 logger.info(f"✅ CORS Wildcard Patterns ({len(settings.CORS_WILDCARD_PATTERNS)}): {settings.CORS_WILDCARD_PATTERNS}")
 
-# Create custom CORS middleware wrapper for detailed logging
+# Create custom CORS middleware wrapper for detailed logging and ALWAYS add CORS headers
 class LoggingCORSMiddleware(StarletteCORSMiddleware):
-    """CORS middleware with detailed logging"""
+    """CORS middleware with detailed logging - ALWAYS adds CORS headers for allowed origins"""
     
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
         
-        # Read origin from headers for logging
+        # Read origin from headers (primary method - from scope)
         origin_requested = None
         try:
             headers_list = scope.get("headers", [])
@@ -194,15 +198,60 @@ class LoggingCORSMiddleware(StarletteCORSMiddleware):
                     if key == b"origin":
                         origin_requested = header[1].decode("utf-8") if isinstance(header[1], bytes) else header[1]
                         break
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[CORS] Error reading origin from scope headers: {e}")
         
-        # Wrap send to capture response headers for debugging
+        # Store origin for later use in send_wrapper
+        stored_origin = origin_requested
+        
+        # Wrap send to ALWAYS add CORS headers for allowed origins (even on errors/timeouts)
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
-                # DEBUG: Log response headers (via logger - safe)
+                # CRITICAL: Always add CORS headers if origin is allowed (even for errors/timeouts)
+                # Use stored origin from scope, or try to extract from message if available
+                origin_to_use = stored_origin
+                
+                # Fallback: Try to get origin from response headers if not found in scope
+                if not origin_to_use:
+                    try:
+                        # Check if there's a way to get the request origin from the message
+                        # This is a fallback in case scope didn't have it
+                        pass  # We'll rely on the parent middleware to handle this
+                    except Exception:
+                        pass
+                
+                # If we have an origin and it's allowed, ALWAYS add CORS headers
+                if origin_to_use and is_origin_allowed(origin_to_use):
+                    headers_list = list(message.get("headers", []))
+                    headers_dict = {}
+                    
+                    # Convert headers to dict for easier manipulation
+                    for header in headers_list:
+                        if isinstance(header, (list, tuple)) and len(header) == 2:
+                            key = header[0].decode() if isinstance(header[0], bytes) else header[0]
+                            val = header[1].decode() if isinstance(header[1], bytes) else header[1]
+                            headers_dict[key.lower()] = val
+                    
+                    # Add CORS headers if not already present
+                    if "access-control-allow-origin" not in headers_dict:
+                        headers_list.append((b"access-control-allow-origin", origin_to_use.encode()))
+                        headers_list.append((b"access-control-allow-credentials", b"true"))
+                        headers_list.append((b"access-control-allow-methods", b"GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD"))
+                        headers_list.append((b"access-control-allow-headers", b"*"))
+                        headers_list.append((b"access-control-max-age", b"86400"))
+                        message["headers"] = headers_list
+                        logger.info(f"[CORS] Added CORS headers to response | origin={origin_to_use} | status={message.get('status')}")
+                    else:
+                        logger.debug(f"[CORS] CORS headers already present | origin={origin_to_use}")
+                elif origin_to_use:
+                    # Origin was provided but not allowed - log for debugging
+                    logger.warning(f"[CORS] Origin not allowed | origin={origin_to_use} | status={message.get('status')}")
+                else:
+                    # No origin header - this is normal for same-origin requests
+                    logger.debug(f"[CORS] No origin header in request | status={message.get('status')}")
+                
+                # DEBUG: Log response headers
                 try:
-                    # Headers are list of (bytes, bytes) tuples
                     headers_list = message.get("headers", [])
                     headers_dict = {}
                     for header in headers_list:
@@ -212,12 +261,13 @@ class LoggingCORSMiddleware(StarletteCORSMiddleware):
                             headers_dict[key.lower()] = val
                     
                     cors_header = headers_dict.get("access-control-allow-origin", "MISSING")
-                    logger.info(f"🔍 [CORS] Response headers | status={message.get('status')} | has_cors_origin={'access-control-allow-origin' in headers_dict} | cors_origin_value={cors_header} | origin_requested={origin_requested}")
+                    logger.debug(f"[CORS] Response headers | status={message.get('status')} | has_cors_origin={'access-control-allow-origin' in headers_dict} | cors_origin_value={cors_header[:50] if cors_header != 'MISSING' else 'MISSING'} | origin_requested={stored_origin}")
                 except Exception as e:
-                    logger.warning(f"🔍 [CORS] Error logging response headers (non-fatal): {e}")
+                    logger.warning(f"[CORS] Error logging response headers (non-fatal): {e}")
             await send(message)
         
         # Call parent middleware - this handles the actual CORS logic
+        # The parent StarletteCORSMiddleware will add CORS headers based on its configuration
         await super().__call__(scope, receive, send_wrapper)
 
 # Middleware order matters! In FastAPI, middleware is applied in REVERSE order of addition.
@@ -400,11 +450,53 @@ async def health_check():
     return health_status
 
 
+# CORS Health Check Endpoint - For diagnosing CORS issues
+@app.get("/api/v1/cors-health")
+async def cors_health(request: Request):
+    """
+    CORS health check endpoint.
+    Returns diagnostic information about CORS configuration and current request.
+    """
+    origin = request.headers.get("origin")
+    origin_allowed = is_origin_allowed(origin) if origin else False
+    
+    response_data = {
+        "cors_working": origin_allowed,
+        "origin_received": origin,
+        "origin_allowed": origin_allowed,
+        "allowed_origins_count": len(settings.CORS_ORIGINS),
+        "wildcard_patterns_count": len(settings.CORS_WILDCARD_PATTERNS),
+        "allowed_origins": settings.CORS_ORIGINS,
+        "wildcard_patterns": settings.CORS_WILDCARD_PATTERNS,
+        "request_headers": dict(request.headers),
+        "message": "CORS health check - if cors_working is true, CORS is configured correctly for this origin",
+    }
+    
+    response = JSONResponse(content=response_data)
+    
+    # Add CORS headers if origin is allowed
+    if origin and origin_allowed:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        response.headers["Access-Control-Max-Age"] = "86400"
+        logger.info(f"[CORS_HEALTH] CORS headers added | origin={origin}")
+    elif origin:
+        logger.warning(f"[CORS_HEALTH] Origin not allowed | origin={origin}")
+    else:
+        logger.debug(f"[CORS_HEALTH] No origin header in request")
+    
+    return response
+
+
 # Explicit OPTIONS handler for all routes (backup for CORS preflight)
 @app.options("/{full_path:path}")
 async def options_handler(request: Request, full_path: str):
     """Handle OPTIONS preflight requests explicitly with CORS headers"""
     origin = request.headers.get("origin")
+    
+    logger.info(f"[CORS] OPTIONS preflight request | path={full_path} | origin={origin}")
     
     response = Response(status_code=200)
     
@@ -415,6 +507,11 @@ async def options_handler(request: Request, full_path: str):
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD"
         response.headers["Access-Control-Allow-Headers"] = "*"
         response.headers["Access-Control-Max-Age"] = "86400"
+        logger.info(f"[CORS] OPTIONS preflight - CORS headers added | origin={origin}")
+    elif origin:
+        logger.warning(f"[CORS] OPTIONS preflight - Origin not allowed | origin={origin}")
+    else:
+        logger.debug(f"[CORS] OPTIONS preflight - No origin header")
     
     return response
 
