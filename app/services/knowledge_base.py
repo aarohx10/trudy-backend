@@ -24,7 +24,7 @@ async def extract_and_store_content(
     file_size: int
 ) -> str:
     """
-    Extract text from file and store in knowledge_documents table.
+    Extract text from file and store in knowledge_bases table.
     
     Args:
         file_path: Path to the uploaded file
@@ -64,7 +64,7 @@ async def extract_and_store_content(
             "status": "ready",
         }
         
-        db.update("knowledge_documents", {"id": kb_id, "client_id": client_id}, update_data)
+        db.update("knowledge_bases", {"id": kb_id, "client_id": client_id}, update_data)
         
         logger.info(f"[KB_SERVICE] Successfully stored {len(extracted_text)} characters for KB {kb_id}")
         return extracted_text
@@ -74,9 +74,8 @@ async def extract_and_store_content(
         # Update status to failed
         try:
             db = DatabaseService()
-            db.update("knowledge_documents", {"id": kb_id, "client_id": client_id}, {
-                "status": "failed",
-                "settings": {"error": str(e)}
+            db.update("knowledge_bases", {"id": kb_id, "client_id": client_id}, {
+                "status": "failed"
             })
         except:
             pass
@@ -85,7 +84,7 @@ async def extract_and_store_content(
 
 async def get_knowledge_base_content(kb_id: str, client_id: Optional[str] = None) -> str:
     """
-    Fetch content from knowledge_documents table.
+    Fetch content from knowledge_bases table.
     
     Args:
         kb_id: Knowledge base UUID
@@ -100,7 +99,7 @@ async def get_knowledge_base_content(kb_id: str, client_id: Optional[str] = None
         if client_id:
             filters["client_id"] = client_id
         
-        kb_record = db.select_one("knowledge_documents", filters)
+        kb_record = db.select_one("knowledge_bases", filters)
         
         if not kb_record:
             raise ValueError(f"Knowledge base not found: {kb_id}")
@@ -118,7 +117,7 @@ async def get_knowledge_base_content(kb_id: str, client_id: Optional[str] = None
 
 async def update_knowledge_base_content(kb_id: str, client_id: str, new_content: str) -> bool:
     """
-    Update content field in knowledge_documents table.
+    Update content field in knowledge_bases table.
     
     Args:
         kb_id: Knowledge base UUID
@@ -135,7 +134,7 @@ async def update_knowledge_base_content(kb_id: str, client_id: str, new_content:
             "updated_at": datetime.utcnow().isoformat(),
         }
         
-        result = db.update("knowledge_documents", {"id": kb_id, "client_id": client_id}, update_data)
+        result = db.update("knowledge_bases", {"id": kb_id, "client_id": client_id}, update_data)
         
         if not result:
             raise ValueError(f"Failed to update knowledge base: {kb_id}")
@@ -228,7 +227,7 @@ async def create_ultravox_tool_for_kb(kb_id: str, kb_name: str, client_id: str) 
         
         # Store tool ID in database
         db = DatabaseService()
-        db.update("knowledge_documents", {"id": kb_id, "client_id": client_id}, {
+        db.update("knowledge_bases", {"id": kb_id, "client_id": client_id}, {
             "ultravox_tool_id": tool_id
         })
         

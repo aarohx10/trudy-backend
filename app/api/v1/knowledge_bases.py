@@ -153,7 +153,7 @@ async def create_knowledge_base(
             "updated_at": now.isoformat(),
         }
         
-        db.insert("knowledge_documents", kb_record)
+        db.insert("knowledge_bases", kb_record)
         
         # Save file temporarily for text extraction
         temp_file_path = None
@@ -180,7 +180,7 @@ async def create_knowledge_base(
                 logger.warning(f"[KB] Failed to create Ultravox tool (non-critical): {tool_error}", exc_info=True)
             
             # Fetch updated record
-            updated_kb = db.select_one("knowledge_documents", {"id": kb_id, "client_id": client_id})
+            updated_kb = db.select_one("knowledge_bases", {"id": kb_id, "client_id": client_id})
             
             return {
                 "data": updated_kb,
@@ -224,7 +224,7 @@ async def list_knowledge_bases(
         client_id = current_user.get("client_id")
         db = DatabaseService()
         
-        kb_list = db.select("knowledge_documents", {"client_id": client_id}, order_by="created_at DESC")
+        kb_list = db.select("knowledge_bases", {"client_id": client_id}, order_by="created_at DESC")
         
         return {
             "data": list(kb_list),
@@ -256,7 +256,7 @@ async def get_knowledge_base(
         client_id = current_user.get("client_id")
         db = DatabaseService()
         
-        kb_record = db.select_one("knowledge_documents", {"id": kb_id, "client_id": client_id})
+        kb_record = db.select_one("knowledge_bases", {"id": kb_id, "client_id": client_id})
         
         if not kb_record:
             raise NotFoundError("knowledge_base", kb_id)
@@ -295,7 +295,7 @@ async def update_knowledge_base(
         db = DatabaseService()
         
         # Verify KB exists and belongs to client
-        kb_record = db.select_one("knowledge_documents", {"id": kb_id, "client_id": client_id})
+        kb_record = db.select_one("knowledge_bases", {"id": kb_id, "client_id": client_id})
         if not kb_record:
             raise NotFoundError("knowledge_base", kb_id)
         
@@ -313,10 +313,10 @@ async def update_knowledge_base(
         # Update other fields (name, description) if provided
         if update_data:
             update_data["updated_at"] = datetime.utcnow().isoformat()
-            db.update("knowledge_documents", {"id": kb_id, "client_id": client_id}, update_data)
+            db.update("knowledge_bases", {"id": kb_id, "client_id": client_id}, update_data)
         
         # Fetch updated record
-        updated_kb = db.select_one("knowledge_documents", {"id": kb_id, "client_id": client_id})
+        updated_kb = db.select_one("knowledge_bases", {"id": kb_id, "client_id": client_id})
         
         return {
             "data": updated_kb,
@@ -351,7 +351,7 @@ async def delete_knowledge_base(
         db = DatabaseService()
         
         # Get KB record to check for Ultravox tool
-        kb_record = db.select_one("knowledge_documents", {"id": kb_id, "client_id": client_id})
+        kb_record = db.select_one("knowledge_bases", {"id": kb_id, "client_id": client_id})
         if not kb_record:
             raise NotFoundError("knowledge_base", kb_id)
         
@@ -365,7 +365,7 @@ async def delete_knowledge_base(
                 logger.warning(f"[KB] Failed to delete Ultravox tool (non-critical): {tool_error}", exc_info=True)
         
         # Delete KB record
-        db.delete("knowledge_documents", {"id": kb_id, "client_id": client_id})
+        db.delete("knowledge_bases", {"id": kb_id, "client_id": client_id})
         
         return {
             "data": {"success": True},
@@ -414,6 +414,7 @@ async def fetch_knowledge_base_content(
             raise HTTPException(status_code=400, detail="kb_id in body must match path parameter")
         
         # Fetch content (no client_id validation - API key is sufficient)
+        # Note: We skip client_id validation for Ultravox tool calls
         content = await get_knowledge_base_content(kb_id, client_id=None)
         
         # Return plain text
