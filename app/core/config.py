@@ -151,9 +151,9 @@ class Settings(BaseSettings):
     ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
     
-    # Knowledge Base Proxy Settings
-    KB_QUERY_SECRET: str = os.getenv("KB_QUERY_SECRET", "")  # Legacy: Secret key for /kb/query endpoint (bypasses Clerk)
+    # Ultravox Tool Settings
     ULTRAVOX_TOOL_SECRET: str = os.getenv("ULTRAVOX_TOOL_SECRET", "")  # Secret for Ultravox tool callbacks (X-Tool-Secret header)
+    KB_FETCH_API_KEY: str = os.getenv("KB_FETCH_API_KEY", "")  # API key for KB fetch endpoint (used by Ultravox tools)
     
     # Webhooks
     ULTRAVOX_WEBHOOK_SECRET: str = os.getenv("ULTRAVOX_WEBHOOK_SECRET", "")

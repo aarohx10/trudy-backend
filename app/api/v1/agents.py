@@ -183,16 +183,6 @@ def build_call_template_from_agent_data(
                 "toolName": tool_dict.get("tool_name", tool_dict.get("tool_id")),
             })
     
-    # Auto-load Knowledge Base tools if agent has linked KBs
-    # Note: This requires knowledge_bases to be passed to this function
-    # The caller should pass it from agent_data.knowledge_bases
-    if hasattr(agent_data, 'knowledge_bases') and agent_data.knowledge_bases:
-        # Import here to avoid circular dependency
-        from app.core.database import DatabaseService
-        # Note: We need db and current_user context - this will be handled by the caller
-        # For now, we'll add a placeholder that the caller can populate
-        pass  # Will be handled by caller with proper DB context
-    
     # Convert maxConversationDuration to maxDuration string format
     max_duration = None
     if agent_data.maxConversationDuration is not None:
@@ -277,9 +267,6 @@ def build_call_template_from_agent_data(
     # Add selectedTools
     if selected_tools:
         call_template["selectedTools"] = selected_tools
-    
-    # Note: Knowledge base is not part of callTemplate in the new Ultravox API
-    # Knowledge bases are handled separately through corpus management
     
     return call_template
 
@@ -745,7 +732,6 @@ def build_call_template_from_agent_dict(
             })
         if selected_tools:
             call_template["selectedTools"] = selected_tools
-    # Note: KB tools are added by the caller after this function returns
     
     return call_template
 
@@ -881,15 +867,6 @@ async def create_agent(
         else:
             logger.info("Ultravox API key not configured. Agent will be created without Ultravox integration.")
     
-    # Validate knowledge bases
-    if agent_data.knowledge_bases:
-        for kb_id in agent_data.knowledge_bases:
-            kb = db.get_knowledge_base(kb_id, current_user["client_id"])
-            if not kb:
-                raise NotFoundError("knowledge_base", kb_id)
-            if kb.get("status") != "ready":
-                raise ValidationError("Knowledge base must be ready", {"kb_id": kb_id, "kb_status": kb.get("status")})
-    
     # Validate tools - check if they are verified
     if agent_data.tools:
         unverified_tools = []
@@ -924,7 +901,6 @@ async def create_agent(
         "system_prompt": agent_data.system_prompt,
         "model": model_value,
         "tools": [tool.dict() for tool in agent_data.tools] if agent_data.tools else [],
-        "knowledge_bases": agent_data.knowledge_bases or [],
         "status": "creating",  # Temporary status - will be updated after Ultravox call
         "success_criteria": agent_data.success_criteria,
         "extraction_schema": agent_data.extraction_schema or {},
@@ -949,13 +925,7 @@ async def create_agent(
         if voice and voice.get("ultravox_voice_id"):
             from app.core.config import settings
             if settings.ULTRAVOX_API_KEY:
-                # Get knowledge base corpus IDs
                 corpus_ids = []
-                if agent_data.knowledge_bases:
-                    for kb_id in agent_data.knowledge_bases:
-                        kb = db.get_knowledge_base(kb_id, current_user["client_id"])
-                        if kb and kb.get("ultravox_corpus_id"):
-                            corpus_ids.append(kb["ultravox_corpus_id"])
                 
                 # Map agentLanguage to BCP47 code
                 language_map = {
@@ -978,37 +948,6 @@ async def create_agent(
                     corpus_ids=corpus_ids,
                     mapped_language=mapped_language,
                 )
-                
-                # Auto-load Knowledge Base tools if agent has linked KBs
-                if agent_data.knowledge_bases:
-                    kb_tools_added = []
-                    kb_names = []
-                    for kb_id in agent_data.knowledge_bases:
-                        kb = db.get_knowledge_base(kb_id, current_user["client_id"])
-                        if kb and kb.get("ultravox_tool_id"):
-                            # Add KB tool to selectedTools
-                            if "selectedTools" not in call_template:
-                                call_template["selectedTools"] = []
-                            call_template["selectedTools"].append({
-                                "toolId": kb["ultravox_tool_id"],
-                                "toolName": f"search_kb_{kb_id}",
-                            })
-                            kb_tools_added.append(kb_id)
-                            kb_names.append(kb.get("name", kb_id))
-                    
-                    # Update systemPrompt to mention KB access
-                    if kb_tools_added:
-                        kb_mention = f"You have access to {len(kb_tools_added)} knowledge base(s): {', '.join(kb_names)}. Use the search_kb_* tool(s) to find relevant information and answer questions accurately."
-                        original_prompt = call_template.get("systemPrompt", "")
-                        if kb_mention not in original_prompt:
-                            call_template["systemPrompt"] = f"{original_prompt}\n\n{kb_mention}".strip()
-                        
-                        # Add authTokens for KB tool authentication
-                        from app.core.config import settings
-                        if settings.ULTRAVOX_TOOL_SECRET:
-                            call_template["authTokens"] = {
-                                "toolSecret": settings.ULTRAVOX_TOOL_SECRET
-                            }
                 
                 # Build ultravox_data with new callTemplate structure
                 ultravox_data = {
@@ -1194,8 +1133,7 @@ async def update_agent(
         'joinTimeout', 'timeExceededMessage', 'turnEndpointDelay',
         'minimumTurnDuration', 'minimumInterruptionDuration', 'frameActivationThreshold',
         'confidenceThreshold', 'fallbackResponse', 'timezone', 'personality',
-        'voicePitch', 'voiceStyle', 'useSpeakerBoost', 'knowledgeBaseSearchEnabled',
-        'knowledgeBaseContextWindow'
+        'voicePitch', 'voiceStyle', 'useSpeakerBoost'
     }
     # Filter out Ultravox-only fields from database update
     db_update_data = {k: v for k, v in update_data.items() if k not in ultravox_only_fields}
@@ -1211,22 +1149,7 @@ async def update_agent(
         try:
             from app.core.config import settings
             if settings.ULTRAVOX_API_KEY:
-                # Get knowledge base corpus IDs if knowledge_bases are being updated
-                update_corpus_ids = None
-                if agent_data.knowledge_bases is not None:
-                    update_corpus_ids = []
-                    for kb_id in agent_data.knowledge_bases:
-                        kb = db.get_knowledge_base(kb_id, current_user["client_id"])
-                        if kb and kb.get("ultravox_corpus_id"):
-                            update_corpus_ids.append(kb["ultravox_corpus_id"])
-                elif agent_data.knowledgeBaseSearchEnabled is not None or agent_data.knowledgeBaseContextWindow is not None:
-                    # Knowledge base settings are being updated, get existing corpus IDs
-                    if agent.get("knowledge_bases"):
-                        update_corpus_ids = []
-                        for kb_id in agent["knowledge_bases"]:
-                            kb = db.get_knowledge_base(kb_id, current_user["client_id"])
-                            if kb and kb.get("ultravox_corpus_id"):
-                                update_corpus_ids.append(kb["ultravox_corpus_id"])
+                update_corpus_ids = []
                 
                 # Map agentLanguage to BCP47 code if provided
                 update_mapped_language = None
@@ -1267,10 +1190,6 @@ async def update_agent(
                 # Add callTemplate if any fields are being updated
                 if call_template:
                     ultravox_update["callTemplate"] = call_template
-                
-                # Note: Knowledge base handling in new API might be different
-                # For now, we'll handle it in callTemplate if needed
-                # Tools are now selectedTools in callTemplate, which is handled by the helper
                 
                 # Only update if there's something to update
                 if ultravox_update:
@@ -1445,13 +1364,7 @@ async def sync_agent_with_ultravox(
         raise ValidationError("Ultravox API key not configured")
     
     try:
-        # Get knowledge base corpus IDs
         corpus_ids = []
-        if agent.get("knowledge_bases"):
-            for kb_id in agent["knowledge_bases"]:
-                kb = db.get_knowledge_base(kb_id, current_user["client_id"])
-                if kb and kb.get("ultravox_corpus_id"):
-                    corpus_ids.append(kb["ultravox_corpus_id"])
         
         # Map language
         mapped_language = voice.get("language", "en-US")
@@ -1463,36 +1376,6 @@ async def sync_agent_with_ultravox(
             corpus_ids=corpus_ids,
             mapped_language=mapped_language,
         )
-        
-        # Auto-load Knowledge Base tools if agent has linked KBs
-        if agent.get("knowledge_bases"):
-            kb_tools_added = []
-            kb_names = []
-            for kb_id in agent["knowledge_bases"]:
-                kb = db.get_knowledge_base(kb_id, current_user["client_id"])
-                if kb and kb.get("ultravox_tool_id"):
-                    # Add KB tool to selectedTools
-                    if "selectedTools" not in call_template:
-                        call_template["selectedTools"] = []
-                    call_template["selectedTools"].append({
-                        "toolId": kb["ultravox_tool_id"],
-                        "toolName": f"search_kb_{kb_id}",
-                    })
-                    kb_tools_added.append(kb_id)
-                    kb_names.append(kb.get("name", kb_id))
-            
-            # Update systemPrompt to mention KB access
-            if kb_tools_added:
-                kb_mention = f"You have access to {len(kb_tools_added)} knowledge base(s): {', '.join(kb_names)}. Use the search_kb_* tool(s) to find relevant information and answer questions accurately."
-                original_prompt = call_template.get("systemPrompt", "")
-                if kb_mention not in original_prompt:
-                    call_template["systemPrompt"] = f"{original_prompt}\n\n{kb_mention}".strip()
-                
-                # Add authTokens for KB tool authentication
-                if settings.ULTRAVOX_TOOL_SECRET:
-                    call_template["authTokens"] = {
-                        "toolSecret": settings.ULTRAVOX_TOOL_SECRET
-                    }
         
         # Build ultravox_data with new callTemplate structure
         ultravox_data = {

@@ -243,28 +243,4 @@ async def emit_campaign_completed(campaign_id: str, client_id: str, stats: Dict[
     )
 
 
-async def emit_knowledge_base_created(kb_id: str, client_id: str, ultravox_corpus_id: str) -> bool:
-    """Emit knowledge_base.created event"""
-    return await publish_event(
-        "knowledge_base.created",
-        {
-            "knowledge_base_id": kb_id,
-            "client_id": client_id,
-            "ultravox_corpus_id": ultravox_corpus_id,
-            "timestamp": datetime.utcnow().isoformat(),
-        },
-    )
-
-
-async def emit_knowledge_base_ingestion_started(kb_id: str, client_id: str, document_ids: list) -> bool:
-    """Emit knowledge_base.ingestion.started event"""
-    return await publish_event(
-        "knowledge_base.ingestion.started",
-        {
-            "knowledge_base_id": kb_id,
-            "client_id": client_id,
-            "document_ids": document_ids,
-            "timestamp": datetime.utcnow().isoformat(),
-        },
-    )
 

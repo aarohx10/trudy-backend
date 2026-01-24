@@ -658,7 +658,7 @@ class UltravoxClient:
         response = await self._request("DELETE", f"/api/agents/{agent_id}", params=params)
         return response
     
-    # Knowledge Bases (Corpora)
+    # Corpora Management
     async def create_corpus(self, corpus_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create corpus in Ultravox"""
         response = await self._request("POST", "/api/corpora", data=corpus_data)
@@ -908,7 +908,6 @@ class UltravoxClient:
     ) -> Dict[str, Any]:
         """
         Create a durable tool in Ultravox with static parameters support.
-        Used for Knowledge Base proxy tools where kb_id is hidden from the LLM.
         Includes httpSecurityOptions to require X-Tool-Secret header authentication.
         """
         tool_data = {
@@ -935,7 +934,7 @@ class UltravoxClient:
                         ]
                     }
                 },
-                "precomputable": True,  # Knowledge base queries are non-mutating
+                "precomputable": True,  # Queries are non-mutating
             },
         }
         

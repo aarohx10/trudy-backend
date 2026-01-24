@@ -212,7 +212,6 @@ class AgentCreate(BaseModel):
     system_prompt: str = Field(..., min_length=10, max_length=5000)
     model: str = Field(default="fixie-ai/ultravox-v0_4-8k")
     tools: Optional[List[AgentTool]] = Field(default=[])
-    knowledge_bases: Optional[List[str]] = Field(default=[])
     # New fields for Ultravox API integration
     agentLanguage: Optional[str] = Field(None, description="Agent language: english, spanish, french")
     firstMessage: Optional[str] = Field(None, description="First message/greeting")
@@ -242,9 +241,6 @@ class AgentCreate(BaseModel):
     voicePitch: Optional[float] = Field(None, ge=-20, le=20, description="Voice pitch in semitones (-20 to 20)")
     voiceStyle: Optional[float] = Field(None, ge=0.0, le=1.0, description="Voice style (0.0-1.0, ElevenLabs only)")
     useSpeakerBoost: Optional[bool] = Field(None, description="Use speaker boost (ElevenLabs only)")
-    # Knowledge base customization fields
-    knowledgeBaseSearchEnabled: Optional[bool] = Field(None, description="Enable search in knowledge base")
-    knowledgeBaseContextWindow: Optional[int] = Field(None, ge=1, le=20, description="Knowledge base context window size (1-20)")
     # Additional ElevenLabs fields
     elevenLabsModel: Optional[str] = Field(None, description="ElevenLabs model (e.g., 'eleven_multilingual_v2')")
     pronunciationDictionaries: Optional[List[Dict[str, str]]] = Field(None, description="Pronunciation dictionaries for ElevenLabs")
@@ -277,7 +273,6 @@ class AgentUpdate(BaseModel):
     system_prompt: Optional[str] = Field(None, min_length=10, max_length=5000)
     voice_id: Optional[str] = None
     tools: Optional[List[AgentTool]] = None
-    knowledge_bases: Optional[List[str]] = None
     # New fields for Ultravox API integration
     agentLanguage: Optional[str] = Field(None, description="Agent language: english, spanish, french")
     firstMessage: Optional[str] = Field(None, description="First message/greeting")
@@ -307,9 +302,6 @@ class AgentUpdate(BaseModel):
     voicePitch: Optional[float] = Field(None, ge=-20, le=20, description="Voice pitch in semitones (-20 to 20)")
     voiceStyle: Optional[float] = Field(None, ge=0.0, le=1.0, description="Voice style (0.0-1.0, ElevenLabs only)")
     useSpeakerBoost: Optional[bool] = Field(None, description="Use speaker boost (ElevenLabs only)")
-    # Knowledge base customization fields
-    knowledgeBaseSearchEnabled: Optional[bool] = Field(None, description="Enable search in knowledge base")
-    knowledgeBaseContextWindow: Optional[int] = Field(None, ge=1, le=20, description="Knowledge base context window size (1-20)")
     # Additional ElevenLabs fields
     elevenLabsModel: Optional[str] = Field(None, description="ElevenLabs model (e.g., 'eleven_multilingual_v2')")
     pronunciationDictionaries: Optional[List[Dict[str, str]]] = Field(None, description="Pronunciation dictionaries for ElevenLabs")
@@ -346,47 +338,9 @@ class AgentResponse(BaseModel):
     system_prompt: str
     model: str
     tools: List[Dict[str, Any]]
-    knowledge_bases: List[str]
     status: str
     created_at: datetime
     updated_at: datetime
-
-
-# ============================================
-# Knowledge Base Models
-# ============================================
-
-class KnowledgeBaseCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    description: Optional[str] = Field(None, max_length=500)
-    language: str = Field(default="en-US")
-
-
-class KnowledgeBaseUpdate(BaseModel):
-    name: Optional[str] = Field(None, min_length=1, max_length=100)
-    description: Optional[str] = Field(None, max_length=500)
-    language: Optional[str] = None
-
-
-class KnowledgeBaseResponse(BaseModel):
-    id: str
-    client_id: str
-    name: str
-    description: Optional[str] = None
-    language: str
-    ultravox_corpus_id: Optional[str] = None
-    status: str
-    settings: Optional[Dict[str, Any]] = None
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-
-
-class KBFilePresignRequest(BaseModel):
-    files: List[PresignFileRequest] = Field(..., min_items=1)
-
-
-class KBFileIngestRequest(BaseModel):
-    document_ids: List[str] = Field(..., min_items=1)
 
 
 # ============================================

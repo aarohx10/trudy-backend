@@ -1,5 +1,5 @@
 """
-Text Extraction Service for Knowledge Base Documents
+Text Extraction Service for Document Processing
 """
 import logging
 from typing import List
@@ -154,7 +154,7 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[st
 async def extract_text_from_file(file_path: str, content_type: str) -> str:
     """
     Extract text from uploaded file based on content type.
-    Supports PDF, DOCX, and plain text files.
+    Supports PDF, DOCX, TXT, and Markdown files.
     """
     file_ext = Path(file_path).suffix.lower()
     
@@ -163,11 +163,13 @@ async def extract_text_from_file(file_path: str, content_type: str) -> str:
             return await _extract_pdf(file_path)
         elif file_ext in ['.docx', '.doc'] or 'wordprocessingml' in content_type or 'msword' in content_type:
             return await _extract_docx(file_path)
-        elif file_ext in ['.txt', '.md'] or 'text/plain' in content_type:
+        elif file_ext == '.txt' or content_type == 'text/plain':
             return await _extract_text(file_path)
+        elif file_ext == '.md' or content_type == 'text/markdown':
+            return await _extract_text(file_path)  # Markdown is plain text
         else:
             logger.warning(f"Unsupported file type: {file_ext} ({content_type})")
-            return ""
+            raise ValueError(f"Unsupported file type: {file_ext}. Supported types: pdf, txt, docx, md")
     except Exception as e:
         logger.error(f"Failed to extract text from {file_path}: {e}", exc_info=True)
         raise

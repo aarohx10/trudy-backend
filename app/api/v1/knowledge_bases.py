@@ -1,107 +1,174 @@
 """
-Knowledge Base Endpoints
+Knowledge Base API Endpoints
+Handles document upload, text extraction, content management, and Ultravox tool integration.
 """
-from fastapi import APIRouter, Header, Depends, Request, HTTPException, UploadFile
-from starlette.requests import Request
-from typing import Optional, Dict, Any
+from fastapi import APIRouter, Depends, File, Form, UploadFile, Header, Request, Body, HTTPException
+from fastapi.responses import Response, PlainTextResponse
+from typing import Optional, List, Dict, Any
 from datetime import datetime
-from pathlib import Path
 import uuid
-import json
 import logging
 import os
-import httpx
 import tempfile
+from pathlib import Path
+from pydantic import BaseModel
 
-from app.core.auth import get_current_user, verify_ultravox_signature
-from app.core.database import DatabaseService, DatabaseAdminService
-from app.core.storage import generate_presigned_url, check_object_exists, get_file_path
-from app.core.exceptions import NotFoundError, ForbiddenError, ValidationError
-from app.core.idempotency import check_idempotency_key, store_idempotency_response
-from app.core.events import emit_knowledge_base_created, emit_knowledge_base_ingestion_started
-from app.services.ultravox import ultravox_client
-from app.services.embeddings import generate_embeddings_batch
-from app.services.text_extraction import extract_text_from_file, extract_text_from_url, chunk_text
-from app.models.schemas import (
-    KnowledgeBaseCreate,
-    KnowledgeBaseUpdate,
-    KnowledgeBaseResponse,
-    KBFilePresignRequest,
-    KBFileIngestRequest,
-    PresignResponse,
-    ResponseMeta,
-)
+from app.core.auth import get_current_user
+from app.core.database import DatabaseService
+from app.core.exceptions import NotFoundError, ValidationError, ForbiddenError
+from app.models.schemas import ResponseMeta
 from app.core.config import settings
+from app.services.knowledge_base import (
+    extract_and_store_content,
+    get_knowledge_base_content,
+    update_knowledge_base_content,
+    create_ultravox_tool_for_kb
+)
+from app.services.ultravox import ultravox_client
 
 logger = logging.getLogger(__name__)
-
 router = APIRouter()
+
+# Maximum file size (50MB)
+MAX_FILE_SIZE = 50 * 1024 * 1024
+
+# Allowed file types
+ALLOWED_FILE_TYPES = {
+    'application/pdf': 'pdf',
+    'text/plain': 'txt',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+    'application/msword': 'docx',
+    'text/markdown': 'md',
+}
+
+ALLOWED_EXTENSIONS = {'.pdf', '.txt', '.docx', '.doc', '.md'}
+
+
+class KnowledgeBaseFetchRequest(BaseModel):
+    """Request model for KB fetch endpoint (called by Ultravox)"""
+    kb_id: str
 
 
 @router.post("")
 async def create_knowledge_base(
-    kb_data: KnowledgeBaseCreate,
     request: Request,
+    name: str = Form(...),
+    description: Optional[str] = Form(None),
+    file: UploadFile = File(...),
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
-    idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
-    """Create knowledge base"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    """
+    Create new knowledge base with document upload.
     
-    # Check idempotency key
-    body_dict = kb_data.dict() if hasattr(kb_data, 'dict') else json.loads(json.dumps(kb_data, default=str))
-    if idempotency_key:
-        cached = await check_idempotency_key(
-            current_user["client_id"],
-            idempotency_key,
-            request,
-            body_dict,
-        )
-        if cached:
-            from fastapi.responses import JSONResponse
-            return JSONResponse(
-                content=cached["response_body"],
-                status_code=cached["status_code"],
-            )
-    
-    db = DatabaseService(current_user["token"])
-    db.set_auth(current_user["token"])
-    
-    # Create knowledge base record
-    kb_id = str(uuid.uuid4())
-    kb_record = {
-        "id": kb_id,
-        "client_id": current_user["client_id"],
-        "name": kb_data.name,
-        "description": kb_data.description,
-        "language": kb_data.language,
-        "status": "creating",
-    }
-    
-    db.insert("knowledge_documents", kb_record)
-    
-    # Call Ultravox API
+    Validates file, extracts text, stores in database, and creates Ultravox tool.
+    """
     try:
-        ultravox_data = {
-            "name": kb_data.name,
-            "language": kb_data.language,
+        client_id = current_user.get("client_id")
+        
+        if current_user["role"] not in ["client_admin", "agency_admin"]:
+            raise ForbiddenError("Insufficient permissions")
+        
+        # Validate file
+        if not file.filename:
+            raise ValidationError("File is required")
+        
+        # Check file extension
+        file_ext = Path(file.filename).suffix.lower()
+        if file_ext not in ALLOWED_EXTENSIONS:
+            raise ValidationError(
+                f"Invalid file type. Allowed types: PDF, TXT, DOCX, MD",
+                {"allowed_types": list(ALLOWED_EXTENSIONS)}
+            )
+        
+        # Determine file type
+        content_type = file.content_type or ""
+        file_type = ALLOWED_FILE_TYPES.get(content_type)
+        if not file_type:
+            # Try to infer from extension
+            ext_map = {'.pdf': 'pdf', '.txt': 'txt', '.docx': 'docx', '.doc': 'docx', '.md': 'md'}
+            file_type = ext_map.get(file_ext, 'txt')
+        
+        # Read file content
+        file_content = await file.read()
+        file_size = len(file_content)
+        
+        # Validate file size
+        if file_size > MAX_FILE_SIZE:
+            raise ValidationError(
+                f"File too large. Maximum size is {MAX_FILE_SIZE // (1024 * 1024)}MB",
+                {"max_size_mb": MAX_FILE_SIZE // (1024 * 1024), "file_size_mb": file_size // (1024 * 1024)}
+            )
+        
+        if file_size == 0:
+            raise ValidationError("File is empty")
+        
+        # Create KB record with status='creating'
+        kb_id = str(uuid.uuid4())
+        now = datetime.utcnow()
+        
+        db = DatabaseService()
+        kb_record = {
+            "id": kb_id,
+            "client_id": client_id,
+            "name": name,
+            "description": description,
+            "language": "en-US",
+            "status": "creating",
+            "file_name": file.filename,
+            "file_type": file_type,
+            "file_size": file_size,
+            "created_at": now.isoformat(),
+            "updated_at": now.isoformat(),
         }
-        ultravox_response = await ultravox_client.create_corpus(ultravox_data)
         
-        # Update with Ultravox ID
-        db.update(
-            "knowledge_documents",
-            {"id": kb_id},
-            {
-                "ultravox_corpus_id": ultravox_response.get("id"),
-                "status": "ready",
-            },
-        )
-        kb_record["ultravox_corpus_id"] = ultravox_response.get("id")
-        kb_record["status"] = "ready"
+        db.insert("knowledge_documents", kb_record)
         
+        # Save file temporarily for text extraction
+        temp_file_path = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as temp_file:
+                temp_file.write(file_content)
+                temp_file_path = temp_file.name
+            
+            # Extract text and store content
+            extracted_text = await extract_and_store_content(
+                file_path=temp_file_path,
+                file_type=file_type,
+                kb_id=kb_id,
+                client_id=client_id,
+                file_name=file.filename,
+                file_size=file_size
+            )
+            
+            # Create Ultravox tool (non-blocking - don't fail if this fails)
+            ultravox_tool_id = None
+            try:
+                ultravox_tool_id = await create_ultravox_tool_for_kb(kb_id, name, client_id)
+            except Exception as tool_error:
+                logger.warning(f"[KB] Failed to create Ultravox tool (non-critical): {tool_error}", exc_info=True)
+            
+            # Fetch updated record
+            updated_kb = db.select_one("knowledge_documents", {"id": kb_id, "client_id": client_id})
+            
+            return {
+                "data": updated_kb,
+                "meta": ResponseMeta(
+                    request_id=str(uuid.uuid4()),
+                    ts=datetime.utcnow(),
+                ),
+            }
+            
+        finally:
+            # Clean up temp file
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.remove(temp_file_path)
+                except:
+                    pass
+        
+    except (ValidationError, ForbiddenError):
+        raise
     except Exception as e:
         import traceback
         import json
@@ -111,341 +178,40 @@ async def create_knowledge_base(
             "error_args": e.args if hasattr(e, 'args') else None,
             "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
             "full_traceback": traceback.format_exc(),
-            "kb_id": kb_id,
-            "kb_data": kb_data if 'kb_data' in locals() else None,
         }
         logger.error(f"[KB] [CREATE] Failed to create knowledge base (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
-        
-        db.update(
-            "knowledge_documents",
-            {"id": kb_id},
-            {"status": "failed"},
-        )
-        raise
-    
-    # Emit event
-    await emit_knowledge_base_created(
-        kb_id=kb_id,
-        client_id=current_user["client_id"],
-        ultravox_corpus_id=kb_record["ultravox_corpus_id"],
-    )
-    
-    response_data = {
-        "data": KnowledgeBaseResponse(**kb_record),
-        "meta": ResponseMeta(
-            request_id=str(uuid.uuid4()),
-            ts=datetime.utcnow(),
-        ),
-    }
-    
-    # Store idempotency response
-    if idempotency_key:
-        await store_idempotency_response(
-            current_user["client_id"],
-            idempotency_key,
-            request,
-            body_dict,
-            response_data,
-            201,
-        )
-    
-    return response_data
-
-
-@router.post("/{kb_id}/files/presign")
-async def presign_kb_files(
-    kb_id: str,
-    request_data: KBFilePresignRequest,
-    current_user: dict = Depends(get_current_user),
-    x_client_id: Optional[str] = Header(None),
-):
-    """Get presigned URLs for knowledge base file uploads"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
-    
-    db = DatabaseService(current_user["token"])
-    db.set_auth(current_user["token"])
-    
-    kb = db.get_knowledge_base(kb_id, current_user["client_id"])
-    if not kb:
-        raise NotFoundError("knowledge_base", kb_id)
-    
-    documents = []
-    for i, file in enumerate(request_data.files):
-        doc_id = str(uuid.uuid4())
-        storage_key = f"uploads/client_{current_user['client_id']}/kb/{kb_id}/file_{i}.{file.filename.split('.')[-1]}"
-        
-        url = generate_presigned_url(
-            bucket=settings.STORAGE_BUCKET_UPLOADS,
-            key=storage_key,
-            operation="put_object",
-            expires_in=3600,
-            content_type=file.content_type,
-        )
-        
-        # Create document record
-        db.insert(
-            "knowledge_base_documents",
-            {
-                "id": doc_id,
-                "client_id": current_user["client_id"],
-                "knowledge_base_id": kb_id,
-                "s3_key": storage_key,  # Database column name remains s3_key for backward compatibility
-                "file_type": file.content_type,
-                "file_size": file.file_size,
-                "status": "pending_upload",
-            },
-        )
-        
-        documents.append({
-            "doc_id": doc_id,
-            "url": url,
-            "headers": {"Content-Type": file.content_type},
-        })
-    
-    return {
-        "data": {"documents": documents},
-        "meta": ResponseMeta(
-            request_id=str(uuid.uuid4()),
-            ts=datetime.utcnow(),
-        ),
-    }
-
-
-@router.post("/{kb_id}/files/ingest")
-async def ingest_kb_files(
-    kb_id: str,
-    request_data: KBFileIngestRequest,
-    current_user: dict = Depends(get_current_user),
-    x_client_id: Optional[str] = Header(None),
-):
-    """
-    Ingest uploaded files into knowledge base using Proxy Knowledge Base system.
-    Extracts text, chunks it, generates embeddings, and stores in Supabase pgvector.
-    """
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
-    
-    db = DatabaseService(current_user["token"])
-    db.set_auth(current_user["token"])
-    admin_db = DatabaseAdminService()  # For batch inserts
-    
-    kb = db.get_knowledge_base(kb_id, current_user["client_id"])
-    if not kb:
-        raise NotFoundError("knowledge_base", kb_id)
-    
-    if kb.get("status") != "ready":
-        raise ValidationError("Knowledge base must be ready", {"kb_status": kb.get("status")})
-    
-    # Check if tool already exists, if not create it
-    tool_name = f"search_kb_{kb_id}"
-    ultravox_tool_id = kb.get("ultravox_tool_id")
-    
-    if not ultravox_tool_id:
-        # Create durable tool in Ultravox
-        try:
-            backend_url = settings.FILE_SERVER_URL or "https://api.truedy.ai"
-            tool_endpoint = f"{backend_url}/api/v1/kb/query"
-            
-            tool_data = await ultravox_client.create_durable_tool(
-                name=tool_name,
-                description=f"Search the knowledge base '{kb.get('name', kb_id)}' for relevant information to answer questions accurately.",
-                endpoint=tool_endpoint,
-                http_method="POST",
-                dynamic_parameters=[
-                    {
-                        "name": "query",
-                        "location": "PARAMETER_LOCATION_BODY",
-                        "schema": {
-                            "type": "string",
-                            "description": "The search query to find relevant information in the knowledge base",
-                        },
-                        "required": True,
-                    }
-                ],
-                static_parameters=[
-                    {
-                        "name": "kb_id",
-                        "location": "PARAMETER_LOCATION_BODY",
-                        "value": kb_id,
-                    }
-                ],
-            )
-            
-            ultravox_tool_id = tool_data.get("toolId")
-            if ultravox_tool_id:
-                db.update(
-                    "knowledge_documents",
-                    {"id": kb_id},
-                    {"ultravox_tool_id": ultravox_tool_id},
-                )
-                kb["ultravox_tool_id"] = ultravox_tool_id
-        except Exception as e:
-            import traceback
-            import json
-            error_details_raw = {
-                "error_type": type(e).__name__,
-                "error_message": str(e),
-                "error_args": e.args if hasattr(e, 'args') else None,
-                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
-                "full_traceback": traceback.format_exc(),
-                "kb_id": kb_id,
-                "kb": kb if 'kb' in locals() else None,
-            }
-            logger.error(f"[KB] [CREATE] Failed to create Ultravox tool (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
-            raise ValidationError(f"Failed to register knowledge base tool: {str(e)}")
-    
-    results = []
-    for doc_id in request_data.document_ids:
-        doc = db.select_one("knowledge_base_documents", {"id": doc_id, "knowledge_base_id": kb_id})
-        if not doc:
-            continue
-        
-        # Check storage file exists
-        storage_key = doc.get("s3_key")  # Database column name remains s3_key for backward compatibility
-        if not check_object_exists(settings.STORAGE_BUCKET_UPLOADS, storage_key):
-            db.update(
-                "knowledge_base_documents",
-                {"id": doc_id},
-                {"status": "failed", "error_message": "File not found in storage"},
-            )
-            results.append({
-                "doc_id": doc_id,
-                "status": "failed",
-                "error_message": "File not found in storage",
-            })
-            continue
-        
-        # Update status
-        db.update(
-            "knowledge_base_documents",
-            {"id": doc_id},
-            {"status": "processing"},
-        )
-        
-        try:
-            # Get file path
-            file_path = get_file_path("uploads", storage_key)
-            
-            # Extract text from file
-            extracted_text = await extract_text_from_file(file_path, doc.get("file_type", ""))
-            
-            if not extracted_text or not extracted_text.strip():
-                raise ValidationError(f"Could not extract text from file {doc_id}")
-            
-            # Chunk text (1000 chars with 200 overlap)
-            chunks = chunk_text(extracted_text, chunk_size=1000, overlap=200)
-            
-            if not chunks:
-                raise ValidationError(f"No chunks generated from file {doc_id}")
-            
-            # Generate embeddings for all chunks
-            logger.info(f"Generating embeddings for {len(chunks)} chunks from document {doc_id}")
-            embeddings = await generate_embeddings_batch(chunks, batch_size=100)
-            
-            if len(embeddings) != len(chunks):
-                raise ValidationError(f"Embedding count mismatch: {len(embeddings)} != {len(chunks)}")
-            
-            # Prepare chunks for batch insert
-            chunk_records = []
-            for i, (chunk_content, embedding) in enumerate(zip(chunks, embeddings)):
-                chunk_records.append({
-                    "kb_id": kb_id,
-                    "content": chunk_content,
-                    "embedding": embedding,
-                })
-            
-            # Batch insert chunks
-            logger.info(f"Inserting {len(chunk_records)} chunks into database")
-            admin_db.insert_chunks_batch(chunk_records)
-            
-            # Update document status
-            db.update(
-                "knowledge_base_documents",
-                {"id": doc_id},
-                {
-                    "status": "indexed",
-                    "chunk_count": len(chunks),
-                },
-            )
-            
-            results.append({
-                "doc_id": doc_id,
-                "status": "indexed",
-                "chunk_count": len(chunks),
-            })
-            
-        except Exception as e:
-            import traceback
-            import json
-            error_details_raw = {
-                "error_type": type(e).__name__,
-                "error_message": str(e),
-                "error_args": e.args if hasattr(e, 'args') else None,
-                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
-                "full_traceback": traceback.format_exc(),
-                "doc_id": doc_id,
-                "kb_id": kb_id if 'kb_id' in locals() else None,
-            }
-            logger.error(f"[KB] [INGEST] Failed to ingest document (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
-            
-            db.update(
-                "knowledge_base_documents",
-                {"id": doc_id},
-                {"status": "failed", "error_message": str(e)},
-            )
-            results.append({
-                "doc_id": doc_id,
-                "status": "failed",
-                "error_message": str(e),
-            })
-    
-    return {
-        "data": {"documents": results},
-        "meta": ResponseMeta(
-            request_id=str(uuid.uuid4()),
-            ts=datetime.utcnow(),
-        ),
-    }
+        raise ValidationError(f"Failed to create knowledge base: {str(e)}")
 
 
 @router.get("")
 async def list_knowledge_bases(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
-    status: Optional[str] = None,
-    limit: int = 50,
-    offset: int = 0,
 ):
-    """List knowledge bases with filtering and pagination"""
-    db = DatabaseService(current_user["token"])
-    db.set_auth(current_user["token"])
-    
-    # Build filters
-    filters = {"client_id": current_user["client_id"]}
-    if status:
-        filters["status"] = status
-    
-    # Get knowledge bases with pagination
-    all_kb = db.select("knowledge_documents", filters, order_by="created_at")
-    
-    # Apply pagination manually
-    total = len(all_kb)
-    paginated_kb = all_kb[offset:offset + limit]
-    
-    return {
-        "data": [KnowledgeBaseResponse(**kb) for kb in paginated_kb],
-        "meta": ResponseMeta(
-            request_id=str(uuid.uuid4()),
-            ts=datetime.utcnow(),
-        ),
-        "pagination": {
-            "total": total,
-            "limit": limit,
-            "offset": offset,
-            "has_more": offset + limit < total,
-        },
-    }
+    """List all knowledge bases for current client"""
+    try:
+        client_id = current_user.get("client_id")
+        db = DatabaseService()
+        
+        kb_list = db.select("knowledge_documents", {"client_id": client_id}, order_by="created_at DESC")
+        
+        return {
+            "data": list(kb_list),
+            "meta": ResponseMeta(
+                request_id=str(uuid.uuid4()),
+                ts=datetime.utcnow(),
+            ),
+        }
+    except Exception as e:
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "full_traceback": traceback.format_exc(),
+        }
+        logger.error(f"[KB] [LIST] Failed to list knowledge bases (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+        raise ValidationError(f"Failed to list knowledge bases: {str(e)}")
 
 
 @router.get("/{kb_id}")
@@ -454,269 +220,81 @@ async def get_knowledge_base(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """Get knowledge base with documents list"""
-    db = DatabaseService(current_user["token"])
-    db.set_auth(current_user["token"])
-    
-    kb = db.get_knowledge_base(kb_id, current_user["client_id"])
-    if not kb:
-        raise NotFoundError("knowledge_base", kb_id)
-    
-    # Get documents list
-    documents = db.select("knowledge_base_documents", {"knowledge_base_id": kb_id}, order_by="created_at")
-    document_counts = {
-        "total": len(documents),
-        "indexed": sum(1 for d in documents if d.get("status") == "indexed"),
-        "processing": sum(1 for d in documents if d.get("status") == "processing"),
-        "failed": sum(1 for d in documents if d.get("status") == "failed"),
-    }
-    
-    kb["document_counts"] = document_counts
-    kb["documents"] = [
-        {
-            "id": doc.get("id"),
-            "name": doc.get("s3_key") or "Unknown",
-            "type": doc.get("file_type") or "unknown",
-            "size": doc.get("file_size") or 0,
-            "status": doc.get("status") or "unknown",
-            "chunk_count": doc.get("chunk_count") or 0,
-            "created_at": doc.get("created_at"),
+    """Get single knowledge base with content"""
+    try:
+        client_id = current_user.get("client_id")
+        db = DatabaseService()
+        
+        kb_record = db.select_one("knowledge_documents", {"id": kb_id, "client_id": client_id})
+        
+        if not kb_record:
+            raise NotFoundError("knowledge_base", kb_id)
+        
+        return {
+            "data": kb_record,
+            "meta": ResponseMeta(
+                request_id=str(uuid.uuid4()),
+                ts=datetime.utcnow(),
+            ),
         }
-        for doc in documents
-    ]
-    
-    return {
-        "data": KnowledgeBaseResponse(**kb),
-        "meta": ResponseMeta(
-            request_id=str(uuid.uuid4()),
-            ts=datetime.utcnow(),
-        ),
-    }
+    except NotFoundError:
+        raise
+    except Exception as e:
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "full_traceback": traceback.format_exc(),
+        }
+        logger.error(f"[KB] [GET] Failed to get knowledge base (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+        raise ValidationError(f"Failed to get knowledge base: {str(e)}")
 
 
-@router.patch("/{kb_id}")
+@router.put("/{kb_id}")
 async def update_knowledge_base(
     kb_id: str,
-    kb_data: KnowledgeBaseUpdate,
+    request_data: Dict[str, Any] = Body(...),
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """Update knowledge base"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
-    
-    db = DatabaseService(current_user["token"])
-    db.set_auth(current_user["token"])
-    
-    # Check if knowledge base exists
-    kb = db.get_knowledge_base(kb_id, current_user["client_id"])
-    if not kb:
-        raise NotFoundError("knowledge_base", kb_id)
-    
-    # Only allow updates for knowledge bases that are not actively processing
-    if kb.get("status") in ["processing", "indexing"]:
-        raise ValidationError("Knowledge base cannot be updated while processing or indexing")
-    
-    # Prepare update data (only non-None fields)
-    update_data = kb_data.dict(exclude_unset=True)
-    if not update_data:
-        # No updates provided
-        return {
-            "data": KnowledgeBaseResponse(**kb),
-            "meta": ResponseMeta(
-                request_id=str(uuid.uuid4()),
-                ts=datetime.utcnow(),
-            ),
-        }
-    
-    # Update database
-    update_data["updated_at"] = datetime.utcnow().isoformat()
-    db.update("knowledge_documents", {"id": kb_id}, update_data)
-    
-    # Get updated knowledge base
-    updated_kb = db.get_knowledge_base(kb_id, current_user["client_id"])
-    
-    return {
-        "data": KnowledgeBaseResponse(**updated_kb),
-        "meta": ResponseMeta(
-            request_id=str(uuid.uuid4()),
-            ts=datetime.utcnow(),
-        ),
-    }
-
-
-@router.post("/{kb_id}/add-content")
-async def add_content_to_knowledge_base(
-    kb_id: str,
-    request: Request,
-    current_user: dict = Depends(get_current_user),
-    x_client_id: Optional[str] = Header(None),
-):
-    """
-    Muscular RAG endpoint: Direct-to-Vector content addition.
-    
-    Accepts either:
-    - url: str (optional) - Web URL to fetch and index
-    - file: UploadFile (optional) - File to upload and index
-    
-    Processing flow:
-    1. Extract text (from URL or file)
-    2. Chunk text
-    3. Generate embeddings
-    4. Insert chunks into database
-    5. Return status immediately
-    
-    FormData (multipart/form-data):
-    - url: str (optional)
-    - file: UploadFile (optional)
-    """
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
-    
-    db = DatabaseService(current_user["token"])
-    db.set_auth(current_user["token"])
-    admin_db = DatabaseAdminService()  # For batch inserts
-    
-    # Verify knowledge base exists
-    kb = db.get_knowledge_base(kb_id, current_user["client_id"])
-    if not kb:
-        raise NotFoundError("knowledge_base", kb_id)
-    
-    if kb.get("status") != "ready":
-        raise ValidationError("Knowledge base must be ready", {"kb_status": kb.get("status")})
-    
-    # Parse form data
-    form = await request.form()
-    url = form.get("url")
-    file_item = form.get("file")
-    
-    if not url and not file_item:
-        raise ValidationError("Either 'url' or 'file' must be provided")
-    
-    if url and file_item:
-        raise ValidationError("Provide either 'url' or 'file', not both")
-    
-    # Create document record
-    doc_id = str(uuid.uuid4())
-    now = datetime.utcnow()
-    
+    """Update knowledge base (name, description, or content)"""
     try:
-        extracted_text = ""
-        source_name = ""
-        file_type = ""
-        file_size = 0
+        client_id = current_user.get("client_id")
+        db = DatabaseService()
         
-        # Extract text based on input type
-        if url:
-            # Action: Fetch URL and extract text
-            logger.info(f"[KB] [ADD-CONTENT] Fetching URL | kb_id={kb_id} | url={url}")
-            extracted_text = await extract_text_from_url(url)
-            source_name = url
-            file_type = "url"
-            file_size = len(extracted_text.encode('utf-8'))
-        else:
-            # Action: Extract text from file
-            if not isinstance(file_item, UploadFile):
-                raise ValidationError("Invalid file upload")
-            
-            filename = file_item.filename or "unknown"
-            file_type = file_item.content_type or ""
-            file_content = await file_item.read()
-            file_size = len(file_content)
-            
-            # Validate file size (20MB max for direct processing)
-            if file_size > 20 * 1024 * 1024:
-                raise ValidationError("File exceeds 20MB limit. Use presign/ingest flow for large files.")
-            
-            # Save to temporary file for extraction
-            with tempfile.NamedTemporaryFile(delete=False, suffix=Path(filename).suffix) as tmp_file:
-                tmp_file.write(file_content)
-                tmp_path = tmp_file.name
-            
-            try:
-                logger.info(f"[KB] [ADD-CONTENT] Extracting text from file | kb_id={kb_id} | filename={filename}")
-                extracted_text = await extract_text_from_file(tmp_path, file_type)
-                source_name = filename
-            finally:
-                # Clean up temp file
-                try:
-                    os.unlink(tmp_path)
-                except Exception:
-                    pass
+        # Verify KB exists and belongs to client
+        kb_record = db.select_one("knowledge_documents", {"id": kb_id, "client_id": client_id})
+        if not kb_record:
+            raise NotFoundError("knowledge_base", kb_id)
         
-        if not extracted_text or not extracted_text.strip():
-            raise ValidationError("Could not extract text from source")
+        # Build update data
+        update_data = {}
+        if "name" in request_data:
+            update_data["name"] = request_data["name"]
+        if "description" in request_data:
+            update_data["description"] = request_data["description"]
         
-        # Create document record
-        doc_record = {
-            "id": doc_id,
-            "client_id": current_user["client_id"],
-            "knowledge_base_id": kb_id,
-            "s3_key": source_name,  # Store source name/URL
-            "file_type": file_type,
-            "file_size": file_size,
-            "status": "processing",
-            "created_at": now.isoformat(),
-            "updated_at": now.isoformat(),
-        }
-        db.insert("knowledge_base_documents", doc_record)
-        logger.info(f"[KB] [ADD-CONTENT] Document record created | doc_id={doc_id} | kb_id={kb_id}")
+        # Update content separately using service function (handles its own DB update)
+        if "content" in request_data:
+            await update_knowledge_base_content(kb_id, client_id, request_data["content"])
         
-        # Chunk text (1000 chars with 200 overlap)
-        logger.info(f"[KB] [ADD-CONTENT] Chunking text | doc_id={doc_id} | text_length={len(extracted_text)}")
-        chunks = chunk_text(extracted_text, chunk_size=1000, overlap=200)
+        # Update other fields (name, description) if provided
+        if update_data:
+            update_data["updated_at"] = datetime.utcnow().isoformat()
+            db.update("knowledge_documents", {"id": kb_id, "client_id": client_id}, update_data)
         
-        if not chunks:
-            raise ValidationError("No chunks generated from extracted text")
-        
-        # Generate embeddings for all chunks
-        logger.info(f"[KB] [ADD-CONTENT] Generating embeddings | doc_id={doc_id} | chunks={len(chunks)}")
-        embeddings = await generate_embeddings_batch(chunks, batch_size=100)
-        
-        if len(embeddings) != len(chunks):
-            raise ValidationError(f"Embedding count mismatch: {len(embeddings)} != {len(chunks)}")
-        
-        # Prepare chunks for batch insert
-        chunk_records = []
-        for chunk_content, embedding in zip(chunks, embeddings):
-            chunk_records.append({
-                "kb_id": kb_id,
-                "content": chunk_content,
-                "embedding": embedding,
-            })
-        
-        # Batch insert chunks
-        logger.info(f"[KB] [ADD-CONTENT] Inserting chunks | doc_id={doc_id} | chunks={len(chunk_records)}")
-        admin_db.insert_chunks_batch(chunk_records)
-        
-        # Update document status
-        db.update(
-            "knowledge_base_documents",
-            {"id": doc_id},
-            {
-                "status": "indexed",
-                "chunk_count": len(chunks),
-                "updated_at": datetime.utcnow().isoformat(),
-            },
-        )
-        
-        logger.info(f"[KB] [ADD-CONTENT] Content indexed successfully | doc_id={doc_id} | kb_id={kb_id} | chunks={len(chunks)}")
+        # Fetch updated record
+        updated_kb = db.select_one("knowledge_documents", {"id": kb_id, "client_id": client_id})
         
         return {
-            "data": {
-                "doc_id": doc_id,
-                "status": "indexed",
-                "chunk_count": len(chunks),
-                "source": source_name,
-            },
+            "data": updated_kb,
             "meta": ResponseMeta(
                 request_id=str(uuid.uuid4()),
                 ts=datetime.utcnow(),
             ),
         }
-        
-    except (ValidationError, NotFoundError, ForbiddenError):
-        # Re-raise known errors
+    except NotFoundError:
         raise
     except Exception as e:
         import traceback
@@ -724,112 +302,10 @@ async def add_content_to_knowledge_base(
         error_details_raw = {
             "error_type": type(e).__name__,
             "error_message": str(e),
-            "error_args": e.args if hasattr(e, 'args') else None,
-            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
-            "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
-            "error_module": getattr(e, '__module__', None),
-            "error_class": type(e).__name__,
             "full_traceback": traceback.format_exc(),
-            "doc_id": doc_id,
-            "kb_id": kb_id,
-            "content_type": content_type if 'content_type' in locals() else None,
         }
-        logger.error(f"[KB] [ADD-CONTENT] Failed to add content (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
-        
-        # Update document status to failed
-        try:
-            db.update(
-                "knowledge_base_documents",
-                {"id": doc_id},
-                {
-                    "status": "failed",
-                    "error_message": str(e),
-                    "updated_at": datetime.utcnow().isoformat(),
-                },
-            )
-        except Exception as update_error:
-            import traceback
-            import json
-            update_error_details = {
-                "error_type": type(update_error).__name__,
-                "error_message": str(update_error),
-                "full_traceback": traceback.format_exc(),
-                "doc_id": doc_id,
-            }
-            logger.error(f"[KB] [ADD-CONTENT] Failed to update document status (RAW ERROR): {json.dumps(update_error_details, indent=2, default=str)}", exc_info=True)
-        raise ValidationError(f"Failed to add content to knowledge base: {str(e)}")
-
-
-@router.post("/kb/query")
-async def query_knowledge_base(
-    request: Request,
-    authenticated: bool = Depends(verify_ultravox_signature),
-):
-    """
-    Public endpoint for Ultravox to query knowledge bases.
-    Bypasses Clerk auth but requires X-Tool-Secret header for security.
-    """
-    
-    try:
-        body = await request.json()
-        kb_id = body.get("kb_id")
-        query_text = body.get("query")
-        
-        if not kb_id or not query_text:
-            raise HTTPException(status_code=400, detail="Missing required fields: kb_id and query")
-        
-        # Use admin DB to bypass RLS
-        admin_db = DatabaseAdminService()
-        
-        # Generate embedding for query
-        from app.services.embeddings import generate_embedding
-        query_embedding = await generate_embedding(query_text)
-        
-        # Search for matching documents
-        matches = admin_db.match_kb_documents(
-            query_embedding=query_embedding,
-            kb_id=kb_id,
-            match_threshold=0.7,
-            match_count=3,
-        )
-        
-        # Combine top 3 snippets into a single string
-        if not matches:
-            return {
-                "data": {
-                    "result": "No relevant information found in the knowledge base.",
-                },
-            }
-        
-        # Combine chunks with their content
-        combined_result = "\n\n".join([
-            f"[Relevance: {match.get('similarity', 0):.2%}]\n{match.get('content', '')}"
-            for match in matches
-        ])
-        
-        return {
-            "data": {
-                "result": combined_result,
-                "matches_count": len(matches),
-            },
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        import traceback
-        import json
-        error_details_raw = {
-            "error_type": type(e).__name__,
-            "error_message": str(e),
-            "error_args": e.args if hasattr(e, 'args') else None,
-            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
-            "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
-            "full_traceback": traceback.format_exc(),
-            "kb_id": kb_id,
-            "query": query if 'query' in locals() else None,
-        }
-        logger.error(f"[KB] [QUERY] Failed to query knowledge base (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.error(f"[KB] [UPDATE] Failed to update knowledge base (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+        raise ValidationError(f"Failed to update knowledge base: {str(e)}")
 
 
 @router.delete("/{kb_id}")
@@ -838,38 +314,89 @@ async def delete_knowledge_base(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """Delete knowledge base"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
-    
-    db = DatabaseService(current_user["token"])
-    db.set_auth(current_user["token"])
-    
-    # Check if knowledge base exists
-    kb = db.get_knowledge_base(kb_id, current_user["client_id"])
-    if not kb:
-        raise NotFoundError("knowledge_base", kb_id)
-    
-    # Only allow deletion for knowledge bases that are not actively processing
-    if kb.get("status") in ["processing", "indexing"]:
-        raise ValidationError("Knowledge base cannot be deleted while processing or indexing")
-    
-    # Delete knowledge base documents first
+    """Delete knowledge base and associated Ultravox tool"""
     try:
-        documents = db.select("knowledge_base_documents", {"knowledge_base_id": kb_id})
-        for doc in documents:
-            db.delete("knowledge_base_documents", {"id": doc["id"]})
-    except Exception:
-        pass  # Continue even if documents deletion fails
-    
-    # Delete knowledge base
-    db.delete("knowledge_documents", {"id": kb_id})
-    
-    return {
-        "data": {"id": kb_id, "deleted": True},
-        "meta": ResponseMeta(
-            request_id=str(uuid.uuid4()),
-            ts=datetime.utcnow(),
-        ),
-    }
+        client_id = current_user.get("client_id")
+        db = DatabaseService()
+        
+        # Get KB record to check for Ultravox tool
+        kb_record = db.select_one("knowledge_documents", {"id": kb_id, "client_id": client_id})
+        if not kb_record:
+            raise NotFoundError("knowledge_base", kb_id)
+        
+        # Delete Ultravox tool if exists
+        ultravox_tool_id = kb_record.get("ultravox_tool_id")
+        if ultravox_tool_id:
+            try:
+                await ultravox_client.delete_tool(ultravox_tool_id)
+                logger.info(f"[KB] Deleted Ultravox tool {ultravox_tool_id} for KB {kb_id}")
+            except Exception as tool_error:
+                logger.warning(f"[KB] Failed to delete Ultravox tool (non-critical): {tool_error}", exc_info=True)
+        
+        # Delete KB record
+        db.delete("knowledge_documents", {"id": kb_id, "client_id": client_id})
+        
+        return {
+            "data": {"success": True},
+            "meta": ResponseMeta(
+                request_id=str(uuid.uuid4()),
+                ts=datetime.utcnow(),
+            ),
+        }
+    except NotFoundError:
+        raise
+    except Exception as e:
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "full_traceback": traceback.format_exc(),
+        }
+        logger.error(f"[KB] [DELETE] Failed to delete knowledge base (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+        raise ValidationError(f"Failed to delete knowledge base: {str(e)}")
 
+
+@router.post("/{kb_id}/fetch")
+async def fetch_knowledge_base_content(
+    kb_id: str,
+    request_data: KnowledgeBaseFetchRequest = Body(...),
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+):
+    """
+    Fetch KB content for Ultravox tool calls (internal endpoint).
+    
+    This endpoint is called by Ultravox during calls. Uses API key authentication.
+    """
+    try:
+        # Validate API key
+        if not settings.KB_FETCH_API_KEY:
+            logger.error("[KB] [FETCH] KB_FETCH_API_KEY not configured")
+            raise HTTPException(status_code=500, detail="KB fetch endpoint not configured")
+        
+        if not x_api_key or x_api_key != settings.KB_FETCH_API_KEY:
+            logger.warning(f"[KB] [FETCH] Invalid API key provided")
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        
+        # Validate kb_id matches path parameter
+        if request_data.kb_id != kb_id:
+            raise HTTPException(status_code=400, detail="kb_id in body must match path parameter")
+        
+        # Fetch content (no client_id validation - API key is sufficient)
+        content = await get_knowledge_base_content(kb_id, client_id=None)
+        
+        # Return plain text
+        return PlainTextResponse(content, media_type="text/plain")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "full_traceback": traceback.format_exc(),
+        }
+        logger.error(f"[KB] [FETCH] Failed to fetch KB content (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to fetch knowledge base content: {str(e)}")
