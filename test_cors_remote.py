@@ -20,9 +20,9 @@ def test_cors():
         print(f"Access-Control-Allow-Origin: {cors_header}")
         
         if cors_header == TEST_ORIGIN or cors_header == "*":
-            print("✅ GET CORS Passed")
+            print("[PASS] GET CORS Passed")
         else:
-            print("❌ GET CORS Failed")
+            print("[FAIL] GET CORS Failed")
     except Exception as e:
         print(f"GET Request Failed: {e}")
         
@@ -42,9 +42,9 @@ def test_cors():
         print(f"Access-Control-Allow-Origin: {cors_header}")
         
         if cors_header == TEST_ORIGIN or cors_header == "*":
-            print("✅ OPTIONS CORS Passed")
+            print("[PASS] OPTIONS CORS Passed")
         else:
-            print("❌ OPTIONS CORS Failed")
+            print("[FAIL] OPTIONS CORS Failed")
 
     except Exception as e:
         print(f"OPTIONS Request Failed: {e}")

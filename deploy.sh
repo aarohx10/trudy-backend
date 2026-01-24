@@ -78,6 +78,32 @@ if [ ${#MISSING_VARS[@]} -ne 0 ]; then
     exit 1
 fi
 
+# Nginx Configuration
+echo -e "${GREEN}Updating Nginx configuration...${NC}"
+if [ -f "nginx-trudy-backend.conf" ]; then
+    echo -e "${GREEN}Copying Nginx config...${NC}"
+    sudo cp nginx-trudy-backend.conf /etc/nginx/sites-available/trudy-backend
+    
+    # Ensure symlink exists
+    if [ ! -L "/etc/nginx/sites-enabled/trudy-backend" ]; then
+        echo -e "${GREEN}Creating symlink...${NC}"
+        sudo ln -s /etc/nginx/sites-available/trudy-backend /etc/nginx/sites-enabled/
+    fi
+    
+    # Test and reload Nginx
+    echo -e "${GREEN}Testing Nginx config...${NC}"
+    if sudo nginx -t; then
+        echo -e "${GREEN}Reloading Nginx...${NC}"
+        sudo systemctl reload nginx
+        echo -e "${GREEN}Nginx updated and reloaded${NC}"
+    else
+        echo -e "${RED}ERROR: Nginx config test failed!${NC}"
+        # Don't exit, try to continue deployment of backend code at least
+    fi
+else
+    echo -e "${YELLOW}nginx-trudy-backend.conf not found, skipping Nginx update...${NC}"
+fi
+
 # Restart service (adjust based on your service manager)
 echo -e "${GREEN}Restarting service...${NC}"
 if systemctl is-active --quiet trudy-backend; then
