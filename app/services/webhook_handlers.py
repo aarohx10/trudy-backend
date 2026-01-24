@@ -110,29 +110,6 @@ async def handle_call_ended(event_data: Dict[str, Any], db: DatabaseService) -> 
     cost = data.get("cost_usd") or event_data.get("cost_usd", 0)
     end_reason = data.get("end_reason") or event_data.get("endReason", "unknown")
     
-    # Debit credits (only for non-test calls)
-    if not call.get("context", {}).get("is_test"):
-        credits = max(1, (int(duration) + 59) // 60)  # Round up to minutes
-        db.insert(
-            "credit_transactions",
-            {
-                "client_id": client_id,
-                "type": "spent",
-                "amount": credits,
-                "reference_type": "call",
-                "reference_id": call["id"],
-                "description": f"Call duration: {credits} minutes",
-            },
-        )
-        
-        client = db.get_client(client_id)
-        if client:
-            db.update(
-                "clients",
-                {"id": client_id},
-                {"credits_balance": client.get("credits_balance", 0) - credits},
-            )
-    
     # Update call with all data
     update_data = {
         "status": "completed",

@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 from app.core.auth import get_current_user
 from app.core.database import DatabaseService
-from app.core.exceptions import NotFoundError, ForbiddenError, PaymentRequiredError, ValidationError
+from app.core.exceptions import NotFoundError, ForbiddenError, ValidationError
 from app.core.idempotency import check_idempotency_key, store_idempotency_response
 from app.core.events import emit_call_created
 from app.core.storage import upload_bytes
@@ -68,15 +68,6 @@ async def create_call(
         raise NotFoundError("agent", call_data.agent_id)
     if agent.get("status") != "active":
         raise ValidationError("Agent must be active", {"agent_status": agent.get("status")})
-    
-    # Credit check for outbound calls
-    if call_data.direction == "outbound":
-        client = db.get_client(current_user["client_id"])
-        if not client or client.get("credits_balance", 0) < 1:
-            raise PaymentRequiredError(
-                "Insufficient credits for outbound call",
-                {"required": 1, "available": client.get("credits_balance", 0) if client else 0},
-            )
     
     # Create call record
     call_id = str(uuid.uuid4())

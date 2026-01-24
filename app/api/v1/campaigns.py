@@ -306,25 +306,6 @@ async def schedule_campaign(
             {"agent_id": campaign["agent_id"]}
         )
     
-    # PRE-FLIGHT CHECK 2: Verify client has enough credits
-    # Estimate: 1 credit per contact
-    required_credits = len(pending_contacts)
-    client = db.get_client(current_user["client_id"])
-    if not client:
-        raise NotFoundError("client", current_user["client_id"])
-    
-    available_credits = client.get("credits_balance", 0)
-    if available_credits < required_credits:
-        from app.core.exceptions import PaymentRequiredError
-        raise PaymentRequiredError(
-            f"Insufficient credits for campaign. Required: {required_credits}, Available: {available_credits}",
-            {
-                "required": required_credits,
-                "available": available_credits,
-                "contacts_count": len(pending_contacts),
-            }
-        )
-    
     # Check if Ultravox is configured
     if not settings.ULTRAVOX_API_KEY:
         raise ValidationError("Ultravox API key is not configured")

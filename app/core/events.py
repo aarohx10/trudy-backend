@@ -268,16 +268,3 @@ async def emit_knowledge_base_ingestion_started(kb_id: str, client_id: str, docu
         },
     )
 
-
-async def emit_credits_purchased(client_id: str, amount: float, credits: int, transaction_id: str) -> bool:
-    """Emit credits.purchased event"""
-    return await publish_event(
-        "credits.purchased",
-        {
-            "client_id": client_id,
-            "amount": amount,
-            "credits": credits,
-            "transaction_id": transaction_id,
-            "timestamp": datetime.utcnow().isoformat(),
-        },
-    )

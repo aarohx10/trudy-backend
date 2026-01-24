@@ -12,7 +12,7 @@ import httpx
 
 from app.core.auth import get_current_user
 from app.core.database import DatabaseService
-from app.core.exceptions import NotFoundError, ValidationError, PaymentRequiredError, ForbiddenError, ProviderError
+from app.core.exceptions import NotFoundError, ValidationError, ForbiddenError, ProviderError
 from app.models.schemas import VoiceResponse, ResponseMeta
 from app.core.config import settings
 from app.services.ultravox import ultravox_client
@@ -53,9 +53,6 @@ async def create_voice(
         
         if current_user["role"] not in ["client_admin", "agency_admin"]:
             raise ForbiddenError("Insufficient permissions")
-        
-        db = DatabaseService(current_user["token"])
-        db.set_auth(current_user["token"])
         
         # Determine if JSON or multipart
         content_type = request.headers.get("content-type", "")
@@ -103,15 +100,7 @@ async def create_voice(
             if not settings.ULTRAVOX_API_KEY:
                 raise ValidationError("Ultravox API key is not configured")
             
-            # Credit check
-            client = db.get_client(client_id)
-            if not client or client.get("credits_balance", 0) < 50:
-                raise PaymentRequiredError(
-                    "Insufficient credits for voice cloning. Required: 50",
-                    {"required": 50, "available": client.get("credits_balance", 0) if client else 0},
-                )
-            
-            # Step 1: Clone in ElevenLabs
+            # Step 1: Clone in ElevenLabs (NO DB, NO CREDITS - matches test script)
             logger.info(f"[VOICES] Cloning voice in ElevenLabs | name={name}")
             files_data = []
             for file_item in files:
@@ -219,7 +208,10 @@ async def create_voice(
             
             logger.info(f"[VOICES] Ultravox import successful | ultravox_voice_id={ultravox_voice_id}")
             
-            # Step 3: Save to DB
+            # Step 3: Save to DB (AFTER both API calls succeed - no credit checks, no credit updates)
+            db = DatabaseService(current_user["token"])
+            db.set_auth(current_user["token"])
+            
             voice_record = {
                 "id": voice_id,
                 "client_id": client_id,
@@ -235,12 +227,6 @@ async def create_voice(
                 "updated_at": now.isoformat(),
             }
             db.insert("voices", voice_record)
-            
-            # Deduct credits
-            db.update("clients", {"id": client_id}, {
-                "credits_balance": client.get("credits_balance", 0) - 50,
-                "updated_at": now.isoformat(),
-            })
             
             logger.info(f"[VOICES] Voice cloned successfully | voice_id={voice_id}")
             
@@ -296,7 +282,10 @@ async def create_voice(
                 
                 logger.info(f"[VOICES] Ultravox import successful | ultravox_voice_id={ultravox_voice_id}")
                 
-                # Step 2: Save to DB
+                # Step 2: Save to DB (AFTER Ultravox import succeeds - no credit checks)
+                db = DatabaseService(current_user["token"])
+                db.set_auth(current_user["token"])
+                
                 voice_record = {
                     "id": voice_id,
                     "client_id": client_id,
@@ -338,7 +327,7 @@ async def create_voice(
                     http_status=500,
                 )
     
-    except (ValidationError, PaymentRequiredError, ForbiddenError, NotFoundError, ProviderError):
+    except (ValidationError, ForbiddenError, NotFoundError, ProviderError):
         # Re-raise known errors as-is
         raise
     except Exception as e:

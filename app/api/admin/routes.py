@@ -240,14 +240,8 @@ async def get_global_stats(
     """Get global statistics (admin only)"""
     db = DatabaseAdminService()
     
-    # Total revenue (sum of all Stripe payments)
-    credit_transactions = db.select(
-        "credit_transactions",
-        {"type": "purchased", "reference_type": "stripe_payment"},
-    )
-    total_revenue_usd = sum(
-        float(t.get("amount", 0)) for t in credit_transactions
-    )  # Credits = USD (1:1)
+    # Total revenue (removed - no payment processing)
+    total_revenue_usd = 0.0
     
     # Total minutes used (sum of all call durations)
     all_calls = db.select("calls", {})

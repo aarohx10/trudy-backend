@@ -14,14 +14,13 @@ import time
 from app.core.auth import get_current_user
 from app.core.database import DatabaseService, DatabaseAdminService
 from app.core.config import settings
-from app.core.webhooks import verify_ultravox_signature, verify_timestamp, verify_stripe_signature, verify_telnyx_signature, deliver_webhook
+from app.core.webhooks import verify_ultravox_signature, verify_timestamp, verify_telnyx_signature, deliver_webhook
 from app.core.events import (
     emit_voice_training_completed,
     emit_voice_training_failed,
     emit_call_started,
     emit_call_completed,
     emit_call_failed,
-    emit_credits_purchased,
 )
 from app.core.exceptions import UnauthorizedError, ForbiddenError, NotFoundError, ValidationError
 from app.services.webhook_handlers import EVENT_HANDLERS
@@ -315,112 +314,6 @@ async def trigger_egress_webhooks(
                     "error_message": str(e),
                 },
             )
-
-
-@router.post("/stripe")
-async def stripe_webhook(
-    request: Request,
-    stripe_signature: Optional[str] = Header(None, alias="Stripe-Signature"),
-):
-    """Receive webhook from Stripe"""
-    # Get raw body for signature verification
-    body_bytes = await request.body()
-    body_str = body_bytes.decode('utf-8')
-    
-    # Verify signature
-    if not stripe_signature:
-        raise UnauthorizedError("Missing Stripe-Signature header")
-    
-    if not verify_stripe_signature(
-        body_str,
-        stripe_signature,
-        settings.STRIPE_WEBHOOK_SECRET,
-    ):
-        raise UnauthorizedError("Invalid Stripe signature")
-    
-    # Parse JSON body
-    body = json.loads(body_str)
-    event_type = body.get("type")
-    
-    # Use admin client for webhook processing (bypasses RLS)
-    from app.core.database import DatabaseAdminService
-    db = DatabaseAdminService()
-    
-    if event_type == "payment_intent.succeeded":
-        payment_intent = body.get("data", {}).get("object", {})
-        amount_cents = payment_intent.get("amount", 0)
-        amount_usd = amount_cents / 100
-        credits = amount_cents // 100  # 1 credit = $1
-        
-        # Extract client_id from metadata
-        metadata = payment_intent.get("metadata", {})
-        client_id = metadata.get("client_id")
-        
-        if client_id:
-            # Verify client exists
-            client = db.select_one("clients", {"id": client_id})
-            if client:
-                # Add credit transaction
-                db.insert(
-                    "credit_transactions",
-                    {
-                        "client_id": client_id,
-                        "type": "purchased",
-                        "amount": credits,
-                        "reference_type": "stripe_payment",
-                        "reference_id": payment_intent.get("id"),
-                        "description": f"Stripe payment: {payment_intent.get('id')}",
-                    },
-                )
-                
-                # Update client credits balance
-                db.update(
-                    "clients",
-                    {"id": client_id},
-                    {"credits_balance": client.get("credits_balance", 0) + credits},
-                )
-                
-                # Emit event
-                await emit_credits_purchased(
-                    client_id=client_id,
-                    amount=amount_usd,
-                    credits=credits,
-                    transaction_id=payment_intent.get("id"),
-                )
-                
-                logger.info(f"Added {credits} credits to client {client_id} from Stripe payment")
-            else:
-                logger.warning(f"Client {client_id} not found for Stripe payment")
-        else:
-            logger.warning("No client_id in Stripe payment metadata")
-    
-    elif event_type == "customer.subscription.updated":
-        subscription = body.get("data", {}).get("object", {})
-        customer_id = subscription.get("customer")
-        status = subscription.get("status")
-        
-        # Update client subscription status
-        client = db.select_one("clients", {"stripe_customer_id": customer_id})
-        if client:
-            # Map Stripe status to our status
-            status_map = {
-                "active": "active",
-                "trialing": "active",
-                "past_due": "suspended",
-                "canceled": "cancelled",
-                "unpaid": "suspended",
-            }
-            mapped_status = status_map.get(status, "active")
-            
-            db.update(
-                "clients",
-                {"id": client["id"]},
-                {"subscription_status": mapped_status},
-            )
-            
-            logger.info(f"Updated subscription status for client {client['id']} to {mapped_status}")
-    
-    return {"status": "ok"}
 
 
 @router.post("/telnyx")
