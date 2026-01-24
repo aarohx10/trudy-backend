@@ -1,5 +1,6 @@
 """
-Ultravox API Client + ElevenLabs Voice Cloning
+Ultravox API Client
+Note: ElevenLabs Voice Cloning has been removed - only voice import is supported
 """
 import httpx
 import logging
@@ -12,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class ElevenLabsClient:
-    """Client for ElevenLabs API - Voice Cloning"""
+    """Client for ElevenLabs API - Voice Cloning (DEPRECATED - Voice cloning has been removed)"""
     
     def __init__(self):
         self.base_url = "https://api.elevenlabs.io/v1"

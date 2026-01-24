@@ -13,7 +13,7 @@ from enum import Enum
 
 class VoiceStrategy(str, Enum):
     AUTO = "auto"
-    NATIVE = "native"
+    # NATIVE = "native"  # Voice cloning has been removed
     EXTERNAL = "external"
 
 
@@ -137,11 +137,11 @@ class VoiceCreate(BaseModel):
     
     @validator("source")
     def validate_source(cls, v, values):
+        # Voice cloning (native strategy) has been removed
         if values.get("strategy") == VoiceStrategy.NATIVE:
-            if not v.samples or len(v.samples) < 3:
-                raise ValueError("Native voice requires at least 3 samples")
-            total_duration = sum(s.duration_seconds for s in v.samples)
-            if total_duration < 15.0:
+            raise ValueError("Voice cloning (native strategy) has been removed. Please use voice import (external strategy) instead.")
+        # Original validation removed - only external strategy is supported now
+        if False:
                 raise ValueError("Total sample duration must be at least 15 seconds")
         return v
 
