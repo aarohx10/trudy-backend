@@ -12,6 +12,7 @@ from app.core.auth import get_current_user
 from app.core.exceptions import NotFoundError, ForbiddenError, ValidationError, ProviderError
 from app.core.idempotency import check_idempotency_key, store_idempotency_response
 from app.services.ultravox import ultravox_client
+from app.core.database import DatabaseService
 from app.models.schemas import ResponseMeta
 import logging
 
@@ -25,16 +26,15 @@ async def list_tools(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """List tools from Ultravox (ownership=private filter)"""
+    """List tools from database for current client"""
     try:
-        # Fetch tools from Ultravox with ownership=private filter
-        ultravox_response = await ultravox_client.list_tools(ownership="private")
-        
-        # Extract results from Ultravox response
-        tools = ultravox_response.get("results", [])
+        # Fetch tools from database for current client
+        client_id = current_user.get("client_id")
+        db = DatabaseService()
+        tools_list = db.select("tools", {"client_id": client_id}, order_by="created_at DESC")
         
         return {
-            "data": tools,
+            "data": list(tools_list),
             "meta": ResponseMeta(
                 request_id=str(uuid.uuid4()),
                 ts=datetime.utcnow(),
@@ -51,14 +51,8 @@ async def list_tools(
             "full_error_object": json.dumps(e.__dict__, default=str) if hasattr(e, '__dict__') else str(e),
             "full_traceback": traceback.format_exc(),
         }
-        logger.error(f"[TOOLS] [LIST] Failed to list tools from Ultravox (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
-        if isinstance(e, ProviderError):
-            raise
-        raise ProviderError(
-            provider="ultravox",
-            message=f"Failed to list tools: {str(e)}",
-            http_status=500,
-        )
+        logger.error(f"[TOOLS] [LIST] Failed to list tools from database (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+        raise ValidationError(f"Failed to list tools: {str(e)}")
 
 
 @router.get("/{tool_id}")
@@ -130,6 +124,46 @@ async def create_tool(
     try:
         # Forward directly to Ultravox
         ultravox_response = await ultravox_client.create_tool(tool_data)
+        
+        # Extract Ultravox tool ID from response
+        ultravox_tool_id = ultravox_response.get("toolId") or ultravox_response.get("id")
+        
+        # Save tool to database
+        if ultravox_tool_id:
+            try:
+                db = DatabaseService()
+                now = datetime.utcnow()
+                
+                # Extract tool definition from request or response
+                tool_definition = tool_data.get("definition", {})
+                http_config = tool_definition.get("http", {})
+                
+                # Build database record
+                tool_db_record = {
+                    "id": str(uuid.uuid4()),
+                    "client_id": current_user["client_id"],
+                    "ultravox_tool_id": ultravox_tool_id,
+                    "name": tool_data.get("name") or ultravox_response.get("name", ""),
+                    "description": tool_definition.get("description") or tool_data.get("description"),
+                    "category": tool_data.get("category"),  # Optional
+                    "endpoint": http_config.get("baseUrlPattern") or http_config.get("url") or "",
+                    "method": http_config.get("httpMethod") or http_config.get("method") or "POST",
+                    "authentication": tool_definition.get("requirements", {}).get("httpSecurityOptions", {}),
+                    "parameters": tool_definition.get("dynamicParameters", []),
+                    "response_schema": tool_definition.get("responseSchema", {}),
+                    "status": "active",  # Tool created successfully
+                    "is_verified": False,  # Default to unverified
+                    "created_at": now.isoformat(),
+                    "updated_at": now.isoformat(),
+                }
+                
+                # Insert into database
+                db.insert("tools", tool_db_record)
+                logger.info(f"[TOOLS] [CREATE] Tool saved to database: {tool_db_record['id']} (Ultravox: {ultravox_tool_id})")
+                
+            except Exception as db_error:
+                # Log database error but don't fail the request (tool was created in Ultravox)
+                logger.error(f"[TOOLS] [CREATE] Failed to save tool to database (non-critical): {db_error}", exc_info=True)
         
         response_data = {
             "data": ultravox_response,
