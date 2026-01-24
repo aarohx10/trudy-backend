@@ -57,8 +57,26 @@ async def create_voice(
         # Determine if JSON or multipart
         content_type = request.headers.get("content-type", "")
         is_json = "application/json" in content_type
+        is_multipart = "multipart/form-data" in content_type
         
-        logger.info(f"[VOICES] Creating voice | content_type={content_type} | is_json={is_json}")
+        # Log comprehensive request info
+        logger.info("=" * 80)
+        logger.info(f"[VOICES] ===== VOICE CREATION REQUEST START =====")
+        logger.info(f"[VOICES] Request method: {request.method}")
+        logger.info(f"[VOICES] Request URL: {request.url}")
+        logger.info(f"[VOICES] Content-Type: {content_type}")
+        logger.info(f"[VOICES] Content-Length: {request.headers.get('content-length', 'unknown')}")
+        logger.info(f"[VOICES] Is JSON: {is_json}")
+        logger.info(f"[VOICES] Is Multipart: {is_multipart}")
+        logger.info(f"[VOICES] User: {current_user.get('user_id', 'unknown')} | Client: {current_user.get('client_id', 'unknown')}")
+        logger.info(f"[VOICES] All request headers:")
+        for header_name, header_value in request.headers.items():
+            # Mask sensitive headers
+            if header_name.lower() == 'authorization':
+                logger.info(f"[VOICES]   {header_name}: {header_value[:20]}...")
+            else:
+                logger.info(f"[VOICES]   {header_name}: {header_value}")
+        logger.info("=" * 80)
         
         import time
         parse_start = time.time()
@@ -79,15 +97,68 @@ async def create_voice(
         else:
             # Multipart form data (for clones) - parse form (FastAPI handles streaming)
             logger.info(f"[VOICES] Parsing multipart form data...")
-            form = await request.form()
-            parse_time = time.time() - parse_start
-            logger.info(f"[VOICES] Form data parsed | parse_time={parse_time:.2f}s")
+            try:
+                form = await request.form()
+                parse_time = time.time() - parse_start
+                logger.info(f"[VOICES] Form data parsed | parse_time={parse_time:.2f}s")
+            except Exception as form_error:
+                logger.error(f"[VOICES] Failed to parse form data | error={str(form_error)} | type={type(form_error).__name__}")
+                import traceback
+                logger.error(f"[VOICES] Form parse traceback: {traceback.format_exc()}")
+                raise ValidationError(f"Failed to parse form data: {str(form_error)}")
+            
             name = form.get("name")
             strategy = form.get("strategy")
             provider = form.get("provider", "elevenlabs")
             provider_voice_id = form.get("provider_voice_id")
-            files = form.getlist("files")
-            logger.info(f"[VOICES] Form fields extracted | name={name} | strategy={strategy} | files_count={len(files) if files else 0}")
+            
+            # Extract files - handle both single file and multiple files
+            # FastAPI's form.getlist() should return list of UploadFile objects for file fields
+            files_raw = form.getlist("files")
+            logger.info(f"[VOICES] Raw files from form.getlist('files') | count={len(files_raw) if files_raw else 0} | types={[type(f).__name__ for f in files_raw] if files_raw else []}")
+            
+            # Debug: Log all form keys to see what we received
+            form_keys = list(form.keys()) if hasattr(form, 'keys') else []
+            logger.info(f"[VOICES] All form keys received | keys={form_keys}")
+            
+            # Also try direct access in case getlist doesn't work as expected
+            if not files_raw or len(files_raw) == 0:
+                single_file = form.get("files")
+                logger.info(f"[VOICES] Trying direct form.get('files') | result={type(single_file).__name__ if single_file else 'None'}")
+                if single_file and isinstance(single_file, UploadFile):
+                    files_raw = [single_file]
+                    logger.info(f"[VOICES] Found single file via direct access")
+            
+            # If still no files, try iterating through all form items
+            if not files_raw or len(files_raw) == 0:
+                logger.warning(f"[VOICES] No files found via getlist or direct access, trying form iteration")
+                all_files = []
+                for key, value in form.items():
+                    logger.debug(f"[VOICES] Form item | key={key} | type={type(value).__name__}")
+                    if isinstance(value, UploadFile):
+                        all_files.append(value)
+                        logger.info(f"[VOICES] Found UploadFile via iteration | key={key} | filename={value.filename}")
+                if all_files:
+                    files_raw = all_files
+                    logger.info(f"[VOICES] Found {len(all_files)} files via form iteration")
+            
+            # Filter to only UploadFile objects and log any non-file items
+            files = []
+            for item in files_raw if files_raw else []:
+                if isinstance(item, UploadFile):
+                    files.append(item)
+                    logger.info(f"[VOICES] Valid UploadFile found | filename={item.filename} | content_type={item.content_type}")
+                else:
+                    logger.warning(f"[VOICES] Non-UploadFile item in files list | type={type(item).__name__} | value={str(item)[:100]}")
+            
+            logger.info(f"[VOICES] Form fields extracted | name={name} | strategy={strategy} | valid_files_count={len(files)}")
+            logger.info(f"[VOICES] ===== FORM PARSING COMPLETE =====")
+            if len(files) == 0:
+                logger.error(f"[VOICES] ⚠️⚠️⚠️ CRITICAL: No valid files found after parsing! ⚠️⚠️⚠️")
+                logger.error(f"[VOICES] This is likely the root cause of the issue!")
+                logger.error(f"[VOICES] Form keys available: {form_keys}")
+                logger.error(f"[VOICES] Raw files from getlist: {len(files_raw) if files_raw else 0}")
+                logger.error(f"[VOICES] ===== END CRITICAL ERROR =====")
         
         logger.info(f"[VOICES] Parsed request | name={name} | strategy={strategy} | provider={provider} | provider_voice_id={provider_voice_id}")
         
@@ -112,16 +183,45 @@ async def create_voice(
             # Step 1: Clone in ElevenLabs (NO DB, NO CREDITS - matches test script)
             start_time = time.time()
             logger.info(f"[VOICES] Cloning voice in ElevenLabs | name={name} | files_count={len(files)}")
+            
+            if not files or len(files) == 0:
+                logger.error(f"[VOICES] No valid files found after parsing")
+                raise ValidationError("No valid audio files were uploaded. Please ensure files are properly selected and try again.")
+            
             files_data = []
-            for file_item in files:
-                if isinstance(file_item, UploadFile):
+            for idx, file_item in enumerate(files):
+                try:
+                    if not isinstance(file_item, UploadFile):
+                        logger.error(f"[VOICES] File item {idx} is not UploadFile | type={type(file_item).__name__}")
+                        continue
+                    
                     file_read_start = time.time()
                     content = await file_item.read()
                     file_read_time = time.time() - file_read_start
-                    logger.info(f"[VOICES] File read completed | filename={file_item.filename} | size={len(content)} bytes | time={file_read_time:.2f}s")
-                    filename = file_item.filename or "audio.mp3"
+                    
+                    if len(content) == 0:
+                        logger.warning(f"[VOICES] File {idx} is empty | filename={file_item.filename}")
+                        continue
+                    
+                    logger.info(f"[VOICES] File {idx} read completed | filename={file_item.filename} | size={len(content)} bytes | time={file_read_time:.2f}s")
+                    filename = file_item.filename or f"audio_{idx}.mp3"
                     content_type = file_item.content_type or "audio/mpeg"
                     files_data.append(("files", (filename, content, content_type)))
+                except Exception as file_error:
+                    logger.error(f"[VOICES] Error reading file {idx} | filename={file_item.filename if hasattr(file_item, 'filename') else 'unknown'} | error={str(file_error)}")
+                    import traceback
+                    logger.error(f"[VOICES] File read traceback: {traceback.format_exc()}")
+                    raise ValidationError(f"Error reading uploaded file: {str(file_error)}")
+            
+            if len(files_data) == 0:
+                logger.error(f"[VOICES] No valid file data after processing | files_count={len(files)}")
+                raise ValidationError("No valid audio file data could be extracted from uploaded files.")
+            
+            logger.info(f"[VOICES] Prepared {len(files_data)} files for ElevenLabs upload")
+            logger.info(f"[VOICES] ===== FILE PREPARATION COMPLETE =====")
+            logger.info(f"[VOICES] Total file data size: {sum(len(f[1][1]) for f in files_data)} bytes")
+            for idx, (field_name, (filename, content, content_type)) in enumerate(files_data):
+                logger.info(f"[VOICES]   File {idx + 1}: {filename} | {len(content)} bytes | {content_type}")
             
             try:
                 elevenlabs_start = time.time()
@@ -169,7 +269,9 @@ async def create_voice(
                 )
             
             total_elevenlabs_time = time.time() - start_time
+            logger.info(f"[VOICES] ===== ELEVENLABS CLONE SUCCESS =====")
             logger.info(f"[VOICES] ElevenLabs clone successful | voice_id={elevenlabs_voice_id} | total_time={total_elevenlabs_time:.2f}s")
+            logger.info(f"[VOICES] ElevenLabs response data: {elevenlabs_data}")
             
             # Step 2: Import to Ultravox - EXACT COPY OF TEST SCRIPT
             ultravox_start = time.time()
@@ -258,7 +360,9 @@ async def create_voice(
                 )
             
             total_ultravox_time = time.time() - ultravox_start
+            logger.info(f"[VOICES] ===== ULTRAVOX IMPORT SUCCESS =====")
             logger.info(f"[VOICES] Ultravox import successful | ultravox_voice_id={ultravox_voice_id} | total_time={total_ultravox_time:.2f}s")
+            logger.info(f"[VOICES] Ultravox response data: {ultravox_data}")
             
             # Step 3: Save to DB (AFTER both API calls succeed - no credit checks, no credit updates)
             db_start = time.time()
@@ -282,7 +386,15 @@ async def create_voice(
             db.insert("voices", voice_record)
             db_time = time.time() - db_start
             total_time = time.time() - start_time
+            logger.info(f"[VOICES] ===== VOICE CREATION COMPLETE =====")
             logger.info(f"[VOICES] Voice cloned successfully | voice_id={voice_id} | db_time={db_time:.2f}s | total_time={total_time:.2f}s")
+            logger.info(f"[VOICES] Breakdown:")
+            logger.info(f"[VOICES]   - ElevenLabs: {total_elevenlabs_time:.2f}s")
+            logger.info(f"[VOICES]   - Ultravox: {total_ultravox_time:.2f}s")
+            logger.info(f"[VOICES]   - Database: {db_time:.2f}s")
+            logger.info(f"[VOICES]   - Total: {total_time:.2f}s")
+            logger.info(f"[VOICES] ===== END VOICE CREATION REQUEST =====")
+            logger.info("=" * 80)
             
             return {
                 "data": VoiceResponse(**voice_record),
@@ -381,13 +493,28 @@ async def create_voice(
                     http_status=500,
                 )
     
-    except (ValidationError, ForbiddenError, NotFoundError, ProviderError):
-        # Re-raise known errors as-is
+    except (ValidationError, ForbiddenError, NotFoundError, ProviderError) as e:
+        # Re-raise known errors as-is, but log them first
+        logger.error("=" * 80)
+        logger.error(f"[VOICES] ===== ERROR IN VOICE CREATION =====")
+        logger.error(f"[VOICES] Error type: {type(e).__name__}")
+        logger.error(f"[VOICES] Error message: {str(e)}")
+        if hasattr(e, 'details'):
+            logger.error(f"[VOICES] Error details: {e.details}")
+        logger.error(f"[VOICES] ===== END ERROR =====")
+        logger.error("=" * 80)
         raise
     except Exception as e:
         # Catch any unexpected errors and log them
         import traceback
-        logger.error(f"[VOICES] Unexpected error in create_voice | error={str(e)} | type={type(e).__name__} | traceback={traceback.format_exc()}")
+        logger.error("=" * 80)
+        logger.error(f"[VOICES] ===== UNEXPECTED ERROR IN VOICE CREATION =====")
+        logger.error(f"[VOICES] Error type: {type(e).__name__}")
+        logger.error(f"[VOICES] Error message: {str(e)}")
+        logger.error(f"[VOICES] Full traceback:")
+        logger.error(traceback.format_exc())
+        logger.error(f"[VOICES] ===== END UNEXPECTED ERROR =====")
+        logger.error("=" * 80)
         raise ProviderError(
             provider="unknown",
             message=f"An unexpected error occurred: {str(e)}",
