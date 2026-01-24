@@ -121,8 +121,8 @@ async def create_voice(
                     content_type = file_item.content_type or "audio/mpeg"
                     files_data.append(("files", (filename, content, content_type)))
             
-            async with httpx.AsyncClient(timeout=120.0) as http_client:
-                elevenlabs_response = await http_client.post(
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                elevenlabs_response = await client.post(
                     "https://api.elevenlabs.io/v1/voices/add",
                     headers={"xi-api-key": settings.ELEVENLABS_API_KEY},
                     data={"name": name},
@@ -149,38 +149,73 @@ async def create_voice(
             
             logger.info(f"[VOICES] ElevenLabs clone successful | voice_id={elevenlabs_voice_id}")
             
-            # Step 2: Import to Ultravox
+            # Step 2: Import to Ultravox - EXACT COPY OF TEST SCRIPT
             logger.info(f"[VOICES] Importing to Ultravox | elevenlabs_voice_id={elevenlabs_voice_id}")
-            ultravox_response = await ultravox_client.import_voice_from_provider(
-                name=name,
-                provider="elevenlabs",
-                provider_voice_id=elevenlabs_voice_id,
-                description=f"Cloned voice: {name}",
-            )
-            # Log full response for debugging
-            logger.info(f"[VOICES] Ultravox clone response received | response_keys={list(ultravox_response.keys()) if isinstance(ultravox_response, dict) else 'not_dict'}")
             
-            # Extract voice ID - try multiple possible field names
+            # Normalize name exactly like test script (line 87-92)
+            normalized_name = name.lower().replace(" ", "_").replace("-", "_")
+            normalized_name = "".join(c if c.isalnum() or c == "_" else "" for c in normalized_name)
+            normalized_name = f"{normalized_name}_{elevenlabs_voice_id}"
+            
+            # Build payload exactly like test script (line 95-117)
+            url = f"{settings.ULTRAVOX_BASE_URL}/api/voices"
+            payload = {
+                "name": normalized_name,
+            }
+            description = f"Cloned voice: {name}"
+            if description:
+                payload["description"] = description
+            payload["definition"] = {
+                "elevenLabs": {
+                    "voiceId": elevenlabs_voice_id,
+                    "model": "eleven_multilingual_v2",
+                    "stability": 0.5,
+                    "similarityBoost": 0.75,
+                    "style": 0.0,
+                    "useSpeakerBoost": True,
+                    "speed": 1.0,
+                }
+            }
+            
+            headers = {
+                "X-API-Key": settings.ULTRAVOX_API_KEY,
+                "Content-Type": "application/json",
+            }
+            
+            # Direct HTTP call exactly like test script (line 129-135)
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                ultravox_response = await client.post(
+                    url,
+                    headers=headers,
+                    json=payload,
+                )
+                
+                if ultravox_response.status_code >= 400:
+                    error_text = ultravox_response.text[:500] if ultravox_response.text else "No response body"
+                    raise ProviderError(
+                        provider="ultravox",
+                        message=f"Ultravox import failed: {error_text}",
+                        http_status=ultravox_response.status_code,
+                    )
+                
+                ultravox_data = ultravox_response.json()
+            
+            # Extract voice ID exactly like test script (line 151-157)
             ultravox_voice_id = (
-                ultravox_response.get("voiceId") or 
-                ultravox_response.get("id") or
-                ultravox_response.get("voice_id") or
-                (ultravox_response.get("data", {}) if isinstance(ultravox_response.get("data"), dict) else {}).get("voiceId") or
-                (ultravox_response.get("data", {}) if isinstance(ultravox_response.get("data"), dict) else {}).get("id")
+                ultravox_data.get("voiceId") or
+                ultravox_data.get("id") or
+                ultravox_data.get("voice_id") or
+                (ultravox_data.get("data", {}) if isinstance(ultravox_data.get("data"), dict) else {}).get("voiceId") or
+                (ultravox_data.get("data", {}) if isinstance(ultravox_data.get("data"), dict) else {}).get("id")
             )
             
             if not ultravox_voice_id:
-                import json
-                response_str = json.dumps(ultravox_response, default=str)[:1000]
-                logger.error(f"[VOICES] Ultravox clone response missing voiceId | response={response_str} | response_keys={list(ultravox_response.keys()) if isinstance(ultravox_response, dict) else 'N/A'}")
                 raise ProviderError(
                     provider="ultravox",
-                    message=f"Ultravox response missing voiceId. Response structure: {list(ultravox_response.keys()) if isinstance(ultravox_response, dict) else 'not a dict'}",
+                    message="Ultravox response missing voiceId",
                     http_status=500,
-                    details={"response": ultravox_response},
+                    details={"response": ultravox_data},
                 )
-            
-            logger.info(f"[VOICES] Extracted ultravox_voice_id from clone | ultravox_voice_id={ultravox_voice_id}")
             
             logger.info(f"[VOICES] Ultravox import successful | ultravox_voice_id={ultravox_voice_id}")
             
