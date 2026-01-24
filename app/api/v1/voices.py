@@ -2,9 +2,9 @@
 Voice Endpoints - SIMPLIFIED
 Just HTTP requests. That's it.
 """
-from fastapi import APIRouter, Header, Depends, Query, Request, HTTPException, UploadFile
+from fastapi import APIRouter, Header, Depends, Query, Request, HTTPException, UploadFile, File, Form
 from fastapi.responses import Response
-from typing import Optional, List
+from typing import Optional, List, Annotated
 from datetime import datetime
 import uuid
 import logging
@@ -152,8 +152,41 @@ async def create_voice(
                 method=request.method,
             )
             logger.info(f"[VOICES] Parsing multipart form data...")
+            logger.info(f"[VOICES] Content-Length header: {request.headers.get('content-length', 'unknown')}")
+            logger.info(f"[VOICES] Content-Type header: {content_type}")
+            logger.info(f"[VOICES] Request client: {request.client}")
+            logger.info(f"[VOICES] Starting form() call - this may take time for large files...")
+            logger.info(f"[VOICES] PRODUCTION NOTE: request.form() will read entire body into memory before parsing")
+            logger.info(f"[VOICES] This is the standard FastAPI approach for multipart/form-data")
+            
             try:
-                form = await request.form()
+                # Add timeout protection - form parsing should not take more than 30 seconds
+                # If it does, there's likely a network/streaming issue
+                import asyncio
+                try:
+                    # Actually parse the form - this reads the entire body
+                    # PRODUCTION NOTE: request.form() reads entire body into memory before parsing
+                    # For very large files, consider streaming approach, but 1.8MB should be fine
+                    form = await asyncio.wait_for(request.form(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    await log_to_database(
+                        source="backend",
+                        level="ERROR",
+                        category="voice_cloning",
+                        message="Form parsing timed out after 30 seconds",
+                        request_id=request_id,
+                        client_id=client_id,
+                        user_id=user_id,
+                        endpoint=str(request.url.path),
+                        method=request.method,
+                        context={
+                            "timeout_seconds": 30,
+                            "content_length": request.headers.get('content-length', 'unknown'),
+                        },
+                    )
+                    logger.error(f"[VOICES] Form parsing TIMEOUT after 30s | content_length={request.headers.get('content-length', 'unknown')}")
+                    raise ValidationError("Form data upload timed out after 30 seconds. The file may be too large or the connection is too slow.")
+                
                 parse_time = time.time() - parse_start
                 await log_to_database(
                     source="backend",
@@ -167,9 +200,11 @@ async def create_voice(
                     method=request.method,
                     context={
                         "parse_time_seconds": round(parse_time, 2),
+                        "content_length": request.headers.get('content-length', 'unknown'),
                     },
                 )
-                logger.info(f"[VOICES] Form data parsed | parse_time={parse_time:.2f}s")
+                logger.info(f"[VOICES] Form data parsed | parse_time={parse_time:.2f}s | content_length={request.headers.get('content-length', 'unknown')}")
+                logger.info(f"[VOICES] ===== FORM PARSING COMPLETE - PROCEEDING TO FIELD EXTRACTION =====")
             except Exception as form_error:
                 import traceback
                 error_traceback = traceback.format_exc()
@@ -321,7 +356,7 @@ async def create_voice(
                 },
             )
             logger.info(f"[VOICES] Form fields extracted | name={name} | strategy={strategy} | valid_files_count={len(files)}")
-            logger.info(f"[VOICES] ===== FORM PARSING COMPLETE =====")
+            logger.info(f"[VOICES] ===== FIELD EXTRACTION COMPLETE - PROCEEDING TO FILE PROCESSING =====")
             
             if len(files) == 0:
                 await log_to_database(
@@ -375,16 +410,53 @@ async def create_voice(
         
         # NATIVE: Clone voice
         if strategy == "native":
+            logger.info(f"[VOICES] ===== STARTING NATIVE VOICE CLONING PROCESS =====")
+            logger.info(f"[VOICES] Strategy: native | Files count: {len(files) if files else 0}")
+            
             if not files or len(files) == 0:
+                await log_to_database(
+                    source="backend",
+                    level="ERROR",
+                    category="voice_cloning",
+                    message="No files provided for voice cloning",
+                    request_id=request_id,
+                    client_id=client_id,
+                    user_id=user_id,
+                    endpoint=str(request.url.path),
+                    method=request.method,
+                )
                 raise ValidationError("At least one audio file is required for voice cloning")
             
             if not settings.ELEVENLABS_API_KEY:
+                await log_to_database(
+                    source="backend",
+                    level="ERROR",
+                    category="voice_cloning",
+                    message="ElevenLabs API key not configured",
+                    request_id=request_id,
+                    client_id=client_id,
+                    user_id=user_id,
+                    endpoint=str(request.url.path),
+                    method=request.method,
+                )
                 raise ValidationError("ElevenLabs API key is not configured")
             if not settings.ULTRAVOX_API_KEY:
+                await log_to_database(
+                    source="backend",
+                    level="ERROR",
+                    category="voice_cloning",
+                    message="Ultravox API key not configured",
+                    request_id=request_id,
+                    client_id=client_id,
+                    user_id=user_id,
+                    endpoint=str(request.url.path),
+                    method=request.method,
+                )
                 raise ValidationError("Ultravox API key is not configured")
             
             # Step 1: Clone in ElevenLabs (NO DB, NO CREDITS - matches test script)
             start_time = time.time()
+            logger.info(f"[VOICES] ===== STARTING FILE READING PHASE =====")
             await log_to_database(
                 source="backend",
                 level="INFO",
@@ -534,11 +606,12 @@ async def create_voice(
             
             try:
                 elevenlabs_start = time.time()
+                # STEP 1: ElevenLabs - Match test script logging style
                 await log_to_database(
                     source="backend",
                     level="INFO",
                     category="elevenlabs_api",
-                    message="Calling ElevenLabs API to clone voice",
+                    message="Step 1: Cloning voice to ElevenLabs...",
                     request_id=request_id,
                     client_id=client_id,
                     user_id=user_id,
@@ -547,10 +620,34 @@ async def create_voice(
                     context={
                         "voice_name": name,
                         "files_count": len(files_data),
+                        "total_file_size_bytes": total_file_size,
+                    },
+                )
+                logger.info(f"[VOICES] ===== STEP 1: ELEVENLABS CLONE =====")
+                logger.info(f"[VOICES] Step 1: Cloning voice to ElevenLabs...")
+                logger.info(f"[VOICES]   Voice Name: {name}")
+                logger.info(f"[VOICES]   Files Count: {len(files_data)}")
+                logger.info(f"[VOICES]   Total File Size: {total_file_size} bytes")
+                
+                await log_to_database(
+                    source="backend",
+                    level="INFO",
+                    category="elevenlabs_api",
+                    message="Sending request to ElevenLabs API...",
+                    request_id=request_id,
+                    client_id=client_id,
+                    user_id=user_id,
+                    endpoint=str(request.url.path),
+                    method=request.method,
+                    context={
+                        "api_url": "https://api.elevenlabs.io/v1/voices/add",
                         "timeout_seconds": 120,
                     },
                 )
-                logger.info(f"[VOICES] Starting ElevenLabs API call | timeout=120s")
+                logger.info(f"[VOICES]   Sending request to ElevenLabs...")
+                logger.info(f"[VOICES]   API URL: https://api.elevenlabs.io/v1/voices/add")
+                logger.info(f"[VOICES]   Timeout: 120 seconds")
+                
                 async with httpx.AsyncClient(timeout=120.0) as client:
                     elevenlabs_response = await client.post(
                         "https://api.elevenlabs.io/v1/voices/add",
@@ -558,6 +655,23 @@ async def create_voice(
                         data={"name": name},
                         files=files_data,
                     )
+                    
+                    await log_to_database(
+                        source="backend",
+                        level="INFO",
+                        category="elevenlabs_api",
+                        message="ElevenLabs API response received",
+                        request_id=request_id,
+                        client_id=client_id,
+                        user_id=user_id,
+                        endpoint=str(request.url.path),
+                        method=request.method,
+                        context={
+                            "http_status": elevenlabs_response.status_code,
+                            "response_time_seconds": round(time.time() - elevenlabs_start, 2),
+                        },
+                    )
+                    logger.info(f"[VOICES]   ElevenLabs response received | status={elevenlabs_response.status_code} | time={time.time() - elevenlabs_start:.2f}s")
                     
                     if elevenlabs_response.status_code >= 400:
                         error_text = elevenlabs_response.text[:500] if elevenlabs_response.text else "No response body"
@@ -586,6 +700,25 @@ async def create_voice(
                     elevenlabs_data = elevenlabs_response.json()
                     elevenlabs_voice_id = elevenlabs_data.get("voice_id")
                     
+                    await log_to_database(
+                        source="backend",
+                        level="INFO",
+                        category="elevenlabs_api",
+                        message="[OK] ElevenLabs clone successful!",
+                        request_id=request_id,
+                        client_id=client_id,
+                        user_id=user_id,
+                        endpoint=str(request.url.path),
+                        method=request.method,
+                        context={
+                            "elevenlabs_voice_id": elevenlabs_voice_id,
+                            "total_time_seconds": round(time.time() - elevenlabs_start, 2),
+                        },
+                    )
+                    logger.info(f"[VOICES]   [OK] ElevenLabs clone successful!")
+                    logger.info(f"[VOICES]   Voice ID: {elevenlabs_voice_id}")
+                    logger.info(f"[VOICES]   Total Time: {time.time() - elevenlabs_start:.2f}s")
+                    
                     if not elevenlabs_voice_id:
                         await log_to_database(
                             source="backend",
@@ -605,23 +738,7 @@ async def create_voice(
                             http_status=500,
                         )
                 elevenlabs_time = time.time() - elevenlabs_start
-                await log_to_database(
-                    source="backend",
-                    level="INFO",
-                    category="elevenlabs_api",
-                    message="ElevenLabs API call completed successfully",
-                    request_id=request_id,
-                    client_id=client_id,
-                    user_id=user_id,
-                    endpoint=str(request.url.path),
-                    method=request.method,
-                    duration_ms=int(elevenlabs_time * 1000),
-                    context={
-                        "elevenlabs_voice_id": elevenlabs_voice_id,
-                        "duration_seconds": round(elevenlabs_time, 2),
-                    },
-                )
-                logger.info(f"[VOICES] ElevenLabs API call completed | time={elevenlabs_time:.2f}s")
+                logger.info(f"[VOICES] ===== STEP 1 COMPLETE =====")
             except httpx.TimeoutException as e:
                 await log_to_database(
                     source="backend",
@@ -689,22 +806,28 @@ async def create_voice(
             
             # Step 2: Import to Ultravox - EXACT COPY OF TEST SCRIPT
             ultravox_start = time.time()
+            # STEP 2: Ultravox - Match test script logging style
             await log_to_database(
                 source="backend",
                 level="INFO",
                 category="ultravox_api",
-                message="Starting Ultravox import",
+                message="Step 2: Importing voice to Ultravox...",
                 request_id=request_id,
                 client_id=client_id,
                 user_id=user_id,
                 endpoint=str(request.url.path),
                 method=request.method,
                 context={
-                    "elevenlabs_voice_id": elevenlabs_voice_id,
+                    "provider": "elevenlabs",
+                    "provider_voice_id": elevenlabs_voice_id,
                     "voice_name": name,
                 },
             )
-            logger.info(f"[VOICES] Importing to Ultravox | elevenlabs_voice_id={elevenlabs_voice_id}")
+            logger.info(f"[VOICES] ===== STEP 2: ULTRAVOX IMPORT =====")
+            logger.info(f"[VOICES] Step 2: Importing voice to Ultravox...")
+            logger.info(f"[VOICES]   Provider: elevenlabs")
+            logger.info(f"[VOICES]   Provider Voice ID: {elevenlabs_voice_id}")
+            logger.info(f"[VOICES]   Voice Name: {name}")
             
             # Normalize name exactly like test script (line 87-92)
             normalized_name = name.lower().replace(" ", "_").replace("-", "_")
@@ -737,6 +860,27 @@ async def create_voice(
             }
             
             # Direct HTTP call exactly like test script (line 129-135)
+            await log_to_database(
+                source="backend",
+                level="INFO",
+                category="ultravox_api",
+                message="Sending request to Ultravox API...",
+                request_id=request_id,
+                client_id=client_id,
+                user_id=user_id,
+                endpoint=str(request.url.path),
+                method=request.method,
+                context={
+                    "api_url": url,
+                    "normalized_name": normalized_name,
+                    "timeout_seconds": 120,
+                },
+            )
+            logger.info(f"[VOICES]   Normalized name (with voice ID): {normalized_name}")
+            logger.info(f"[VOICES]   Sending request to Ultravox...")
+            logger.info(f"[VOICES]   API URL: {url}")
+            logger.info(f"[VOICES]   Timeout: 120 seconds")
+            
             try:
                 async with httpx.AsyncClient(timeout=120.0) as client:
                     ultravox_response = await client.post(
@@ -744,6 +888,23 @@ async def create_voice(
                         headers=headers,
                         json=payload,
                     )
+                    
+                    await log_to_database(
+                        source="backend",
+                        level="INFO",
+                        category="ultravox_api",
+                        message="Ultravox API response received",
+                        request_id=request_id,
+                        client_id=client_id,
+                        user_id=user_id,
+                        endpoint=str(request.url.path),
+                        method=request.method,
+                        context={
+                            "http_status": ultravox_response.status_code,
+                            "response_time_seconds": round(time.time() - ultravox_start, 2),
+                        },
+                    )
+                    logger.info(f"[VOICES]   Ultravox response received | status={ultravox_response.status_code} | time={time.time() - ultravox_start:.2f}s")
                     
                     if ultravox_response.status_code >= 400:
                         error_text = ultravox_response.text[:500] if ultravox_response.text else "No response body"
@@ -770,23 +931,38 @@ async def create_voice(
                         )
                     
                     ultravox_data = ultravox_response.json()
+                    
+                    # Extract voice ID before logging success
+                    ultravox_voice_id_temp = (
+                        ultravox_data.get("voiceId") or
+                        ultravox_data.get("id") or
+                        ultravox_data.get("voice_id") or
+                        (ultravox_data.get("data", {}) if isinstance(ultravox_data.get("data"), dict) else {}).get("voiceId") or
+                        (ultravox_data.get("data", {}) if isinstance(ultravox_data.get("data"), dict) else {}).get("id")
+                    )
+                    
+                    if ultravox_voice_id_temp:
+                        await log_to_database(
+                            source="backend",
+                            level="INFO",
+                            category="ultravox_api",
+                            message="[OK] Ultravox import successful!",
+                            request_id=request_id,
+                            client_id=client_id,
+                            user_id=user_id,
+                            endpoint=str(request.url.path),
+                            method=request.method,
+                            context={
+                                "ultravox_voice_id": ultravox_voice_id_temp,
+                                "total_time_seconds": round(time.time() - ultravox_start, 2),
+                            },
+                        )
+                        logger.info(f"[VOICES]   [OK] Ultravox import successful!")
+                        logger.info(f"[VOICES]   Ultravox Voice ID: {ultravox_voice_id_temp}")
+                        logger.info(f"[VOICES]   Total Time: {time.time() - ultravox_start:.2f}s")
+                    
                 ultravox_time = time.time() - ultravox_start
-                await log_to_database(
-                    source="backend",
-                    level="INFO",
-                    category="ultravox_api",
-                    message="Ultravox API call completed successfully",
-                    request_id=request_id,
-                    client_id=client_id,
-                    user_id=user_id,
-                    endpoint=str(request.url.path),
-                    method=request.method,
-                    duration_ms=int(ultravox_time * 1000),
-                    context={
-                        "duration_seconds": round(ultravox_time, 2),
-                    },
-                )
-                logger.info(f"[VOICES] Ultravox API call completed | time={ultravox_time:.2f}s")
+                logger.info(f"[VOICES] ===== STEP 2 COMPLETE =====")
             except httpx.TimeoutException as e:
                 await log_to_database(
                     source="backend",
@@ -833,6 +1009,7 @@ async def create_voice(
                 )
             
             # Extract voice ID exactly like test script (line 151-157)
+            # Note: Already extracted above for logging, but extract again here for consistency
             ultravox_voice_id = (
                 ultravox_data.get("voiceId") or
                 ultravox_data.get("id") or
@@ -862,24 +1039,6 @@ async def create_voice(
                 )
             
             total_ultravox_time = time.time() - ultravox_start
-            await log_to_database(
-                source="backend",
-                level="INFO",
-                category="voice_cloning",
-                message="Ultravox import successful",
-                request_id=request_id,
-                client_id=client_id,
-                user_id=user_id,
-                endpoint=str(request.url.path),
-                method=request.method,
-                context={
-                    "ultravox_voice_id": ultravox_voice_id,
-                    "total_time_seconds": round(total_ultravox_time, 2),
-                },
-            )
-            logger.info(f"[VOICES] ===== ULTRAVOX IMPORT SUCCESS =====")
-            logger.info(f"[VOICES] Ultravox import successful | ultravox_voice_id={ultravox_voice_id} | total_time={total_ultravox_time:.2f}s")
-            logger.info(f"[VOICES] Ultravox response data: {ultravox_data}")
             
             # Step 3: Save to DB (AFTER both API calls succeed - no credit checks, no credit updates)
             db_start = time.time()
@@ -887,7 +1046,7 @@ async def create_voice(
                 source="backend",
                 level="INFO",
                 category="voice_cloning",
-                message="Saving voice to database",
+                message="Step 3: Saving voice to database...",
                 request_id=request_id,
                 client_id=client_id,
                 user_id=user_id,
@@ -896,8 +1055,16 @@ async def create_voice(
                 context={
                     "voice_id": voice_id,
                     "voice_name": name,
+                    "elevenlabs_voice_id": elevenlabs_voice_id,
+                    "ultravox_voice_id": ultravox_voice_id,
                 },
             )
+            logger.info(f"[VOICES] ===== STEP 3: DATABASE SAVE =====")
+            logger.info(f"[VOICES] Step 3: Saving voice to database...")
+            logger.info(f"[VOICES]   Voice ID: {voice_id}")
+            logger.info(f"[VOICES]   Voice Name: {name}")
+            logger.info(f"[VOICES]   ElevenLabs Voice ID: {elevenlabs_voice_id}")
+            logger.info(f"[VOICES]   Ultravox Voice ID: {ultravox_voice_id}")
             db = DatabaseService(current_user["token"])
             db.set_auth(current_user["token"])
             
@@ -923,7 +1090,7 @@ async def create_voice(
                 source="backend",
                 level="INFO",
                 category="voice_cloning",
-                message="Voice cloned successfully - process complete",
+                message="[SUCCESS] Voice cloning test completed",
                 request_id=request_id,
                 client_id=client_id,
                 user_id=user_id,
@@ -935,6 +1102,7 @@ async def create_voice(
                     "voice_id": voice_id,
                     "elevenlabs_voice_id": elevenlabs_voice_id,
                     "ultravox_voice_id": ultravox_voice_id,
+                    "voice_name": name,
                     "timing_breakdown": {
                         "elevenlabs_seconds": round(total_elevenlabs_time, 2),
                         "ultravox_seconds": round(total_ultravox_time, 2),
@@ -943,14 +1111,19 @@ async def create_voice(
                     },
                 },
             )
-            logger.info(f"[VOICES] ===== VOICE CREATION COMPLETE =====")
-            logger.info(f"[VOICES] Voice cloned successfully | voice_id={voice_id} | db_time={db_time:.2f}s | total_time={total_time:.2f}s")
-            logger.info(f"[VOICES] Breakdown:")
+            logger.info(f"[VOICES] ===== SUCCESS: VOICE CLONING COMPLETE =====")
+            logger.info(f"[VOICES] [SUCCESS] Voice cloning test completed")
+            logger.info(f"[VOICES] Summary:")
+            logger.info(f"[VOICES]   ElevenLabs Voice ID: {elevenlabs_voice_id}")
+            logger.info(f"[VOICES]   Ultravox Voice ID: {ultravox_voice_id}")
+            logger.info(f"[VOICES]   Voice Name: {name}")
+            logger.info(f"[VOICES]   Voice ID: {voice_id}")
+            logger.info(f"[VOICES] Timing Breakdown:")
             logger.info(f"[VOICES]   - ElevenLabs: {total_elevenlabs_time:.2f}s")
             logger.info(f"[VOICES]   - Ultravox: {total_ultravox_time:.2f}s")
             logger.info(f"[VOICES]   - Database: {db_time:.2f}s")
             logger.info(f"[VOICES]   - Total: {total_time:.2f}s")
-            logger.info(f"[VOICES] ===== END VOICE CREATION REQUEST =====")
+            logger.info(f"[VOICES] All steps completed successfully!")
             logger.info("=" * 80)
             
             return {
