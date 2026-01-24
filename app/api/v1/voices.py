@@ -60,10 +60,15 @@ async def create_voice(
         
         logger.info(f"[VOICES] Creating voice | content_type={content_type} | is_json={is_json}")
         
+        import time
+        parse_start = time.time()
+        
         if is_json:
             # JSON request (for imports)
+            logger.info(f"[VOICES] Parsing JSON body...")
             body = await request.json()
-            logger.info(f"[VOICES] JSON body received | body_keys={list(body.keys()) if isinstance(body, dict) else 'not_dict'}")
+            parse_time = time.time() - parse_start
+            logger.info(f"[VOICES] JSON body received | body_keys={list(body.keys()) if isinstance(body, dict) else 'not_dict'} | parse_time={parse_time:.2f}s")
             name = body.get("name")
             strategy = body.get("strategy")
             source = body.get("source", {})
@@ -73,12 +78,16 @@ async def create_voice(
             files = []
         else:
             # Multipart form data (for clones)
+            logger.info(f"[VOICES] Parsing multipart form data...")
             form = await request.form()
+            parse_time = time.time() - parse_start
+            logger.info(f"[VOICES] Form data parsed | parse_time={parse_time:.2f}s")
             name = form.get("name")
             strategy = form.get("strategy")
             provider = form.get("provider", "elevenlabs")
             provider_voice_id = form.get("provider_voice_id")
             files = form.getlist("files")
+            logger.info(f"[VOICES] Form fields extracted | name={name} | strategy={strategy} | files_count={len(files) if files else 0}")
         
         logger.info(f"[VOICES] Parsed request | name={name} | strategy={strategy} | provider={provider} | provider_voice_id={provider_voice_id}")
         
@@ -101,9 +110,8 @@ async def create_voice(
                 raise ValidationError("Ultravox API key is not configured")
             
             # Step 1: Clone in ElevenLabs (NO DB, NO CREDITS - matches test script)
-            import time
             start_time = time.time()
-            logger.info(f"[VOICES] Cloning voice in ElevenLabs | name={name}")
+            logger.info(f"[VOICES] Cloning voice in ElevenLabs | name={name} | files_count={len(files)}")
             files_data = []
             for file_item in files:
                 if isinstance(file_item, UploadFile):
