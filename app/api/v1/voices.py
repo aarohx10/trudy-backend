@@ -615,12 +615,13 @@ async def list_voices(
         db = DatabaseService(current_user["token"])
         db.set_auth(current_user["token"])
         
-        # Get imported voices (type: "reference") - voice cloning has been removed
+        # Get all custom voices (type: "reference" for imported, type: "custom" for cloned)
         # These are all "my voices" - voices owned by this client
         imported_voices = db.select("voices", {"client_id": client_id, "type": "reference"}, order_by="created_at DESC")
+        cloned_voices = db.select("voices", {"client_id": client_id, "type": "custom"}, order_by="created_at DESC")
         
-        # Only imported voices now (voice cloning removed)
-        all_voices = imported_voices
+        # Combine imported and cloned voices
+        all_voices = list(imported_voices) + list(cloned_voices)
         
         # Sort by created_at descending (newest first) - handle both ISO strings and datetime objects
         def get_sort_key(voice):
