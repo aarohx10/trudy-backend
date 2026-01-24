@@ -110,31 +110,46 @@ async def create_voice(
                     content_type = file_item.content_type or "audio/mpeg"
                     files_data.append(("files", (filename, content, content_type)))
             
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                elevenlabs_response = await client.post(
-                    "https://api.elevenlabs.io/v1/voices/add",
-                    headers={"xi-api-key": settings.ELEVENLABS_API_KEY},
-                    data={"name": name},
-                    files=files_data,
+            try:
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    elevenlabs_response = await client.post(
+                        "https://api.elevenlabs.io/v1/voices/add",
+                        headers={"xi-api-key": settings.ELEVENLABS_API_KEY},
+                        data={"name": name},
+                        files=files_data,
+                    )
+                    
+                    if elevenlabs_response.status_code >= 400:
+                        error_text = elevenlabs_response.text[:500] if elevenlabs_response.text else "No response body"
+                        raise ProviderError(
+                            provider="elevenlabs",
+                            message=f"ElevenLabs voice cloning failed: {error_text}",
+                            http_status=elevenlabs_response.status_code,
+                        )
+                    
+                    elevenlabs_data = elevenlabs_response.json()
+                    elevenlabs_voice_id = elevenlabs_data.get("voice_id")
+                    
+                    if not elevenlabs_voice_id:
+                        raise ProviderError(
+                            provider="elevenlabs",
+                            message="ElevenLabs response missing voice_id",
+                            http_status=500,
+                        )
+            except httpx.TimeoutException as e:
+                logger.error(f"[VOICES] ElevenLabs timeout after 120s | error={str(e)}")
+                raise ProviderError(
+                    provider="elevenlabs",
+                    message="ElevenLabs API request timed out after 120 seconds. The voice cloning may still be processing. Please try again later.",
+                    http_status=504,
                 )
-                
-                if elevenlabs_response.status_code >= 400:
-                    error_text = elevenlabs_response.text[:500] if elevenlabs_response.text else "No response body"
-                    raise ProviderError(
-                        provider="elevenlabs",
-                        message=f"ElevenLabs voice cloning failed: {error_text}",
-                        http_status=elevenlabs_response.status_code,
-                    )
-                
-                elevenlabs_data = elevenlabs_response.json()
-                elevenlabs_voice_id = elevenlabs_data.get("voice_id")
-                
-                if not elevenlabs_voice_id:
-                    raise ProviderError(
-                        provider="elevenlabs",
-                        message="ElevenLabs response missing voice_id",
-                        http_status=500,
-                    )
+            except httpx.RequestError as e:
+                logger.error(f"[VOICES] ElevenLabs request error | error={str(e)} | type={type(e).__name__}")
+                raise ProviderError(
+                    provider="elevenlabs",
+                    message=f"Failed to connect to ElevenLabs API: {str(e)}",
+                    http_status=502,
+                )
             
             logger.info(f"[VOICES] ElevenLabs clone successful | voice_id={elevenlabs_voice_id}")
             
@@ -172,22 +187,37 @@ async def create_voice(
             }
             
             # Direct HTTP call exactly like test script (line 129-135)
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                ultravox_response = await client.post(
-                    url,
-                    headers=headers,
-                    json=payload,
-                )
-                
-                if ultravox_response.status_code >= 400:
-                    error_text = ultravox_response.text[:500] if ultravox_response.text else "No response body"
-                    raise ProviderError(
-                        provider="ultravox",
-                        message=f"Ultravox import failed: {error_text}",
-                        http_status=ultravox_response.status_code,
+            try:
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    ultravox_response = await client.post(
+                        url,
+                        headers=headers,
+                        json=payload,
                     )
-                
-                ultravox_data = ultravox_response.json()
+                    
+                    if ultravox_response.status_code >= 400:
+                        error_text = ultravox_response.text[:500] if ultravox_response.text else "No response body"
+                        raise ProviderError(
+                            provider="ultravox",
+                            message=f"Ultravox import failed: {error_text}",
+                            http_status=ultravox_response.status_code,
+                        )
+                    
+                    ultravox_data = ultravox_response.json()
+            except httpx.TimeoutException as e:
+                logger.error(f"[VOICES] Ultravox timeout after 120s | error={str(e)}")
+                raise ProviderError(
+                    provider="ultravox",
+                    message="Ultravox API request timed out after 120 seconds. The voice import may still be processing. Please try again later.",
+                    http_status=504,
+                )
+            except httpx.RequestError as e:
+                logger.error(f"[VOICES] Ultravox request error | error={str(e)} | type={type(e).__name__}")
+                raise ProviderError(
+                    provider="ultravox",
+                    message=f"Failed to connect to Ultravox API: {str(e)}",
+                    http_status=502,
+                )
             
             # Extract voice ID exactly like test script (line 151-157)
             ultravox_voice_id = (
