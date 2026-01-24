@@ -433,88 +433,88 @@ async def create_voice(
             raise ValidationError("Ultravox API key is not configured")
         
         try:
-                # Step 1: Import to Ultravox
-                logger.info(f"[VOICES] Importing voice from provider | provider={provider} | provider_voice_id={provider_voice_id} | name={name}")
-                ultravox_response = await ultravox_client.import_voice_from_provider(
-                    name=name,
-                    provider=provider,
-                    provider_voice_id=provider_voice_id,
-                    description=f"Imported voice: {name}",
-                )
-                
-                logger.info(f"[VOICES] Ultravox response received | response_keys={list(ultravox_response.keys()) if isinstance(ultravox_response, dict) else 'not_dict'} | response_type={type(ultravox_response).__name__}")
-                
-                # Log full response for debugging (truncated to avoid huge logs)
-                import json
-                response_str = json.dumps(ultravox_response, default=str)[:1000]
-                logger.debug(f"[VOICES] Ultravox response (first 1000 chars): {response_str}")
-                
-                # Extract voice ID - try multiple possible field names
-                ultravox_voice_id = (
-                    ultravox_response.get("voiceId") or 
-                    ultravox_response.get("id") or
-                    ultravox_response.get("voice_id") or
-                    (ultravox_response.get("data", {}) if isinstance(ultravox_response.get("data"), dict) else {}).get("voiceId") or
-                    (ultravox_response.get("data", {}) if isinstance(ultravox_response.get("data"), dict) else {}).get("id")
-                )
-                
-                if not ultravox_voice_id:
-                    logger.error(f"[VOICES] Ultravox response missing voiceId | response={ultravox_response} | response_keys={list(ultravox_response.keys()) if isinstance(ultravox_response, dict) else 'N/A'}")
-                    raise ProviderError(
-                        provider="ultravox",
-                        message=f"Ultravox response missing voiceId. Response structure: {list(ultravox_response.keys()) if isinstance(ultravox_response, dict) else 'not a dict'}",
-                        http_status=500,
-                        details={"response": ultravox_response},
-                    )
-                
-                logger.info(f"[VOICES] Extracted ultravox_voice_id | ultravox_voice_id={ultravox_voice_id} | from_field={'voiceId' if ultravox_response.get('voiceId') else 'id' if ultravox_response.get('id') else 'other'}")
-                
-                logger.info(f"[VOICES] Ultravox import successful | ultravox_voice_id={ultravox_voice_id}")
-                
-                # Step 2: Save to DB (AFTER Ultravox import succeeds - no credit checks)
-                db = DatabaseService(current_user["token"])
-                db.set_auth(current_user["token"])
-                
-                voice_record = {
-                    "id": voice_id,
-                    "client_id": client_id,
-                    "user_id": user_id,
-                    "name": name,
-                    "provider": provider,
-                    "type": "reference",
-                    "language": "en-US",
-                    "status": "active",
-                    "provider_voice_id": provider_voice_id,
-                    "ultravox_voice_id": ultravox_voice_id,
-                    "created_at": now.isoformat(),
-                    "updated_at": now.isoformat(),
-                }
-                
-                logger.info(f"[VOICES] Saving voice to DB | voice_id={voice_id}")
-                db.insert("voices", voice_record)
-                
-                logger.info(f"[VOICES] Voice imported successfully | voice_id={voice_id}")
-                
-                return {
-                    "data": VoiceResponse(**voice_record),
-                    "meta": ResponseMeta(request_id=str(uuid.uuid4()), ts=now),
-                }
-                
-            except ProviderError as pe:
-                # Re-raise ProviderError as-is
-                provider = pe.details.get("provider", "unknown") if pe.details else "unknown"
-                http_status = pe.details.get("httpStatus", 500) if pe.details else 500
-                logger.error(f"[VOICES] ProviderError during import | provider={provider} | message={pe.message} | http_status={http_status}")
-                raise
-            except Exception as e:
-                # Log the actual error
-                import traceback
-                logger.error(f"[VOICES] Error importing voice | error={str(e)} | type={type(e).__name__} | traceback={traceback.format_exc()}")
+            # Step 1: Import to Ultravox
+            logger.info(f"[VOICES] Importing voice from provider | provider={provider} | provider_voice_id={provider_voice_id} | name={name}")
+            ultravox_response = await ultravox_client.import_voice_from_provider(
+                name=name,
+                provider=provider,
+                provider_voice_id=provider_voice_id,
+                description=f"Imported voice: {name}",
+            )
+            
+            logger.info(f"[VOICES] Ultravox response received | response_keys={list(ultravox_response.keys()) if isinstance(ultravox_response, dict) else 'not_dict'} | response_type={type(ultravox_response).__name__}")
+            
+            # Log full response for debugging (truncated to avoid huge logs)
+            import json
+            response_str = json.dumps(ultravox_response, default=str)[:1000]
+            logger.debug(f"[VOICES] Ultravox response (first 1000 chars): {response_str}")
+            
+            # Extract voice ID - try multiple possible field names
+            ultravox_voice_id = (
+                ultravox_response.get("voiceId") or 
+                ultravox_response.get("id") or
+                ultravox_response.get("voice_id") or
+                (ultravox_response.get("data", {}) if isinstance(ultravox_response.get("data"), dict) else {}).get("voiceId") or
+                (ultravox_response.get("data", {}) if isinstance(ultravox_response.get("data"), dict) else {}).get("id")
+            )
+            
+            if not ultravox_voice_id:
+                logger.error(f"[VOICES] Ultravox response missing voiceId | response={ultravox_response} | response_keys={list(ultravox_response.keys()) if isinstance(ultravox_response, dict) else 'N/A'}")
                 raise ProviderError(
                     provider="ultravox",
-                    message=f"Failed to import voice: {str(e)}",
+                    message=f"Ultravox response missing voiceId. Response structure: {list(ultravox_response.keys()) if isinstance(ultravox_response, dict) else 'not a dict'}",
                     http_status=500,
+                    details={"response": ultravox_response},
                 )
+            
+            logger.info(f"[VOICES] Extracted ultravox_voice_id | ultravox_voice_id={ultravox_voice_id} | from_field={'voiceId' if ultravox_response.get('voiceId') else 'id' if ultravox_response.get('id') else 'other'}")
+            
+            logger.info(f"[VOICES] Ultravox import successful | ultravox_voice_id={ultravox_voice_id}")
+            
+            # Step 2: Save to DB (AFTER Ultravox import succeeds - no credit checks)
+            db = DatabaseService(current_user["token"])
+            db.set_auth(current_user["token"])
+            
+            voice_record = {
+                "id": voice_id,
+                "client_id": client_id,
+                "user_id": user_id,
+                "name": name,
+                "provider": provider,
+                "type": "reference",
+                "language": "en-US",
+                "status": "active",
+                "provider_voice_id": provider_voice_id,
+                "ultravox_voice_id": ultravox_voice_id,
+                "created_at": now.isoformat(),
+                "updated_at": now.isoformat(),
+            }
+            
+            logger.info(f"[VOICES] Saving voice to DB | voice_id={voice_id}")
+            db.insert("voices", voice_record)
+            
+            logger.info(f"[VOICES] Voice imported successfully | voice_id={voice_id}")
+            
+            return {
+                "data": VoiceResponse(**voice_record),
+                "meta": ResponseMeta(request_id=str(uuid.uuid4()), ts=now),
+            }
+            
+        except ProviderError as pe:
+            # Re-raise ProviderError as-is
+            provider = pe.details.get("provider", "unknown") if pe.details else "unknown"
+            http_status = pe.details.get("httpStatus", 500) if pe.details else 500
+            logger.error(f"[VOICES] ProviderError during import | provider={provider} | message={pe.message} | http_status={http_status}")
+            raise
+        except Exception as e:
+            # Log the actual error
+            import traceback
+            logger.error(f"[VOICES] Error importing voice | error={str(e)} | type={type(e).__name__} | traceback={traceback.format_exc()}")
+            raise ProviderError(
+                provider="ultravox",
+                message=f"Failed to import voice: {str(e)}",
+                http_status=500,
+            )
     
     except (ValidationError, ForbiddenError, NotFoundError, ProviderError) as e:
         # Re-raise known errors as-is, but log them first
