@@ -18,6 +18,6 @@ Write-Host "✅ Code pushed to GitHub" -ForegroundColor Green
 Write-Host "🔄 Triggering deployment on Hetzner VPS..." -ForegroundColor Yellow
 
 # 4. SSH into server and run deploy.sh
-ssh root@hetzner-truedy "cd /opt/backend && git pull origin master && bash deploy.sh"
+ssh root@hetzner-truedy "cd /opt/backend && git clean -fd && git fetch origin master && git reset --hard origin/master && bash deploy.sh"
 
 Write-Host "✨ All done! Your backend is updated and live at https://truedy.closi.tech" -ForegroundColor Green
