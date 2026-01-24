@@ -2,13 +2,15 @@
 Voice Cloning Endpoint - SIMPLE & SEPARATE
 Based on test_voice_clone.py - keeps it lightweight and basic
 """
-from fastapi import APIRouter, Depends, File, Form, UploadFile, Header
+from fastapi import APIRouter, Depends, File, Form, UploadFile, Header, Request, Body
 from fastapi.responses import Response
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 import uuid
 import logging
 import httpx
+import base64
+from pydantic import BaseModel
 
 from app.core.auth import get_current_user
 from app.core.database import DatabaseService
@@ -20,6 +22,17 @@ from app.core.db_logging import log_to_database
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+# Pydantic model for JSON request with base64 files
+class FileData(BaseModel):
+    filename: str
+    data: str  # Base64 encoded audio data
+    content_type: str = "audio/mpeg"
+
+class VoiceCloneRequest(BaseModel):
+    name: str
+    files: List[FileData]
 
 
 async def clone_to_elevenlabs(audio_files: List[bytes], voice_name: str) -> dict:
@@ -79,10 +92,9 @@ async def clone_to_elevenlabs(audio_files: List[bytes], voice_name: str) -> dict
 
 @router.post("")
 async def create_voice_clone(
+    request_data: VoiceCloneRequest = Body(...),
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
-    name: str = Form(...),
-    files: List[UploadFile] = File(...),
 ):
     """
     Create voice clone - SIMPLE: Just like test_voice_clone.py
@@ -92,13 +104,21 @@ async def create_voice_clone(
     2. Import cloned voice to Ultravox
     3. Save to database
     
-    FormData (multipart/form-data):
-    - name: Voice name (required)
-    - files: Audio files (required, one or more)
+    JSON Request Body:
+    {
+        "name": "Voice name",
+        "files": [
+            {
+                "filename": "sample.mp3",
+                "data": "base64_encoded_audio_data",
+                "content_type": "audio/mpeg"
+            }
+        ]
+    }
     """
     logger.info("=" * 80)
     logger.info(f"[VOICE_CLONE] 🔥 CREATE VOICE CLONE ENDPOINT HIT!")
-    logger.info(f"[VOICE_CLONE] Name: {name} | Files: {len(files)}")
+    logger.info(f"[VOICE_CLONE] Name: {request_data.name} | Files: {len(request_data.files)}")
     logger.info("=" * 80)
     
     try:
@@ -110,19 +130,26 @@ async def create_voice_clone(
             raise ForbiddenError("Insufficient permissions")
         
         # Validation
-        if not name or not name.strip():
+        name = request_data.name.strip()
+        if not name:
             raise ValidationError("Voice name is required")
         
-        if not files or len(files) == 0:
+        if not request_data.files or len(request_data.files) == 0:
             raise ValidationError("At least one audio file is required")
         
-        # Read audio files into bytes (exactly like test script)
-        logger.info(f"[VOICE_CLONE] Reading {len(files)} audio file(s)...")
+        # Decode base64 files to bytes (exactly like test script)
+        logger.info(f"[VOICE_CLONE] Decoding {len(request_data.files)} base64 file(s)...")
         audio_files_bytes = []
-        for i, file in enumerate(files):
-            audio_bytes = await file.read()
-            audio_files_bytes.append(audio_bytes)
-            logger.info(f"[VOICE_CLONE] File {i+1}: {file.filename} | size={len(audio_bytes)} bytes")
+        for i, file_data in enumerate(request_data.files):
+            try:
+                # Decode base64 to bytes
+                audio_bytes = base64.b64decode(file_data.data)
+                audio_files_bytes.append(audio_bytes)
+                filename = file_data.filename or f"sample_{i}.mp3"
+                logger.info(f"[VOICE_CLONE] File {i+1}: {filename} | size={len(audio_bytes)} bytes")
+            except Exception as decode_error:
+                logger.error(f"[VOICE_CLONE] Failed to decode file {i+1}: {str(decode_error)}")
+                raise ValidationError(f"Invalid base64 data for file {i+1}: {str(decode_error)}")
         
         # Step 1: Clone to ElevenLabs (exactly like test script)
         logger.info(f"[VOICE_CLONE] Step 1: Cloning to ElevenLabs...")
