@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("")
+@router.post("/")
 async def create_agent(
     agent_data: AgentCreate,
     request: Request,

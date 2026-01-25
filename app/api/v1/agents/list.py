@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.get("")
+@router.get("/")
 async def list_agents(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
