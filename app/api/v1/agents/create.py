@@ -69,7 +69,7 @@ async def create_agent(
             "description": agent_dict.get("description"),
             "voice_id": agent_dict["voice_id"],
             "system_prompt": agent_dict["system_prompt"],
-            "model": agent_dict.get("model", "fixie-ai/ultravox-v0_4-8k"),
+            "model": agent_dict.get("model", "ultravox-v0.6"),
             "tools": agent_dict.get("tools", []),
             "knowledge_bases": agent_dict.get("knowledge_bases", []),
             "status": "creating",

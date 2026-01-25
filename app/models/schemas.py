@@ -524,7 +524,7 @@ class AgentCreate(BaseModel):
     description: Optional[str] = None
     voice_id: str = Field(..., description="UUID of the voice to use")
     system_prompt: str = Field(..., min_length=1)
-    model: str = Field(default="fixie-ai/ultravox-v0_4-8k")
+    model: str = Field(default="ultravox-v0.6")
     tools: Optional[List[str]] = Field(default=[], description="List of tool IDs")
     knowledge_bases: Optional[List[str]] = Field(default=[], description="List of knowledge base IDs")
     template_id: Optional[str] = Field(None, description="Template ID used to create this agent")

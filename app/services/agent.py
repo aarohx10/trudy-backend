@@ -36,7 +36,7 @@ def build_ultravox_call_template(agent_record: Dict[str, Any], ultravox_voice_id
         if not system_prompt or not str(system_prompt).strip():
             raise ValueError("system_prompt is required but is empty or missing")
         
-        model = agent_record.get("model", "fixie-ai/ultravox-v0_4-8k")
+        model = agent_record.get("model", "ultravox-v0.6")
         if not model or not str(model).strip():
             raise ValueError("model is required but is empty or missing")
         
@@ -405,6 +405,24 @@ async def get_agent_from_ultravox(ultravox_agent_id: str) -> Dict[str, Any]:
         )
 
 
+def normalize_agent_name(name: str) -> str:
+    """
+    Normalize agent name to match Ultravox requirements: ^[a-zA-Z0-9_-]{1,64}$
+    - Replace spaces with underscores
+    - Remove invalid characters
+    - Limit to 64 characters
+    """
+    import re
+    # Replace spaces and special chars with underscores
+    normalized = re.sub(r'[^a-zA-Z0-9_-]', '_', name)
+    # Limit to 64 characters
+    normalized = normalized[:64]
+    # Ensure it's not empty
+    if not normalized:
+        normalized = "untitled_agent"
+    return normalized
+
+
 async def create_agent_ultravox_first(agent_data: Dict[str, Any], client_id: str) -> Dict[str, Any]:
     """
     Create agent in Ultravox FIRST (before database).
@@ -449,8 +467,16 @@ async def create_agent_ultravox_first(agent_data: Dict[str, Any], client_id: str
         raise ValueError("temperature is required in callTemplate but is missing")
     
     # Create agent in Ultravox FIRST
-    agent_name = agent_data.get("name", "Untitled Agent")
-    response = await ultravox_client.create_agent(agent_name, call_template)
+    agent_name = agent_data.get("name", "untitled_agent")
+    if not agent_name or not str(agent_name).strip():
+        raise ValueError("Agent name is required but is empty or missing")
+    
+    # Normalize name to match Ultravox requirements (no spaces, only alphanumeric, underscore, hyphen)
+    normalized_name = normalize_agent_name(agent_name)
+    if normalized_name != agent_name:
+        logger.warning(f"[AGENT_SERVICE] Agent name normalized from '{agent_name}' to '{normalized_name}' for Ultravox")
+    
+    response = await ultravox_client.create_agent(normalized_name, call_template)
     
     logger.info(f"[AGENT_SERVICE] Created agent in Ultravox FIRST: {response.get('agentId')}")
     return response
@@ -488,9 +514,29 @@ async def update_agent_ultravox_first(ultravox_agent_id: str, agent_data: Dict[s
     # Build callTemplate
     call_template = build_ultravox_call_template(agent_data, ultravox_voice_id)
     
+    # Log the callTemplate for debugging
+    import json
+    logger.debug(f"[AGENT_SERVICE] CallTemplate to send to Ultravox: {json.dumps(call_template, indent=2, default=str)}")
+    
+    # Validate required fields are present
+    if not call_template.get("systemPrompt"):
+        raise ValueError("systemPrompt is required in callTemplate but is empty")
+    if not call_template.get("voice"):
+        raise ValueError("voice is required in callTemplate but is empty")
+    if call_template.get("temperature") is None:
+        raise ValueError("temperature is required in callTemplate but is missing")
+    
     # Update agent in Ultravox FIRST
-    agent_name = agent_data.get("name", "Untitled Agent")
-    response = await ultravox_client.update_agent(ultravox_agent_id, agent_name, call_template)
+    agent_name = agent_data.get("name", "untitled_agent")
+    if not agent_name or not str(agent_name).strip():
+        raise ValueError("Agent name is required but is empty or missing")
+    
+    # Normalize name to match Ultravox requirements (no spaces, only alphanumeric, underscore, hyphen)
+    normalized_name = normalize_agent_name(agent_name)
+    if normalized_name != agent_name:
+        logger.warning(f"[AGENT_SERVICE] Agent name normalized from '{agent_name}' to '{normalized_name}' for Ultravox")
+    
+    response = await ultravox_client.update_agent(ultravox_agent_id, normalized_name, call_template)
     
     logger.info(f"[AGENT_SERVICE] Updated agent in Ultravox FIRST: {ultravox_agent_id}")
     return response

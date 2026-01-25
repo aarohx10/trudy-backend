@@ -66,7 +66,7 @@ async def create_draft_agent(
             "description": template.get("description") if template else "Draft agent",
             "voice_id": default_voice_id,  # None if no voice available - user must select voice
             "system_prompt": system_prompt,
-            "model": "fixie-ai/ultravox-v0_4-8k",
+            "model": "ultravox-v0.6",
             "tools": [],
             "knowledge_bases": [],
             "status": "draft",
