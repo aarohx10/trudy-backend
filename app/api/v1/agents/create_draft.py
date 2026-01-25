@@ -56,6 +56,8 @@ async def create_draft_agent(
             name = template.get("name", "Untitled Agent")
             system_prompt = template.get("system_prompt", system_prompt)
         
+        # Build agent record
+        # Note: Some fields require migration 015_expand_agents_table.sql to be run
         agent_record = {
             "id": agent_id,
             "client_id": client_id,
@@ -75,8 +77,11 @@ async def create_draft_agent(
             "recording_enabled": False,
             "join_timeout": "30s",
             "max_duration": "3600s",
-            "template_id": template_id
         }
+        
+        # Add template_id if provided (requires migration 015)
+        if template_id:
+            agent_record["template_id"] = template_id
         
         if template and template.get("category"):
              # Maybe append category to description or store it? 
