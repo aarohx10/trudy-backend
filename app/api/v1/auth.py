@@ -11,7 +11,7 @@ from app.core.auth import get_current_user
 from app.core.database import DatabaseService
 from app.core.encryption import encrypt_api_key, decrypt_api_key
 from app.core.exceptions import NotFoundError, ForbiddenError, ConflictError, ValidationError
-from app.core.clerk_sync import sync_client_id_to_org_metadata
+from app.core.clerk_sync import sync_client_id_to_org_metadata, get_clerk_org_metadata
 from app.core.debug_logging import debug_logger
 from app.services.ultravox import ultravox_client
 from app.models.schemas import (
@@ -66,13 +66,34 @@ async def get_me(
     else:
         debug_logger.log_db("SELECT", "users", {"result": "not_found"})
     
-    # If user not found but we have org_id, try to find client by org
+    # If user not found but we have org_id, check Clerk org metadata FIRST for client_id
     if not user_data and clerk_org_id:
-        debug_logger.log_db("SELECT", "clients", {"filter": "clerk_organization_id", "value": clerk_org_id})
-        org_client = admin_db.table("clients").select("*").eq("clerk_organization_id", clerk_org_id).execute()
-        if org_client.data:
-            client_id = org_client.data[0].get("id")
-            debug_logger.log_db("SELECT", "clients", {"result": "found", "client_id": client_id})
+        debug_logger.log_step("AUTH_ME", "User not found, checking Clerk org metadata for client_id", {"org_id": clerk_org_id})
+        
+        # STEP 1: Check Clerk org metadata for existing client_id (SINGLE CLIENT ID POLICY)
+        org_metadata = await get_clerk_org_metadata(clerk_org_id)
+        if org_metadata and org_metadata.get("public_metadata", {}).get("client_id"):
+            metadata_client_id = org_metadata["public_metadata"]["client_id"]
+            debug_logger.log_step("AUTH_ME", "Found client_id in Clerk org metadata", {"client_id": metadata_client_id})
+            
+            # Verify this client exists in database and is linked to this org
+            org_client = admin_db.table("clients").select("*").eq("id", metadata_client_id).eq("clerk_organization_id", clerk_org_id).execute()
+            if org_client.data:
+                client_id = metadata_client_id
+                debug_logger.log_step("AUTH_ME", "Using client_id from Clerk org metadata", {"client_id": client_id})
+            else:
+                logger.warning(f"Client {metadata_client_id} from org metadata not found in database or not linked to org {clerk_org_id}")
+        
+        # STEP 2: Fallback to database lookup if metadata didn't have client_id
+        if not client_id:
+            debug_logger.log_db("SELECT", "clients", {"filter": "clerk_organization_id", "value": clerk_org_id})
+            org_client = admin_db.table("clients").select("*").eq("clerk_organization_id", clerk_org_id).execute()
+            if org_client.data:
+                client_id = org_client.data[0].get("id")
+                debug_logger.log_db("SELECT", "clients", {"result": "found", "client_id": client_id})
+                
+                # Sync this client_id to org metadata for future lookups
+                await sync_client_id_to_org_metadata(clerk_org_id, client_id)
     
     if not user_data:
         debug_logger.log_step("AUTH_ME", "User not found, creating new user/client")
@@ -192,16 +213,13 @@ async def get_me(
             if not client_id:
                 raise ValueError(f"Failed to get or create client for organization: {clerk_org_id}")
             
-            if not client_id:
-                raise ValueError(f"Failed to get or create client for organization: {clerk_org_id}")
-                
-                # Sync client_id to organization metadata
-                if clerk_org_id:
-                    debug_logger.log_step("AUTH_ME", "Syncing client_id to Clerk org metadata", {
-                        "org_id": clerk_org_id,
-                        "client_id": client_id
-                    })
-                    await sync_client_id_to_org_metadata(clerk_org_id, client_id)
+            # CRITICAL: Always sync client_id to organization metadata after creation/retrieval
+            if clerk_org_id and client_id:
+                debug_logger.log_step("AUTH_ME", "Syncing client_id to Clerk org metadata", {
+                    "org_id": clerk_org_id,
+                    "client_id": client_id
+                })
+                await sync_client_id_to_org_metadata(clerk_org_id, client_id)
         else:
             # No organization - create standalone client
             client_id = str(uuid.uuid4())

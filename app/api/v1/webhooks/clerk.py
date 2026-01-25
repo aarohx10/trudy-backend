@@ -14,7 +14,7 @@ import uuid
 from app.core.config import settings
 from app.core.database import get_supabase_admin_client
 from app.core.exceptions import UnauthorizedError
-from app.core.clerk_sync import sync_client_id_to_org_metadata
+from app.core.clerk_sync import sync_client_id_to_org_metadata, get_clerk_org_metadata
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhooks/clerk", tags=["webhooks"])
@@ -199,7 +199,11 @@ async def handle_organization_created(admin_db, data: dict):
 
 
 async def handle_organization_membership_created(admin_db, data: dict):
-    """Handle organizationMembership.created event - create user and link to client"""
+    """Handle organizationMembership.created event - create user and link to client
+    
+    CRITICAL: Uses client_id from Clerk org metadata (SINGLE CLIENT ID POLICY)
+    If metadata is missing, logs critical error instead of creating rogue client
+    """
     import asyncio
     clerk_user_id = data.get("public_user_data", {}).get("user_id", "")
     clerk_org_id = data.get("organization_id", "")
@@ -207,71 +211,32 @@ async def handle_organization_membership_created(admin_db, data: dict):
     
     logger.info(f"Organization membership created: user={clerk_user_id}, org={clerk_org_id}, role={role}")
     
-    # Retry logic to handle race conditions when multiple users join simultaneously
-    max_retries = 3
+    # STEP 1: Check Clerk org metadata for client_id (SINGLE CLIENT ID POLICY)
+    org_metadata = await get_clerk_org_metadata(clerk_org_id)
     client_id = None
     
-    for attempt in range(max_retries):
-        # Find client by organization
-        org_client = admin_db.table("clients").select("*").eq("clerk_organization_id", clerk_org_id).execute()
+    if org_metadata and org_metadata.get("public_metadata", {}).get("client_id"):
+        metadata_client_id = org_metadata["public_metadata"]["client_id"]
+        logger.info(f"Found client_id in Clerk org metadata: {metadata_client_id}")
         
+        # Verify this client exists in database and is linked to this org
+        org_client = admin_db.table("clients").select("*").eq("id", metadata_client_id).eq("clerk_organization_id", clerk_org_id).execute()
         if org_client.data:
-            # Client exists - use it
-            client_id = org_client.data[0].get("id")
-            logger.info(f"Found existing client for org: {clerk_org_id}, client_id: {client_id}")
-            break
-        
-        # Client doesn't exist - wait before retrying (exponential backoff)
-        if attempt < max_retries - 1:
-            wait_time = 0.5 * (2 ** attempt)  # 0.5s, 1s, 2s
-            logger.info(f"Client not found for org: {clerk_org_id}, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
-            await asyncio.sleep(wait_time)
-            continue
-        
-        # Last attempt - create client if still doesn't exist
-        logger.warning(f"Client not found for org: {clerk_org_id} after {max_retries} attempts, creating new client...")
-        client_id = str(uuid.uuid4())
-        client_data = {
-            "id": client_id,
-            "name": "New Organization",
-            "email": "",
-            "clerk_organization_id": clerk_org_id,
-            "subscription_status": "active",
-            "credits_balance": 0,
-            "credits_ceiling": 10000,
-        }
-        
-        try:
-            admin_db.table("clients").insert(client_data).execute()
-            logger.info(f"Created new client for org: {clerk_org_id}, client_id: {client_id}")
-            # Sync client_id to organization metadata
-            await sync_client_id_to_org_metadata(clerk_org_id, client_id)
-        except Exception as e:
-            import traceback
-            import json
-            error_details_raw = {
-                "error_type": type(e).__name__,
-                "error_message": str(e),
-                "error_args": e.args if hasattr(e, 'args') else None,
-                "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
-                "full_traceback": traceback.format_exc(),
-                "clerk_org_id": clerk_org_id if 'clerk_org_id' in locals() else None,
-            }
-            logger.error(f"[WEBHOOKS] [CLERK] Error creating client in webhook (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
-            
-            # If insert fails (e.g., duplicate key), try to fetch existing client one more time
-            error_str = str(e)
-            if "23505" in error_str or "duplicate" in error_str.lower() or "unique" in error_str.lower():
-                logger.info(f"Client creation failed (likely race condition), fetching existing client...")
-                org_client = admin_db.table("clients").select("*").eq("clerk_organization_id", clerk_org_id).execute()
-                if org_client.data:
-                    client_id = org_client.data[0].get("id")
-                    logger.info(f"Found existing client after race condition: {client_id}")
-                    break
-            raise e
+            client_id = metadata_client_id
+            logger.info(f"Using client_id from Clerk org metadata: {client_id}")
+        else:
+            logger.critical(f"CRITICAL: Client {metadata_client_id} from org metadata not found in database or not linked to org {clerk_org_id}. This indicates metadata desync!")
+            # Don't create a new client - this is a critical error that needs manual intervention
+            raise ValueError(f"Client {metadata_client_id} from org metadata not found in database. Metadata desync detected!")
+    else:
+        # Metadata missing - this is a critical error
+        logger.critical(f"CRITICAL: Clerk org {clerk_org_id} has no client_id in public_metadata. This will cause 'ghost member' problem!")
+        logger.critical(f"CRITICAL: Refusing to create user {clerk_user_id} without valid client_id. Admin must sync org metadata first.")
+        # Don't create a rogue client - log critical error
+        raise ValueError(f"Clerk org {clerk_org_id} missing client_id in metadata. Cannot create user without valid client_id. Please sync org metadata first.")
     
     if not client_id:
-        raise ValueError(f"Failed to get or create client for organization: {clerk_org_id}")
+        raise ValueError(f"Failed to get client_id for organization: {clerk_org_id}")
     
     # Check if user exists
     user = admin_db.table("users").select("*").eq("clerk_user_id", clerk_user_id).execute()

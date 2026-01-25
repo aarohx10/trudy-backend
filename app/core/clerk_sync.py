@@ -4,10 +4,55 @@ Syncs client_id to Clerk organization metadata for faster lookups
 """
 import logging
 import httpx
-from typing import Optional
+from typing import Optional, Dict, Any
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+async def get_clerk_org_metadata(clerk_org_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Fetch Clerk organization metadata including public_metadata
+    
+    Args:
+        clerk_org_id: Clerk organization ID
+    
+    Returns:
+        Organization metadata dict or None if not found
+    """
+    try:
+        clerk_secret_key = getattr(settings, 'CLERK_SECRET_KEY', '')
+        if not clerk_secret_key:
+            logger.warning("CLERK_SECRET_KEY not configured, cannot fetch org metadata")
+            return None
+        
+        # Fetch organization via Clerk API
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"https://api.clerk.dev/v1/organizations/{clerk_org_id}",
+                headers={
+                    "Authorization": f"Bearer {clerk_secret_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=10.0,
+            )
+            response.raise_for_status()
+            org_data = response.json()
+            logger.info(f"Fetched Clerk org metadata for {clerk_org_id}")
+            return org_data
+    except Exception as e:
+        import traceback
+        import json
+        error_details_raw = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
+            "full_traceback": traceback.format_exc(),
+            "clerk_org_id": clerk_org_id,
+        }
+        logger.error(f"[CLERK_SYNC] Failed to fetch Clerk org metadata (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+        return None
 
 
 async def sync_client_id_to_org_metadata(clerk_org_id: str, client_id: str) -> bool:
