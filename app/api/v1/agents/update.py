@@ -16,7 +16,7 @@ from app.models.schemas import (
     ResponseMeta,
     AgentUpdate,
 )
-from app.services.agent import update_agent_in_ultravox
+from app.services.agent import sync_agent_to_ultravox
 
 logger = logging.getLogger(__name__)
 
@@ -109,13 +109,13 @@ async def update_agent(
         logger.info(f"[AGENTS] [UPDATE] Agent updated in database: {agent_id}")
         
         # Try to sync to Ultravox (non-blocking)
-        ultravox_agent_id = existing_agent.get("ultravox_agent_id")
-        if ultravox_agent_id:
+        # Only sync if agent has required fields (voice_id, system_prompt, name)
+        if merged_agent.get("voice_id") and merged_agent.get("system_prompt") and merged_agent.get("name"):
             try:
-                await update_agent_in_ultravox(ultravox_agent_id, merged_agent)
+                ultravox_response = await sync_agent_to_ultravox(agent_id, client_id)
                 # Update status to active on success
                 db.update("agents", {"id": agent_id, "client_id": client_id}, {"status": "active"})
-                logger.info(f"[AGENTS] [UPDATE] Agent synced to Ultravox: {ultravox_agent_id}")
+                logger.info(f"[AGENTS] [UPDATE] Agent synced to Ultravox: {agent_id}")
             except Exception as uv_error:
                 logger.warning(f"[AGENTS] [UPDATE] Failed to sync agent to Ultravox (non-critical): {uv_error}", exc_info=True)
                 # Don't fail the request, just log the error
