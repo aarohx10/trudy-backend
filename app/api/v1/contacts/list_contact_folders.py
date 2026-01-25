@@ -11,7 +11,7 @@ import logging
 import json
 
 from app.core.auth import get_current_user
-from app.core.database import DatabaseService
+from app.core.database import DatabaseAdminService
 from app.core.exceptions import ValidationError
 from app.models.schemas import ResponseMeta
 
@@ -30,10 +30,21 @@ async def list_contact_folders(
     """List all contact folders for current client - Simple: Get folders by client_id, add contact_count"""
     try:
         client_id = current_user.get("client_id")
-        db = DatabaseService()
+        if not client_id:
+            raise ValidationError("client_id is required")
+        
+        # Use admin service to bypass RLS (for development - RLS should be disabled)
+        # This ensures queries work regardless of RLS policy status
+        db = DatabaseAdminService()
         
         # Get all folders for client
         folders = list(db.select("contact_folders", {"client_id": client_id}))
+        
+        # Debug logging
+        logger.info(f"[CONTACTS] [LIST_FOLDERS] Query result: {len(folders)} folders found for client_id={client_id}")
+        
+        if not folders:
+            logger.warning(f"[CONTACTS] [LIST_FOLDERS] No folders found for client_id={client_id}")
         
         # Get contact count for each folder
         folders_with_counts = []

@@ -271,4 +271,15 @@ class DatabaseAdminService:
         
         response = query.execute()
         return len(response.data) > 0
+    
+    def count(self, table: str, filters: Optional[Dict[str, Any]] = None) -> int:
+        """Count records (bypasses RLS)"""
+        query = self.client.table(table).select("*", count="exact")
+        
+        if filters:
+            for key, value in filters.items():
+                query = query.eq(key, value)
+        
+        response = query.execute()
+        return response.count if response.count else 0
 
