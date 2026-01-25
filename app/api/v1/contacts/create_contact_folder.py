@@ -11,7 +11,7 @@ import logging
 import json
 
 from app.core.auth import get_current_user
-from app.core.database import DatabaseService
+from app.core.database import DatabaseAdminService
 from app.core.exceptions import ValidationError, ForbiddenError
 from app.models.schemas import (
     ResponseMeta,
@@ -36,7 +36,9 @@ async def create_contact_folder(
     
     try:
         client_id = current_user.get("client_id")
-        db = DatabaseService()
+        # Step 4: Use DatabaseAdminService to match list endpoint (ensures consistency)
+        # Both create and list now use the same service to bypass RLS
+        db = DatabaseAdminService()
         now = datetime.utcnow()
         
         # Create folder record
