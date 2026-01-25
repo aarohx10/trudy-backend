@@ -4,7 +4,7 @@ Simple, flat structure with explicit endpoint paths.
 No nested routers, no route ordering concerns - just clear, explicit paths.
 """
 from fastapi import APIRouter
-from app.api.v1.contacts import (
+from . import (
     create_contact_folder,
     list_contact_folders,
     list_contacts_by_folder,
