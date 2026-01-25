@@ -31,12 +31,28 @@ def build_ultravox_call_template(agent_record: Dict[str, Any], ultravox_voice_id
         if not ultravox_voice_id:
             raise ValueError("ultravox_voice_id is required for callTemplate. Voice must be synced to Ultravox first.")
         
-        # Build base callTemplate
+        # Build base callTemplate with required fields
+        system_prompt = agent_record.get("system_prompt", "")
+        if not system_prompt or not str(system_prompt).strip():
+            raise ValueError("system_prompt is required but is empty or missing")
+        
+        model = agent_record.get("model", "fixie-ai/ultravox-v0_4-8k")
+        if not model or not str(model).strip():
+            raise ValueError("model is required but is empty or missing")
+        
+        temperature = agent_record.get("temperature", 0.3)
+        try:
+            temperature = float(temperature)
+            if temperature < 0 or temperature > 1:
+                raise ValueError(f"temperature must be between 0 and 1, got {temperature}")
+        except (ValueError, TypeError):
+            raise ValueError(f"temperature must be a valid float between 0 and 1, got {temperature}")
+        
         call_template: Dict[str, Any] = {
-            "systemPrompt": agent_record.get("system_prompt", ""),
-            "model": agent_record.get("model", "fixie-ai/ultravox-v0_4-8k"),
-            "voice": ultravox_voice_id,  # Always set, never empty
-            "temperature": float(agent_record.get("temperature", 0.3)),
+            "systemPrompt": str(system_prompt).strip(),
+            "model": str(model).strip(),
+            "voice": str(ultravox_voice_id).strip(),  # Always set, never empty
+            "temperature": temperature,
         }
         
         # Add optional fields
@@ -145,16 +161,9 @@ def build_ultravox_call_template(agent_record: Dict[str, Any], ultravox_voice_id
             # But we can add them explicitly if needed
             pass
         
-        # Set WebRTC medium for testing (can be overridden)
-        if "medium" not in call_template:
-            call_template["medium"] = {
-                "webRtc": {
-                    "dataMessages": {
-                        "transcript": True,
-                        "state": True,
-                    }
-                }
-            }
+        # Don't add medium field - let Ultravox use defaults
+        # The medium field is optional and Ultravox will default to webRtc
+        # Only add it if explicitly needed for specific configurations
         
         return call_template
         
@@ -426,6 +435,18 @@ async def create_agent_ultravox_first(agent_data: Dict[str, Any], client_id: str
     
     # Build callTemplate
     call_template = build_ultravox_call_template(agent_data, ultravox_voice_id)
+    
+    # Log the callTemplate for debugging
+    import json
+    logger.debug(f"[AGENT_SERVICE] CallTemplate to send to Ultravox: {json.dumps(call_template, indent=2, default=str)}")
+    
+    # Validate required fields are present
+    if not call_template.get("systemPrompt"):
+        raise ValueError("systemPrompt is required in callTemplate but is empty")
+    if not call_template.get("voice"):
+        raise ValueError("voice is required in callTemplate but is empty")
+    if call_template.get("temperature") is None:
+        raise ValueError("temperature is required in callTemplate but is missing")
     
     # Create agent in Ultravox FIRST
     agent_name = agent_data.get("name", "Untitled Agent")
