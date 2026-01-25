@@ -2,8 +2,9 @@
 API v1 Router
 """
 from fastapi import APIRouter
-from app.api.v1 import auth, voices, voice_clone, knowledge_bases, calls, campaigns, tools, telephony, dashboard, export, files, logs, contacts, agent_templates
+from app.api.v1 import auth, voices, voice_clone, knowledge_bases, calls, campaigns, tools, telephony, dashboard, export, files, logs, agent_templates
 from app.api.v1.agents import router as agents_router
+from app.api.v1.contacts import router as contacts_router
 from app.api.v1.webhooks import clerk as clerk_webhooks
 
 api_router = APIRouter()
@@ -17,7 +18,7 @@ api_router.include_router(calls.router, prefix="/calls", tags=["calls"])
 api_router.include_router(campaigns.router, prefix="/campaigns", tags=["campaigns"])
 api_router.include_router(clerk_webhooks.router, tags=["webhooks"])  # Clerk webhooks at /api/v1/webhooks/clerk
 api_router.include_router(tools.router, prefix="/tools", tags=["tools"])
-api_router.include_router(contacts.router, prefix="/contacts", tags=["contacts"])
+api_router.include_router(contacts_router, prefix="/contacts", tags=["contacts"])
 api_router.include_router(telephony.router, prefix="/telephony", tags=["telephony"])
 api_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
 api_router.include_router(export.router, prefix="/export", tags=["export"])

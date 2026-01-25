@@ -635,3 +635,116 @@ class AgentAIAssistRequest(BaseModel):
 class AgentAIAssistResponse(BaseModel):
     suggestion: str = Field(..., description="AI-generated suggestion")
     improved_content: Optional[str] = Field(None, description="Improved content if applicable")
+
+
+# ============================================
+# Contact Management Models
+# ============================================
+
+class ContactFolderCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100, description="Folder name")
+    description: Optional[str] = Field(None, max_length=500, description="Folder description")
+
+
+class ContactFolderUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=100, description="Folder name")
+    description: Optional[str] = Field(None, max_length=500, description="Folder description")
+
+
+class ContactFolderResponse(BaseModel):
+    id: str
+    client_id: str
+    name: str
+    description: Optional[str] = None
+    contact_count: Optional[int] = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class ContactCreate(BaseModel):
+    folder_id: str = Field(..., description="Folder ID to add contact to")
+    first_name: Optional[str] = Field(None, max_length=50, description="First name")
+    last_name: Optional[str] = Field(None, max_length=50, description="Last name")
+    email: Optional[str] = Field(None, description="Email address")
+    phone_number: str = Field(..., description="Phone number in E.164 format")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
+    
+    @validator('email')
+    def validate_email(cls, v):
+        if v and v.strip():
+            import re
+            email_regex = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
+            if not email_regex.match(v.strip()):
+                raise ValueError('Invalid email format')
+        return v.strip() if v else None
+    
+    @validator('phone_number')
+    def validate_phone(cls, v):
+        if not v or not v.strip():
+            raise ValueError('phone_number is required')
+        # Phone validation will be done in service layer for normalization
+        return v
+
+
+class ContactUpdate(BaseModel):
+    folder_id: Optional[str] = Field(None, description="Folder ID")
+    first_name: Optional[str] = Field(None, max_length=50, description="First name")
+    last_name: Optional[str] = Field(None, max_length=50, description="Last name")
+    email: Optional[str] = Field(None, description="Email address")
+    phone_number: Optional[str] = Field(None, description="Phone number in E.164 format")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
+    
+    @validator('email')
+    def validate_email(cls, v):
+        if v and v.strip():
+            import re
+            email_regex = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
+            if not email_regex.match(v.strip()):
+                raise ValueError('Invalid email format')
+        return v.strip() if v else None
+
+
+class ContactResponse(BaseModel):
+    id: str
+    client_id: str
+    folder_id: str
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    email: Optional[str] = None
+    phone_number: str
+    metadata: Optional[Dict[str, Any]] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ContactBulkCreate(BaseModel):
+    contacts: List[ContactCreate] = Field(..., min_items=1, description="List of contacts to create")
+
+
+class ContactBulkDelete(BaseModel):
+    contact_ids: List[str] = Field(..., min_items=1, description="List of contact IDs to delete")
+
+
+class ContactImportRequest(BaseModel):
+    folder_id: str = Field(..., description="Folder ID to import contacts into")
+    file_key: Optional[str] = Field(None, description="Storage key for uploaded CSV file")
+    contacts: Optional[List[ContactCreate]] = Field(None, description="Direct contact data array")
+    
+    @validator('*', pre=True)
+    def validate_import_data(cls, v, field):
+        if field.name == 'folder_id':
+            return v
+        # Either file_key or contacts must be provided
+        return v
+
+
+class ContactImportResponse(BaseModel):
+    successful: int = Field(..., description="Number of successfully imported contacts")
+    failed: int = Field(..., description="Number of failed imports")
+    errors: Optional[List[Dict[str, Any]]] = Field(None, description="List of errors with row numbers")
+
+
+class ContactExportResponse(BaseModel):
+    csv_content: Optional[str] = Field(None, description="CSV content as string")
+    download_url: Optional[str] = Field(None, description="Presigned URL for download")
+    file_key: Optional[str] = Field(None, description="Storage key for exported file")
