@@ -1,6 +1,7 @@
 """
-Create Contact Endpoint
-POST /contacts - Create new contact
+Add Contact to Folder Endpoint
+POST /contacts/add-contact - Add contact to a folder
+Simple: Gets folder_id from request body, validates folder belongs to client, inserts contact with that folder_id.
 """
 from fastapi import APIRouter, Depends, Header
 from typing import Optional
@@ -24,13 +25,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/", response_model=dict)
-async def create_contact(
+@router.post("/add-contact", response_model=dict)
+async def add_contact_to_folder(
     contact_data: ContactCreate,
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """Create new contact"""
+    """Add contact to folder - Simple: Verify folder, validate contact, insert with folder_id"""
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
@@ -43,7 +44,7 @@ async def create_contact(
         if not folder:
             raise NotFoundError("contact_folder", contact_data.folder_id)
         
-        # Validate and normalize contact data
+        # Validate and normalize contact data (phone/email validation)
         contact_dict = contact_data.dict(exclude_none=True)
         validated_contact = validate_contact_data(contact_dict)
         
@@ -95,7 +96,7 @@ async def create_contact(
             "error_message": str(e),
             "full_traceback": traceback.format_exc(),
         }
-        logger.error(f"[CONTACTS] [CREATE] Failed to create contact (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+        logger.error(f"[CONTACTS] [ADD_CONTACT] Failed to add contact (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         if isinstance(e, (ValidationError, ForbiddenError, NotFoundError)):
             raise
-        raise ValidationError(f"Failed to create contact: {str(e)}")
+        raise ValidationError(f"Failed to add contact: {str(e)}")

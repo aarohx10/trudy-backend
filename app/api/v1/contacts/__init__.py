@@ -1,33 +1,28 @@
 """
 Contacts Router
-Aggregates all contact-related endpoints
+Simple, flat structure with explicit endpoint paths.
+No nested routers, no route ordering concerns - just clear, explicit paths.
 """
 from fastapi import APIRouter
-from app.api.v1.contacts import folders
-from app.api.v1.contacts import list as list_contacts, create, get, update, delete
-from app.api.v1.contacts import bulk_create, bulk_delete
-from app.api.v1.contacts import import_contacts
-from app.api.v1.contacts import export
+from app.api.v1.contacts import (
+    create_contact_folder,
+    list_contact_folders,
+    list_contacts_by_folder,
+    add_contact_to_folder,
+    update_contact,
+    delete_contact,
+    import_contacts,
+    export,
+)
 
 router = APIRouter()
 
-# IMPORTANT: Include folder router FIRST before any parameterized routes
-# This ensures /contacts/folders matches before /contacts/{contact_id}
-router.include_router(folders.router, prefix="/folders", tags=["contact-folders"])
-
-# Include import/export routes BEFORE parameterized routes
+# Simple flat router - all explicit paths, no conflicts
+router.include_router(create_contact_folder.router, tags=["contacts"])
+router.include_router(list_contact_folders.router, tags=["contacts"])
+router.include_router(list_contacts_by_folder.router, tags=["contacts"])
+router.include_router(add_contact_to_folder.router, tags=["contacts"])
+router.include_router(update_contact.router, tags=["contacts"])
+router.include_router(delete_contact.router, tags=["contacts"])
 router.include_router(import_contacts.router, tags=["contacts"])
 router.include_router(export.router, tags=["contacts"])
-
-# Include bulk operations BEFORE parameterized routes
-router.include_router(bulk_create.router, tags=["contacts"])
-router.include_router(bulk_delete.router, tags=["contacts"])
-
-# Include list route (no parameters)
-router.include_router(list_contacts.router, tags=["contacts"])
-
-# Include parameterized routes LAST (these match /contacts/{contact_id})
-router.include_router(create.router, tags=["contacts"])
-router.include_router(get.router, tags=["contacts"])
-router.include_router(update.router, tags=["contacts"])
-router.include_router(delete.router, tags=["contacts"])

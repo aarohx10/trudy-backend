@@ -1,6 +1,7 @@
 """
-List Contacts Endpoint
-GET /contacts - List contacts, optionally filtered by folder_id
+List Contacts by Folder Endpoint
+GET /contacts/list-contacts?folder_id={id} - List contacts in a folder
+Simple: Gets folder_id from query param, lists contacts matching folder_id and client_id.
 """
 from fastapi import APIRouter, Depends, Header, Query
 from typing import Optional
@@ -11,7 +12,7 @@ import json
 
 from app.core.auth import get_current_user
 from app.core.database import DatabaseService
-from app.core.exceptions import ValidationError
+from app.core.exceptions import ValidationError, NotFoundError
 from app.models.schemas import ResponseMeta
 
 logger = logging.getLogger(__name__)
@@ -19,19 +20,25 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.get("/")
-async def list_contacts(
+@router.get("/list-contacts", response_model=dict)
+async def list_contacts_by_folder(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
-    folder_id: Optional[str] = Query(None, description="Filter by folder ID"),
+    folder_id: Optional[str] = Query(None, description="Folder ID to filter contacts"),
     search: Optional[str] = Query(None, description="Search by name, email, or phone"),
     page: Optional[int] = Query(1, ge=1, description="Page number"),
     limit: Optional[int] = Query(50, ge=1, le=100, description="Items per page"),
 ):
-    """List contacts, optionally filtered by folder_id, with search and pagination"""
+    """List contacts by folder - Simple: Filter by folder_id and client_id, optional search"""
     try:
         client_id = current_user.get("client_id")
         db = DatabaseService()
+        
+        # If folder_id provided, verify it exists and belongs to client
+        if folder_id:
+            folder = db.select_one("contact_folders", {"id": folder_id, "client_id": client_id})
+            if not folder:
+                raise NotFoundError("contact_folder", folder_id)
         
         # Build filter
         filter_dict = {"client_id": client_id}
@@ -93,5 +100,7 @@ async def list_contacts(
             "error_message": str(e),
             "full_traceback": traceback.format_exc(),
         }
-        logger.error(f"[CONTACTS] [LIST] Failed to list contacts (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+        logger.error(f"[CONTACTS] [LIST_CONTACTS] Failed to list contacts (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+        if isinstance(e, NotFoundError):
+            raise
         raise ValidationError(f"Failed to list contacts: {str(e)}")

@@ -1,6 +1,7 @@
 """
 List Contact Folders Endpoint
-GET /contacts/folders - List all contact folders for current client
+GET /contacts/list-folders - List all contact folders for current client
+Simple: Lists folders matching client_id, calculates contact_count for each.
 """
 from fastapi import APIRouter, Depends, Header, Query
 from typing import Optional
@@ -19,14 +20,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.get("/")
+@router.get("/list-folders", response_model=dict)
 async def list_contact_folders(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
     sort_by: Optional[str] = Query("created_at", description="Sort by: name, created_at, contact_count"),
     order: Optional[str] = Query("desc", description="Order: asc or desc"),
 ):
-    """List all contact folders for current client with contact counts"""
+    """List all contact folders for current client - Simple: Get folders by client_id, add contact_count"""
     try:
         client_id = current_user.get("client_id")
         db = DatabaseService()
@@ -65,5 +66,5 @@ async def list_contact_folders(
             "error_message": str(e),
             "full_traceback": traceback.format_exc(),
         }
-        logger.error(f"[CONTACTS] [FOLDERS] [LIST] Failed to list folders (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+        logger.error(f"[CONTACTS] [LIST_FOLDERS] Failed to list folders (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         raise ValidationError(f"Failed to list folders: {str(e)}")

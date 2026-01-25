@@ -1,6 +1,7 @@
 """
 Export Contacts Endpoint
-GET /contacts/export - Export contacts as CSV
+GET /contacts/export-contacts - Export contacts as CSV
+Simple: Gets contacts by folder_id (optional), generates CSV, returns file.
 """
 from fastapi import APIRouter, Depends, Header, Query, Response
 from typing import Optional
@@ -20,7 +21,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.get("/export")
+@router.get("/export-contacts")
 async def export_contacts(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),

@@ -1,6 +1,7 @@
 """
 Create Contact Folder Endpoint
-POST /contacts/folders - Create new contact folder
+POST /contacts/create-folder - Create new contact folder
+Simple: Creates folder in Supabase, links to client_id. That's it.
 """
 from fastapi import APIRouter, Depends, Header
 from typing import Optional
@@ -23,13 +24,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/", response_model=dict)
+@router.post("/create-folder", response_model=dict)
 async def create_contact_folder(
     folder_data: ContactFolderCreate,
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """Create new contact folder"""
+    """Create new contact folder - Simple: Insert to Supabase with client_id"""
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
@@ -81,7 +82,7 @@ async def create_contact_folder(
             "error_message": str(e),
             "full_traceback": traceback.format_exc(),
         }
-        logger.error(f"[CONTACTS] [FOLDERS] [CREATE] Failed to create folder (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+        logger.error(f"[CONTACTS] [CREATE_FOLDER] Failed to create folder (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         if isinstance(e, (ValidationError, ForbiddenError)):
             raise
         raise ValidationError(f"Failed to create folder: {str(e)}")

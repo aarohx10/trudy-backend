@@ -1,6 +1,7 @@
 """
 Update Contact Endpoint
-PUT /contacts/{contact_id} - Update contact
+PUT /contacts/update-contact/{contact_id} - Update contact
+Simple: Updates contact by ID, verifies ownership, validates data.
 """
 from fastapi import APIRouter, Depends, Header
 from typing import Optional
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.put("/{contact_id}")
+@router.put("/update-contact/{contact_id}")
 async def update_contact(
     contact_id: str,
     contact_data: ContactUpdate,

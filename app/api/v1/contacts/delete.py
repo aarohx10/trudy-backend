@@ -1,6 +1,7 @@
 """
 Delete Contact Endpoint
-DELETE /contacts/{contact_id} - Delete contact
+DELETE /contacts/delete-contact/{contact_id} - Delete contact
+Simple: Deletes contact by ID, verifies ownership.
 """
 from fastapi import APIRouter, Depends, Header
 from typing import Optional
@@ -19,7 +20,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.delete("/{contact_id}")
+@router.delete("/delete-contact/{contact_id}")
 async def delete_contact(
     contact_id: str,
     current_user: dict = Depends(get_current_user),

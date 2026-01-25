@@ -1,6 +1,7 @@
 """
 Import Contacts Endpoint
-POST /contacts/import - Import contacts from CSV file or direct array
+POST /contacts/import-contacts - Import contacts from CSV file or direct array
+Simple: Parses CSV or accepts contact array, validates, inserts into folder.
 """
 from fastapi import APIRouter, Depends, Header
 from typing import Optional
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/import", response_model=dict)
+@router.post("/import-contacts", response_model=dict)
 async def import_contacts(
     import_data: ContactImportRequest,
     current_user: dict = Depends(get_current_user),
