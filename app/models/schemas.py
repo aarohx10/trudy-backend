@@ -667,6 +667,12 @@ class ContactCreate(BaseModel):
     last_name: Optional[str] = Field(None, max_length=50, description="Last name")
     email: Optional[str] = Field(None, description="Email address")
     phone_number: str = Field(..., description="Phone number in E.164 format")
+    # New standard fields
+    company_name: Optional[str] = Field(None, max_length=100, description="Company name")
+    industry: Optional[str] = Field(None, max_length=100, description="Industry")
+    location: Optional[str] = Field(None, max_length=100, description="Location")
+    pin_code: Optional[str] = Field(None, max_length=20, description="Pin code")
+    keywords: Optional[List[str]] = Field(None, description="Keywords (array)")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
     
     @validator('email')
@@ -692,6 +698,12 @@ class ContactUpdate(BaseModel):
     last_name: Optional[str] = Field(None, max_length=50, description="Last name")
     email: Optional[str] = Field(None, description="Email address")
     phone_number: Optional[str] = Field(None, description="Phone number in E.164 format")
+    # New standard fields
+    company_name: Optional[str] = Field(None, max_length=100, description="Company name")
+    industry: Optional[str] = Field(None, max_length=100, description="Industry")
+    location: Optional[str] = Field(None, max_length=100, description="Location")
+    pin_code: Optional[str] = Field(None, max_length=20, description="Pin code")
+    keywords: Optional[List[str]] = Field(None, description="Keywords (array)")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
     
     @validator('email')
@@ -712,6 +724,12 @@ class ContactResponse(BaseModel):
     last_name: Optional[str] = None
     email: Optional[str] = None
     phone_number: str
+    # New standard fields
+    company_name: Optional[str] = None
+    industry: Optional[str] = None
+    location: Optional[str] = None
+    pin_code: Optional[str] = None
+    keywords: Optional[List[str]] = None
     metadata: Optional[Dict[str, Any]] = None
     created_at: datetime
     updated_at: datetime
@@ -727,8 +745,16 @@ class ContactBulkDelete(BaseModel):
 
 class ContactImportRequest(BaseModel):
     folder_id: str = Field(..., description="Folder ID to import contacts into")
-    file_key: Optional[str] = Field(None, description="Storage key for uploaded CSV file")
-    contacts: Optional[List[ContactCreate]] = Field(None, description="Direct contact data array")
+    file_key: Optional[str] = Field(None, description="Storage key for uploaded CSV file (legacy)")
+    contacts: Optional[List[ContactCreate]] = Field(None, description="Direct contact data array (legacy)")
+    # New: Base64 CSV file upload
+    base64_file: Optional[str] = Field(None, description="Base64 encoded CSV file content")
+    filename: Optional[str] = Field(None, description="Original filename of the CSV")
+    # New: Mapping configuration for dynamic field mapping
+    mapping_config: Optional[Dict[str, str]] = Field(
+        None, 
+        description="Mapping from CSV headers to standard fields. Format: {'csv_header': 'standard_field'}. Unmapped fields go to metadata."
+    )
 
 
 class ContactImportResponse(BaseModel):

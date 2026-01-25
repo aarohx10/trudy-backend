@@ -282,4 +282,13 @@ class DatabaseAdminService:
         
         response = query.execute()
         return response.count if response.count else 0
+    
+    def bulk_insert(self, table: str, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Bulk insert records (bypasses RLS) - for large imports"""
+        if not records:
+            return []
+        
+        # Supabase supports bulk insert via array
+        response = self.client.table(table).insert(records).execute()
+        return response.data if response.data else []
 

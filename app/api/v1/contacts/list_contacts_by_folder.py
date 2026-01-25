@@ -48,7 +48,7 @@ async def list_contacts_by_folder(
         # Get all contacts matching filter
         contacts = list(db.select("contacts", filter_dict, order_by="created_at DESC"))
         
-        # Apply search filter if provided
+        # Apply search filter if provided (include new standard fields)
         if search:
             search_lower = search.lower()
             contacts = [
@@ -57,7 +57,10 @@ async def list_contacts_by_folder(
                     (c.get("first_name", "") or "").lower().find(search_lower) != -1 or
                     (c.get("last_name", "") or "").lower().find(search_lower) != -1 or
                     (c.get("email", "") or "").lower().find(search_lower) != -1 or
-                    (c.get("phone_number", "") or "").find(search) != -1
+                    (c.get("phone_number", "") or "").find(search) != -1 or
+                    (c.get("company_name", "") or "").lower().find(search_lower) != -1 or
+                    (c.get("industry", "") or "").lower().find(search_lower) != -1 or
+                    (c.get("location", "") or "").lower().find(search_lower) != -1
                 )
             ]
         

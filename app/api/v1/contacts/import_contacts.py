@@ -11,7 +11,7 @@ import logging
 import json
 
 from app.core.auth import get_current_user
-from app.core.database import DatabaseService
+from app.core.database import DatabaseAdminService
 from app.core.exceptions import ValidationError, ForbiddenError, NotFoundError
 from app.core.storage import get_file_path
 from app.models.schemas import (
@@ -20,6 +20,7 @@ from app.models.schemas import (
     ContactImportResponse,
 )
 from app.services.contact import parse_csv_contacts, validate_bulk_contacts
+import base64
 
 logger = logging.getLogger(__name__)
 
@@ -32,13 +33,14 @@ async def import_contacts(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """Import contacts from CSV file or direct array"""
+    """Import contacts from CSV file (base64) or direct array with dynamic field mapping"""
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
     try:
         client_id = current_user.get("client_id")
-        db = DatabaseService()
+        # Use DatabaseAdminService for bulk operations and consistency
+        db = DatabaseAdminService()
         now = datetime.utcnow()
         
         # Verify folder exists and belongs to client
@@ -48,15 +50,45 @@ async def import_contacts(
         
         contacts_to_import = []
         
-        # Handle file upload
-        if import_data.file_key:
+        # Handle base64 CSV file upload (NEW - preferred method)
+        if import_data.base64_file:
+            try:
+                # Decode base64 to get CSV content
+                csv_content_bytes = base64.b64decode(import_data.base64_file)
+                csv_content = csv_content_bytes.decode('utf-8')
+                
+                logger.info(f"[CONTACTS] [IMPORT] Decoded base64 CSV, length: {len(csv_content)} chars")
+                
+                # Parse CSV with mapping config
+                parsed_contacts = parse_csv_contacts(csv_content, import_data.mapping_config)
+                
+                # Add folder_id and client_id to all contacts
+                for contact in parsed_contacts:
+                    contact["folder_id"] = import_data.folder_id
+                    contacts_to_import.append(contact)
+                    
+                logger.info(f"[CONTACTS] [IMPORT] Parsed {len(contacts_to_import)} contacts from base64 CSV")
+                    
+            except Exception as e:
+                import traceback
+                error_details_raw = {
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "full_traceback": traceback.format_exc(),
+                    "filename": import_data.filename,
+                }
+                logger.error(f"[CONTACTS] [IMPORT] Failed to decode/parse base64 CSV (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
+                raise ValidationError(f"Failed to decode/parse CSV file: {str(e)}")
+        
+        # Handle legacy file_key upload
+        elif import_data.file_key:
             try:
                 file_path = get_file_path("uploads", import_data.file_key)
                 with open(file_path, 'r', encoding='utf-8') as f:
                     csv_content = f.read()
                 
-                # Parse CSV
-                parsed_contacts = parse_csv_contacts(csv_content)
+                # Parse CSV with mapping config
+                parsed_contacts = parse_csv_contacts(csv_content, import_data.mapping_config)
                 
                 # Add folder_id to all contacts
                 for contact in parsed_contacts:
@@ -74,14 +106,14 @@ async def import_contacts(
                 logger.error(f"[CONTACTS] [IMPORT] Failed to read CSV file (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
                 raise ValidationError(f"Failed to read CSV file: {str(e)}")
         
-        # Handle direct contacts array
+        # Handle direct contacts array (legacy)
         elif import_data.contacts:
             for contact in import_data.contacts:
                 contact_dict = contact.dict(exclude_none=True)
                 contact_dict["folder_id"] = import_data.folder_id
                 contacts_to_import.append(contact_dict)
         else:
-            raise ValidationError("Either file_key or contacts array must be provided")
+            raise ValidationError("Either base64_file, file_key, or contacts array must be provided")
         
         if not contacts_to_import:
             raise ValidationError("No contacts to import")
@@ -92,32 +124,55 @@ async def import_contacts(
         if not valid_contacts:
             raise ValidationError("No valid contacts to import")
         
-        # Create all valid contacts
-        successful = 0
+        # Bulk Upsert: Use DatabaseAdminService bulk_insert for performance
+        logger.info(f"[CONTACTS] [IMPORT] Bulk inserting {len(valid_contacts)} contacts")
+        
+        # Prepare records for bulk insert
+        contact_records = []
         for contact_data in valid_contacts:
-            try:
-                contact_id = str(uuid.uuid4())
-                contact_record = {
-                    "id": contact_id,
-                    "client_id": client_id,
-                    "folder_id": contact_data["folder_id"],
-                    "first_name": contact_data.get("first_name"),
-                    "last_name": contact_data.get("last_name"),
-                    "email": contact_data.get("email"),
-                    "phone_number": contact_data["phone_number"],
-                    "metadata": contact_data.get("metadata"),
-                    "created_at": now.isoformat(),
-                    "updated_at": now.isoformat(),
-                }
-                db.insert("contacts", contact_record)
-                successful += 1
-            except Exception as e:
-                logger.warning(f"Failed to create contact: {str(e)}")
-                invalid_contacts.append({
-                    "index": len(invalid_contacts),
-                    "contact": contact_data,
-                    "error": str(e)
-                })
+            contact_id = str(uuid.uuid4())
+            contact_record = {
+                "id": contact_id,
+                "client_id": client_id,
+                "folder_id": contact_data["folder_id"],
+                "first_name": contact_data.get("first_name"),
+                "last_name": contact_data.get("last_name"),
+                "email": contact_data.get("email"),
+                "phone_number": contact_data["phone_number"],
+                # New standard fields
+                "company_name": contact_data.get("company_name"),
+                "industry": contact_data.get("industry"),
+                "location": contact_data.get("location"),
+                "pin_code": contact_data.get("pin_code"),
+                "keywords": contact_data.get("keywords"),  # Array type
+                # Metadata JSONB for custom fields (store as dict, Supabase handles JSONB conversion)
+                "metadata": contact_data.get("metadata", {}) if contact_data.get("metadata") else None,
+                "created_at": now.isoformat(),
+                "updated_at": now.isoformat(),
+            }
+            contact_records.append(contact_record)
+        
+        # Perform bulk insert
+        try:
+            inserted_records = db.bulk_insert("contacts", contact_records)
+            successful = len(inserted_records)
+            logger.info(f"[CONTACTS] [IMPORT] Successfully bulk inserted {successful} contacts")
+        except Exception as bulk_error:
+            logger.error(f"[CONTACTS] [IMPORT] Bulk insert failed: {bulk_error}", exc_info=True)
+            # Fallback to individual inserts
+            logger.info(f"[CONTACTS] [IMPORT] Falling back to individual inserts")
+            successful = 0
+            for contact_record in contact_records:
+                try:
+                    db.insert("contacts", contact_record)
+                    successful += 1
+                except Exception as e:
+                    logger.warning(f"Failed to create contact: {str(e)}")
+                    invalid_contacts.append({
+                        "index": len(invalid_contacts),
+                        "contact": contact_record,
+                        "error": str(e)
+                    })
         
         # Build errors list for response
         errors = []

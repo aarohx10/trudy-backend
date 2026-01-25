@@ -48,7 +48,7 @@ async def add_contact_to_folder(
         contact_dict = contact_data.dict(exclude_none=True)
         validated_contact = validate_contact_data(contact_dict)
         
-        # Create contact record
+        # Create contact record (include new standard fields)
         now = datetime.utcnow()
         contact_id = str(uuid.uuid4())
         contact_record = {
@@ -59,7 +59,13 @@ async def add_contact_to_folder(
             "last_name": validated_contact.get("last_name"),
             "email": validated_contact.get("email"),
             "phone_number": validated_contact["phone_number"],
-            "metadata": validated_contact.get("metadata"),
+            # New standard fields
+            "company_name": validated_contact.get("company_name"),
+            "industry": validated_contact.get("industry"),
+            "location": validated_contact.get("location"),
+            "pin_code": validated_contact.get("pin_code"),
+            "keywords": validated_contact.get("keywords"),  # Array type
+            "metadata": validated_contact.get("metadata", {}) if validated_contact.get("metadata") else None,
             "created_at": now.isoformat(),
             "updated_at": now.isoformat(),
         }
@@ -67,7 +73,7 @@ async def add_contact_to_folder(
         # Insert into database
         db.insert("contacts", contact_record)
         
-        # Build response
+        # Build response (include new standard fields)
         response_data = ContactResponse(
             id=contact_id,
             client_id=client_id,
@@ -76,6 +82,11 @@ async def add_contact_to_folder(
             last_name=validated_contact.get("last_name"),
             email=validated_contact.get("email"),
             phone_number=validated_contact["phone_number"],
+            company_name=validated_contact.get("company_name"),
+            industry=validated_contact.get("industry"),
+            location=validated_contact.get("location"),
+            pin_code=validated_contact.get("pin_code"),
+            keywords=validated_contact.get("keywords"),
             metadata=validated_contact.get("metadata"),
             created_at=now,
             updated_at=now,
