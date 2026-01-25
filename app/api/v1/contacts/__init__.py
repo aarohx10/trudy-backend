@@ -5,7 +5,9 @@ Aggregates all contact-related endpoints
 from fastapi import APIRouter
 from app.api.v1.contacts import folders
 from app.api.v1.contacts import list as list_contacts, create, get, update, delete
-from app.api.v1.contacts import bulk_create, bulk_delete, import_contacts, export
+from app.api.v1.contacts import bulk_create, bulk_delete
+from app.api.v1.contacts import import_contacts
+from app.api.v1.contacts import export
 
 router = APIRouter()
 

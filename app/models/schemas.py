@@ -729,13 +729,6 @@ class ContactImportRequest(BaseModel):
     folder_id: str = Field(..., description="Folder ID to import contacts into")
     file_key: Optional[str] = Field(None, description="Storage key for uploaded CSV file")
     contacts: Optional[List[ContactCreate]] = Field(None, description="Direct contact data array")
-    
-    @validator('*', pre=True)
-    def validate_import_data(cls, v, field):
-        if field.name == 'folder_id':
-            return v
-        # Either file_key or contacts must be provided
-        return v
 
 
 class ContactImportResponse(BaseModel):
