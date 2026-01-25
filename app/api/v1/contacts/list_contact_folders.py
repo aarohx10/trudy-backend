@@ -2,6 +2,7 @@
 List Contact Folders Endpoint
 GET /contacts/list-folders - List all contact folders for current client
 Simple: Lists folders matching client_id, calculates contact_count for each.
+EXACTLY like the test script - direct Supabase client usage.
 """
 from fastapi import APIRouter, Depends, Header, Query
 from typing import Optional
@@ -11,7 +12,7 @@ import logging
 import json
 
 from app.core.auth import get_current_user
-from app.core.database import DatabaseAdminService
+from app.core.database import get_supabase_admin_client
 from app.core.exceptions import ValidationError
 from app.models.schemas import ResponseMeta
 
@@ -27,34 +28,34 @@ async def list_contact_folders(
     sort_by: Optional[str] = Query("created_at", description="Sort by: name, created_at, contact_count"),
     order: Optional[str] = Query("desc", description="Order: asc or desc"),
 ):
-    """List all contact folders for current client - Simple: Get folders by client_id, add contact_count"""
+    """List all contact folders for current client - EXACTLY like test script"""
     try:
         client_id = current_user.get("client_id")
         if not client_id:
             raise ValidationError("client_id is required")
         
-        # Use admin service to bypass RLS (for development - RLS should be disabled)
-        # This ensures queries work regardless of RLS policy status
-        db = DatabaseAdminService()
+        # Use admin client directly - EXACTLY like test script
+        supabase = get_supabase_admin_client()
         
-        # Debug: Log before query
-        logger.info(f"[CONTACTS] [LIST_FOLDERS] Starting query for client_id={client_id}")
+        # Query EXACTLY like test script
+        logger.info(f"[CONTACTS] [LIST_FOLDERS] Querying for client_id={client_id}")
+        response = supabase.table("contact_folders").select("*").eq("client_id", client_id).execute()
         
-        # Get all folders for client
-        folders = list(db.select("contact_folders", {"client_id": client_id}))
+        folders = list(response.data) if response.data else []
         
-        # Debug logging
-        logger.info(f"[CONTACTS] [LIST_FOLDERS] Query result: {len(folders)} folders found for client_id={client_id}")
+        logger.info(f"[CONTACTS] [LIST_FOLDERS] Found {len(folders)} folder(s)")
         
         if folders:
             logger.info(f"[CONTACTS] [LIST_FOLDERS] Folder IDs: {[f.get('id') for f in folders]}")
-        else:
-            logger.warning(f"[CONTACTS] [LIST_FOLDERS] No folders found for client_id={client_id}")
         
-        # Get contact count for each folder
+        # Get contact count for each folder - EXACTLY like test script
         folders_with_counts = []
         for folder in folders:
-            contact_count = db.count("contacts", {"folder_id": folder["id"]})
+            folder_id = folder.get('id')
+            # Count contacts EXACTLY like test script
+            contacts_response = supabase.table("contacts").select("*", count="exact").eq("folder_id", folder_id).execute()
+            contact_count = contacts_response.count if hasattr(contacts_response, 'count') else (len(contacts_response.data) if contacts_response.data else 0)
+            
             # Create a new dict to avoid mutating the original
             folder_dict = dict(folder)
             folder_dict["contact_count"] = contact_count
