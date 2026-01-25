@@ -33,14 +33,16 @@ async def list_contact_folders(
         db = DatabaseService()
         
         # Get all folders for client
-        folders = db.select("contact_folders", {"client_id": client_id})
+        folders = list(db.select("contact_folders", {"client_id": client_id}))
         
         # Get contact count for each folder
         folders_with_counts = []
         for folder in folders:
             contact_count = db.count("contacts", {"folder_id": folder["id"]})
-            folder["contact_count"] = contact_count
-            folders_with_counts.append(folder)
+            # Create a new dict to avoid mutating the original
+            folder_dict = dict(folder)
+            folder_dict["contact_count"] = contact_count
+            folders_with_counts.append(folder_dict)
         
         # Sort folders
         reverse_order = order.lower() == "desc"
