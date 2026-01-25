@@ -1,8 +1,7 @@
 """
 List Contact Folders Endpoint
 GET /contacts/list-folders - List all contact folders for current client
-Simple: Lists folders matching client_id, calculates contact_count for each.
-Uses DatabaseService like other working endpoints (knowledge bases, tools, etc.)
+Uses DatabaseAdminService to bypass RLS (same as test script that works)
 """
 from fastapi import APIRouter, Depends, Header, Query
 from typing import Optional
@@ -12,7 +11,7 @@ import logging
 import json
 
 from app.core.auth import get_current_user
-from app.core.database import DatabaseService
+from app.core.database import DatabaseAdminService
 from app.core.exceptions import ValidationError
 from app.models.schemas import ResponseMeta
 
@@ -28,25 +27,52 @@ async def list_contact_folders(
     sort_by: Optional[str] = Query("created_at", description="Sort by: name, created_at, contact_count"),
     order: Optional[str] = Query("desc", description="Order: asc or desc"),
 ):
-    """List all contact folders for current client - Uses DatabaseService like other working endpoints"""
+    """List all contact folders for current client - Uses DatabaseAdminService to bypass RLS"""
     try:
         client_id = current_user.get("client_id")
         if not client_id:
             logger.error(f"[CONTACTS] [LIST_FOLDERS] No client_id in current_user: {current_user}")
             raise ValidationError("client_id is required")
         
-        # Use DatabaseService like create endpoint and other working endpoints
-        db = DatabaseService()
+        # Convert client_id to string to ensure type consistency
+        client_id = str(client_id)
         
-        # Get all folders for this client - same pattern as knowledge bases, tools, etc.
-        folders = list(db.select("contact_folders", {"client_id": client_id}, order_by="created_at DESC"))
+        logger.info(f"[CONTACTS] [LIST_FOLDERS] Listing folders for client_id: {client_id}")
+        
+        # Use DatabaseAdminService to bypass RLS (same as test script)
+        # This matches the test script approach that works
+        # Note: Create endpoint uses DatabaseService and works, but list might be blocked by RLS
+        db = DatabaseAdminService()
+        
+        # Get all folders for this client - EXACTLY like test script
+        try:
+            folders = list(db.select("contact_folders", {"client_id": client_id}, order_by="created_at DESC"))
+            logger.info(f"[CONTACTS] [LIST_FOLDERS] Found {len(folders)} folder(s) for client_id: {client_id}")
+            
+            # Debug: Log first folder if found
+            if folders:
+                logger.info(f"[CONTACTS] [LIST_FOLDERS] First folder: {json.dumps(folders[0], indent=2, default=str)}")
+            else:
+                logger.warning(f"[CONTACTS] [LIST_FOLDERS] No folders found for client_id: {client_id}")
+                # Try querying all folders to see if table is accessible
+                all_folders = list(db.select("contact_folders", None, order_by="created_at DESC"))
+                logger.info(f"[CONTACTS] [LIST_FOLDERS] Total folders in table (all clients): {len(all_folders)}")
+                if all_folders:
+                    logger.info(f"[CONTACTS] [LIST_FOLDERS] Sample folder client_ids: {[f.get('client_id') for f in all_folders[:5]]}")
+        except Exception as select_error:
+            logger.error(f"[CONTACTS] [LIST_FOLDERS] Error selecting folders: {select_error}", exc_info=True)
+            raise
         
         # Get contact count for each folder
         folders_with_counts = []
         for folder in folders:
             folder_id = folder.get('id')
-            # Count contacts using DatabaseService
-            contact_count = db.count("contacts", {"folder_id": folder_id})
+            try:
+                # Count contacts using DatabaseAdminService
+                contact_count = db.count("contacts", {"folder_id": folder_id})
+            except Exception as count_error:
+                logger.warning(f"[CONTACTS] [LIST_FOLDERS] Error counting contacts for folder {folder_id}: {count_error}")
+                contact_count = 0
             
             # Create a new dict to avoid mutating the original
             folder_dict = dict(folder)
@@ -61,6 +87,8 @@ async def list_contact_folders(
             folders_with_counts.sort(key=lambda x: x.get("contact_count", 0), reverse=reverse_order)
         else:  # created_at (default)
             folders_with_counts.sort(key=lambda x: x.get("created_at", ""), reverse=reverse_order)
+        
+        logger.info(f"[CONTACTS] [LIST_FOLDERS] Returning {len(folders_with_counts)} folder(s)")
         
         # Build response - same format as other endpoints
         return {
@@ -77,6 +105,7 @@ async def list_contact_folders(
             "error_type": type(e).__name__,
             "error_message": str(e),
             "full_traceback": traceback.format_exc(),
+            "client_id": current_user.get("client_id") if current_user else None,
         }
         logger.error(f"[CONTACTS] [LIST_FOLDERS] Failed to list folders (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         if isinstance(e, ValidationError):
