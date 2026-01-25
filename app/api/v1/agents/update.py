@@ -16,7 +16,7 @@ from app.models.schemas import (
     ResponseMeta,
     AgentUpdate,
 )
-from app.services.agent import sync_agent_to_ultravox
+from app.services.agent import sync_agent_to_ultravox, validate_agent_for_ultravox_sync
 
 logger = logging.getLogger(__name__)
 
@@ -108,17 +108,34 @@ async def update_agent(
         db.update("agents", {"id": agent_id, "client_id": client_id}, update_data)
         logger.info(f"[AGENTS] [UPDATE] Agent updated in database: {agent_id}")
         
-        # Try to sync to Ultravox (non-blocking)
-        # Only sync if agent has required fields (voice_id, system_prompt, name)
-        if merged_agent.get("voice_id") and merged_agent.get("system_prompt") and merged_agent.get("name"):
+        # Validate and sync to Ultravox
+        validation_result = await validate_agent_for_ultravox_sync(merged_agent, client_id)
+        
+        if validation_result["can_sync"]:
             try:
                 ultravox_response = await sync_agent_to_ultravox(agent_id, client_id)
                 # Update status to active on success
                 db.update("agents", {"id": agent_id, "client_id": client_id}, {"status": "active"})
                 logger.info(f"[AGENTS] [UPDATE] Agent synced to Ultravox: {agent_id}")
             except Exception as uv_error:
-                logger.warning(f"[AGENTS] [UPDATE] Failed to sync agent to Ultravox (non-critical): {uv_error}", exc_info=True)
-                # Don't fail the request, just log the error
+                # Log full error details
+                import traceback
+                error_details = {
+                    "error_type": type(uv_error).__name__,
+                    "error_message": str(uv_error),
+                    "full_traceback": traceback.format_exc(),
+                    "agent_id": agent_id,
+                    "validation_result": validation_result,
+                }
+                logger.error(f"[AGENTS] [UPDATE] Failed to sync agent to Ultravox (RAW ERROR): {json.dumps(error_details, indent=2, default=str)}", exc_info=True)
+                # Update status to failed
+                db.update("agents", {"id": agent_id, "client_id": client_id}, {"status": "failed"})
+                # Don't fail the request, but status reflects the failure
+        else:
+            # Validation failed - agent not ready for Ultravox
+            reason = validation_result.get("reason", "unknown")
+            logger.info(f"[AGENTS] [UPDATE] Agent not synced (validation failed: {reason})")
+            # Keep current status (draft or failed) - don't change it
         
         # Fetch updated agent
         updated_agent = db.select_one("agents", {"id": agent_id, "client_id": client_id})

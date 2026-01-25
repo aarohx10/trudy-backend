@@ -12,22 +12,30 @@ from app.core.exceptions import ProviderError
 logger = logging.getLogger(__name__)
 
 
-def build_ultravox_call_template(agent_record: Dict[str, Any]) -> Dict[str, Any]:
+def build_ultravox_call_template(agent_record: Dict[str, Any], ultravox_voice_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Convert our agent database record to Ultravox callTemplate format.
     
     Args:
         agent_record: Agent record from database
+        ultravox_voice_id: Ultravox voice ID (required - will raise error if not provided)
         
     Returns:
         Ultravox callTemplate dictionary
+        
+    Raises:
+        ValueError: If ultravox_voice_id is not provided
     """
     try:
+        # Voice is REQUIRED - fail if not provided
+        if not ultravox_voice_id:
+            raise ValueError("ultravox_voice_id is required for callTemplate. Voice must be synced to Ultravox first.")
+        
         # Build base callTemplate
         call_template: Dict[str, Any] = {
             "systemPrompt": agent_record.get("system_prompt", ""),
             "model": agent_record.get("model", "fixie-ai/ultravox-v0_4-8k"),
-            "voice": agent_record.get("ultravox_voice_id", ""),  # Will be set from voice_id lookup
+            "voice": ultravox_voice_id,  # Always set, never empty
             "temperature": float(agent_record.get("temperature", 0.3)),
         }
         
@@ -177,6 +185,50 @@ async def get_voice_ultravox_id(voice_id: str, client_id: str) -> Optional[str]:
         return None
 
 
+async def validate_agent_for_ultravox_sync(agent_data: Dict[str, Any], client_id: str) -> Dict[str, Any]:
+    """
+    Validate agent data is ready for Ultravox sync.
+    
+    Args:
+        agent_data: Agent data dictionary
+        client_id: Client UUID
+        
+    Returns:
+        {
+            "can_sync": bool,
+            "reason": str,  # If can_sync is False, explains why
+            "errors": List[str]
+        }
+    """
+    errors = []
+    
+    # Check required fields
+    name = agent_data.get("name")
+    if not name or not str(name).strip():
+        errors.append("Agent name is required")
+    
+    system_prompt = agent_data.get("system_prompt")
+    if not system_prompt or not str(system_prompt).strip():
+        errors.append("System prompt is required")
+    
+    # Check voice
+    voice_id = agent_data.get("voice_id")
+    if not voice_id:
+        errors.append("Voice is required")
+        return {"can_sync": False, "reason": "voice_required", "errors": errors}
+    
+    # Validate voice exists and has Ultravox ID
+    ultravox_voice_id = await get_voice_ultravox_id(voice_id, client_id)
+    if not ultravox_voice_id:
+        errors.append(f"Voice {voice_id} is not synced to Ultravox. Voice must be synced to Ultravox first.")
+        return {"can_sync": False, "reason": "voice_not_synced", "errors": errors}
+    
+    if errors:
+        return {"can_sync": False, "reason": "validation_failed", "errors": errors}
+    
+    return {"can_sync": True, "reason": None, "errors": []}
+
+
 async def create_agent_in_ultravox(agent_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Create agent in Ultravox API.
@@ -186,22 +238,27 @@ async def create_agent_in_ultravox(agent_data: Dict[str, Any]) -> Dict[str, Any]
         
     Returns:
         Ultravox agent response
+        
+    Raises:
+        ValueError: If voice is invalid or missing
+        ProviderError: If Ultravox API call fails
     """
     try:
-        # Get voice Ultravox ID
+        # Get voice Ultravox ID - REQUIRED
         voice_id = agent_data.get("voice_id")
         client_id = agent_data.get("client_id")
-        if voice_id and client_id:
-            ultravox_voice_id = await get_voice_ultravox_id(voice_id, client_id)
-            if ultravox_voice_id:
-                agent_data["ultravox_voice_id"] = ultravox_voice_id
         
-        # Build callTemplate
-        call_template = build_ultravox_call_template(agent_data)
+        if not voice_id:
+            raise ValueError("voice_id is required to create agent in Ultravox")
+        if not client_id:
+            raise ValueError("client_id is required to create agent in Ultravox")
         
-        # Ensure voice is set in callTemplate
-        if agent_data.get("ultravox_voice_id"):
-            call_template["voice"] = agent_data["ultravox_voice_id"]
+        ultravox_voice_id = await get_voice_ultravox_id(voice_id, client_id)
+        if not ultravox_voice_id:
+            raise ValueError(f"Voice {voice_id} does not have an Ultravox voice ID. Voice must be synced to Ultravox first.")
+        
+        # Build callTemplate with validated voice
+        call_template = build_ultravox_call_template(agent_data, ultravox_voice_id)
         
         # Create agent in Ultravox
         agent_name = agent_data.get("name", "Untitled Agent")
@@ -210,8 +267,23 @@ async def create_agent_in_ultravox(agent_data: Dict[str, Any]) -> Dict[str, Any]
         logger.info(f"[AGENT_SERVICE] Created agent in Ultravox: {response.get('agentId')}")
         return response
         
+    except ValueError:
+        # Re-raise validation errors as-is
+        raise
     except Exception as e:
-        logger.error(f"[AGENT_SERVICE] Failed to create agent in Ultravox: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "full_traceback": traceback.format_exc(),
+            "agent_data": {
+                "name": agent_data.get("name"),
+                "voice_id": agent_data.get("voice_id"),
+                "client_id": agent_data.get("client_id"),
+            },
+        }
+        logger.error(f"[AGENT_SERVICE] Failed to create agent in Ultravox (RAW ERROR): {json.dumps(error_details, indent=2, default=str)}", exc_info=True)
         raise ProviderError(
             provider="ultravox",
             message=f"Failed to create agent in Ultravox: {str(e)}",
@@ -229,22 +301,27 @@ async def update_agent_in_ultravox(ultravox_agent_id: str, agent_data: Dict[str,
         
     Returns:
         Ultravox agent response
+        
+    Raises:
+        ValueError: If voice is invalid or missing
+        ProviderError: If Ultravox API call fails
     """
     try:
-        # Get voice Ultravox ID if voice_id changed
+        # Get voice Ultravox ID - REQUIRED
         voice_id = agent_data.get("voice_id")
         client_id = agent_data.get("client_id")
-        if voice_id and client_id:
-            ultravox_voice_id = await get_voice_ultravox_id(voice_id, client_id)
-            if ultravox_voice_id:
-                agent_data["ultravox_voice_id"] = ultravox_voice_id
         
-        # Build callTemplate
-        call_template = build_ultravox_call_template(agent_data)
+        if not voice_id:
+            raise ValueError("voice_id is required to update agent in Ultravox")
+        if not client_id:
+            raise ValueError("client_id is required to update agent in Ultravox")
         
-        # Ensure voice is set
-        if agent_data.get("ultravox_voice_id"):
-            call_template["voice"] = agent_data["ultravox_voice_id"]
+        ultravox_voice_id = await get_voice_ultravox_id(voice_id, client_id)
+        if not ultravox_voice_id:
+            raise ValueError(f"Voice {voice_id} does not have an Ultravox voice ID. Voice must be synced to Ultravox first.")
+        
+        # Build callTemplate with validated voice
+        call_template = build_ultravox_call_template(agent_data, ultravox_voice_id)
         
         # Update agent in Ultravox
         agent_name = agent_data.get("name", "Untitled Agent")
@@ -253,8 +330,24 @@ async def update_agent_in_ultravox(ultravox_agent_id: str, agent_data: Dict[str,
         logger.info(f"[AGENT_SERVICE] Updated agent in Ultravox: {ultravox_agent_id}")
         return response
         
+    except ValueError:
+        # Re-raise validation errors as-is
+        raise
     except Exception as e:
-        logger.error(f"[AGENT_SERVICE] Failed to update agent in Ultravox: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "full_traceback": traceback.format_exc(),
+            "ultravox_agent_id": ultravox_agent_id,
+            "agent_data": {
+                "name": agent_data.get("name"),
+                "voice_id": agent_data.get("voice_id"),
+                "client_id": agent_data.get("client_id"),
+            },
+        }
+        logger.error(f"[AGENT_SERVICE] Failed to update agent in Ultravox (RAW ERROR): {json.dumps(error_details, indent=2, default=str)}", exc_info=True)
         raise ProviderError(
             provider="ultravox",
             message=f"Failed to update agent in Ultravox: {str(e)}",
@@ -313,6 +406,9 @@ async def sync_agent_to_ultravox(agent_id: str, client_id: str) -> Dict[str, Any
         
     Returns:
         Ultravox agent response
+        
+    Raises:
+        ValueError: If agent data is invalid for Ultravox sync
     """
     try:
         db = DatabaseService()
@@ -320,6 +416,12 @@ async def sync_agent_to_ultravox(agent_id: str, client_id: str) -> Dict[str, Any
         
         if not agent_record:
             raise ValueError(f"Agent not found: {agent_id}")
+        
+        # Validate agent can be synced
+        validation_result = await validate_agent_for_ultravox_sync(agent_record, client_id)
+        if not validation_result["can_sync"]:
+            error_msg = "; ".join(validation_result["errors"])
+            raise ValueError(f"Agent cannot be synced to Ultravox: {error_msg}")
         
         ultravox_agent_id = agent_record.get("ultravox_agent_id")
         
@@ -336,6 +438,18 @@ async def sync_agent_to_ultravox(agent_id: str, client_id: str) -> Dict[str, Any
             })
             return response
             
+    except ValueError:
+        # Re-raise validation errors as-is
+        raise
     except Exception as e:
-        logger.error(f"[AGENT_SERVICE] Failed to sync agent to Ultravox: {e}", exc_info=True)
+        import traceback
+        import json
+        error_details = {
+            "error_type": type(e).__name__,
+            "error_message": str(e),
+            "full_traceback": traceback.format_exc(),
+            "agent_id": agent_id,
+            "client_id": client_id,
+        }
+        logger.error(f"[AGENT_SERVICE] Failed to sync agent to Ultravox (RAW ERROR): {json.dumps(error_details, indent=2, default=str)}", exc_info=True)
         raise

@@ -12,6 +12,7 @@ from app.core.auth import get_current_user
 from app.core.database import DatabaseService
 from app.core.exceptions import ForbiddenError, ValidationError
 from app.models.schemas import ResponseMeta
+from app.services.agent import sync_agent_to_ultravox, validate_agent_for_ultravox_sync
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ async def create_draft_agent(
             "client_id": client_id,
             "name": name,
             "description": template.get("description") if template else "Draft agent",
-            "voice_id": default_voice_id if default_voice_id else str(uuid.uuid4()), # Placeholder if missing
+            "voice_id": default_voice_id,  # None if no voice available - user must select voice
             "system_prompt": system_prompt,
             "model": "fixie-ai/ultravox-v0_4-8k",
             "tools": [],
@@ -89,10 +90,44 @@ async def create_draft_agent(
              pass
         
         db.insert("agents", agent_record)
-        logger.info(f"[AGENTS] [DRAFT] Created draft agent: {agent_id} (Template: {template_id})")
+        logger.info(f"[AGENTS] [DRAFT] Created draft agent in database: {agent_id} (Template: {template_id})")
+        
+        # Try to sync to Ultravox if agent has valid voice
+        validation_result = await validate_agent_for_ultravox_sync(agent_record, client_id)
+        
+        if validation_result["can_sync"]:
+            try:
+                ultravox_response = await sync_agent_to_ultravox(agent_id, client_id)
+                # Update status to active on success
+                db.update("agents", {"id": agent_id, "client_id": client_id}, {
+                    "status": "active",
+                })
+                logger.info(f"[AGENTS] [DRAFT] Agent synced to Ultravox: {agent_id}")
+            except Exception as uv_error:
+                import traceback
+                import json
+                error_details = {
+                    "error_type": type(uv_error).__name__,
+                    "error_message": str(uv_error),
+                    "full_traceback": traceback.format_exc(),
+                    "agent_id": agent_id,
+                }
+                logger.error(f"[AGENTS] [DRAFT] Failed to sync to Ultravox (RAW ERROR): {json.dumps(error_details, indent=2, default=str)}", exc_info=True)
+                # Update status to failed
+                db.update("agents", {"id": agent_id, "client_id": client_id}, {
+                    "status": "failed",
+                })
+        else:
+            # Voice not selected or invalid - keep as draft
+            reason = validation_result.get("reason", "unknown")
+            logger.info(f"[AGENTS] [DRAFT] Agent created as draft (validation failed: {reason})")
+            # Status is already 'draft' from agent_record
+        
+        # Fetch the created agent (with updated status)
+        created_agent = db.select_one("agents", {"id": agent_id, "client_id": client_id})
         
         return {
-            "data": agent_record,
+            "data": created_agent,
             "meta": ResponseMeta(
                 request_id=str(uuid.uuid4()),
                 ts=datetime.utcnow(),

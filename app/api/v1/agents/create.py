@@ -17,7 +17,7 @@ from app.models.schemas import (
     ResponseMeta,
     AgentCreate,
 )
-from app.services.agent import sync_agent_to_ultravox
+from app.services.agent import sync_agent_to_ultravox, validate_agent_for_ultravox_sync
 from starlette.requests import Request
 
 logger = logging.getLogger(__name__)
@@ -117,13 +117,32 @@ async def create_agent(
         db.insert("agents", agent_record)
         logger.info(f"[AGENTS] [CREATE] Agent saved to database: {agent_id}")
         
-        # Try to sync to Ultravox (non-blocking - can fail and retry later)
-        try:
-            ultravox_response = await sync_agent_to_ultravox(agent_id, client_id)
-            logger.info(f"[AGENTS] [CREATE] Agent synced to Ultravox: {ultravox_response.get('agentId')}")
-        except Exception as uv_error:
-            logger.warning(f"[AGENTS] [CREATE] Failed to sync agent to Ultravox (non-critical, can retry): {uv_error}", exc_info=True)
-            # Update status to failed but keep the record
+        # Validate and sync to Ultravox
+        validation_result = await validate_agent_for_ultravox_sync(agent_record, client_id)
+        
+        if validation_result["can_sync"]:
+            try:
+                ultravox_response = await sync_agent_to_ultravox(agent_id, client_id)
+                logger.info(f"[AGENTS] [CREATE] Agent synced to Ultravox: {ultravox_response.get('agentId')}")
+            except Exception as uv_error:
+                import traceback
+                error_details = {
+                    "error_type": type(uv_error).__name__,
+                    "error_message": str(uv_error),
+                    "full_traceback": traceback.format_exc(),
+                    "agent_id": agent_id,
+                    "validation_result": validation_result,
+                }
+                logger.error(f"[AGENTS] [CREATE] Failed to sync agent to Ultravox (RAW ERROR): {json.dumps(error_details, indent=2, default=str)}", exc_info=True)
+                # Update status to failed but keep the record
+                db.update("agents", {"id": agent_id, "client_id": client_id}, {
+                    "status": "failed",
+                })
+        else:
+            # Validation failed - set status to failed immediately
+            reason = validation_result.get("reason", "unknown")
+            errors = validation_result.get("errors", [])
+            logger.warning(f"[AGENTS] [CREATE] Agent validation failed, cannot sync to Ultravox: {reason} - {', '.join(errors)}")
             db.update("agents", {"id": agent_id, "client_id": client_id}, {
                 "status": "failed",
             })
