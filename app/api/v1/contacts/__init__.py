@@ -11,20 +11,23 @@ from app.api.v1.contacts import export
 
 router = APIRouter()
 
-# Include folder router with prefix
+# IMPORTANT: Include folder router FIRST before any parameterized routes
+# This ensures /contacts/folders matches before /contacts/{contact_id}
 router.include_router(folders.router, prefix="/folders", tags=["contact-folders"])
 
-# Include contact routers
+# Include import/export routes BEFORE parameterized routes
+router.include_router(import_contacts.router, tags=["contacts"])
+router.include_router(export.router, tags=["contacts"])
+
+# Include bulk operations BEFORE parameterized routes
+router.include_router(bulk_create.router, tags=["contacts"])
+router.include_router(bulk_delete.router, tags=["contacts"])
+
+# Include list route (no parameters)
 router.include_router(list_contacts.router, tags=["contacts"])
+
+# Include parameterized routes LAST (these match /contacts/{contact_id})
 router.include_router(create.router, tags=["contacts"])
 router.include_router(get.router, tags=["contacts"])
 router.include_router(update.router, tags=["contacts"])
 router.include_router(delete.router, tags=["contacts"])
-
-# Include bulk operations
-router.include_router(bulk_create.router, tags=["contacts"])
-router.include_router(bulk_delete.router, tags=["contacts"])
-
-# Include import/export
-router.include_router(import_contacts.router, tags=["contacts"])
-router.include_router(export.router, tags=["contacts"])

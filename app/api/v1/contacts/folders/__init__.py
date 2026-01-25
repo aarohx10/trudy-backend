@@ -7,9 +7,12 @@ from app.api.v1.contacts.folders import create, list as list_folders, get, updat
 
 router = APIRouter()
 
-# Include all folder routers
-router.include_router(create.router, tags=["contact-folders"])
+# IMPORTANT: Register non-parameterized routes FIRST
+# This ensures /folders/ matches before /folders/{folder_id}
 router.include_router(list_folders.router, tags=["contact-folders"])
+router.include_router(create.router, tags=["contact-folders"])
+
+# Register parameterized routes LAST
 router.include_router(get.router, tags=["contact-folders"])
 router.include_router(update.router, tags=["contact-folders"])
 router.include_router(delete.router, tags=["contact-folders"])
