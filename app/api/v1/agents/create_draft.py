@@ -36,7 +36,7 @@ async def create_draft_agent(
         
         # 1. Get a default voice (try to find one, otherwise use a placeholder or handle later)
         # We try to find ANY voice for this client to set as default
-        voices = db.select("voices", {"client_id": client_id}, limit=1)
+        voices = db.select("voices", {"client_id": client_id}, order_by="created_at DESC")
         default_voice_id = None
         if voices:
             default_voice_id = voices[0]["id"]
