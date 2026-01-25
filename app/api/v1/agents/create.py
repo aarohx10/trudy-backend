@@ -17,7 +17,7 @@ from app.models.schemas import (
     ResponseMeta,
     AgentCreate,
 )
-from app.services.agent import sync_agent_to_ultravox, validate_agent_for_ultravox_sync
+from app.services.agent import create_agent_ultravox_first, validate_agent_for_ultravox_sync
 from starlette.requests import Request
 
 logger = logging.getLogger(__name__)
@@ -113,39 +113,49 @@ async def create_agent(
         if agent_dict.get("crm_webhook_secret"):
             agent_record["crm_webhook_secret"] = agent_dict["crm_webhook_secret"]
         
-        # Insert into database first
-        db.insert("agents", agent_record)
-        logger.info(f"[AGENTS] [CREATE] Agent saved to database: {agent_id}")
-        
-        # Validate and sync to Ultravox
+        # Validate agent can be created in Ultravox
         validation_result = await validate_agent_for_ultravox_sync(agent_record, client_id)
         
-        if validation_result["can_sync"]:
-            try:
-                ultravox_response = await sync_agent_to_ultravox(agent_id, client_id)
-                logger.info(f"[AGENTS] [CREATE] Agent synced to Ultravox: {ultravox_response.get('agentId')}")
-            except Exception as uv_error:
-                import traceback
-                error_details = {
-                    "error_type": type(uv_error).__name__,
-                    "error_message": str(uv_error),
-                    "full_traceback": traceback.format_exc(),
-                    "agent_id": agent_id,
-                    "validation_result": validation_result,
-                }
-                logger.error(f"[AGENTS] [CREATE] Failed to sync agent to Ultravox (RAW ERROR): {json.dumps(error_details, indent=2, default=str)}", exc_info=True)
-                # Update status to failed but keep the record
-                db.update("agents", {"id": agent_id, "client_id": client_id}, {
-                    "status": "failed",
-                })
-        else:
-            # Validation failed - set status to failed immediately
-            reason = validation_result.get("reason", "unknown")
-            errors = validation_result.get("errors", [])
-            logger.warning(f"[AGENTS] [CREATE] Agent validation failed, cannot sync to Ultravox: {reason} - {', '.join(errors)}")
-            db.update("agents", {"id": agent_id, "client_id": client_id}, {
-                "status": "failed",
-            })
+        if not validation_result["can_sync"]:
+            # Validation failed - return error immediately
+            error_msg = "; ".join(validation_result["errors"])
+            raise ValidationError(f"Agent validation failed: {error_msg}")
+        
+        # Create in Ultravox FIRST
+        try:
+            ultravox_response = await create_agent_ultravox_first(agent_record, client_id)
+            ultravox_agent_id = ultravox_response.get("agentId")
+            
+            if not ultravox_agent_id:
+                raise ValueError("Ultravox did not return agentId")
+            
+            # Add ultravox_agent_id to agent_record
+            agent_record["ultravox_agent_id"] = ultravox_agent_id
+            agent_record["status"] = "active"
+            
+            # Now save to Supabase
+            db.insert("agents", agent_record)
+            logger.info(f"[AGENTS] [CREATE] Agent created in Ultravox FIRST, then saved to DB: {agent_id}")
+            
+        except Exception as uv_error:
+            # Ultravox creation failed - DO NOT create in DB
+            import traceback
+            error_details = {
+                "error_type": type(uv_error).__name__,
+                "error_message": str(uv_error),
+                "full_traceback": traceback.format_exc(),
+                "agent_id": agent_id,
+                "validation_result": validation_result,
+            }
+            logger.error(f"[AGENTS] [CREATE] Failed to create in Ultravox FIRST (RAW ERROR): {json.dumps(error_details, indent=2, default=str)}", exc_info=True)
+            # Re-raise error to return to user
+            if isinstance(uv_error, ProviderError):
+                raise
+            raise ProviderError(
+                provider="ultravox",
+                message=f"Failed to create agent in Ultravox: {str(uv_error)}",
+                http_status=500,
+            )
         
         # Fetch the created agent
         created_agent = db.select_one("agents", {"id": agent_id, "client_id": client_id})

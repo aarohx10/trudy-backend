@@ -16,7 +16,7 @@ from app.models.schemas import (
     ResponseMeta,
     AgentUpdate,
 )
-from app.services.agent import sync_agent_to_ultravox, validate_agent_for_ultravox_sync
+from app.services.agent import create_agent_ultravox_first, update_agent_ultravox_first, validate_agent_for_ultravox_sync
 
 logger = logging.getLogger(__name__)
 
@@ -104,38 +104,57 @@ async def update_agent(
         # Merge with existing agent data for Ultravox sync
         merged_agent = {**existing_agent, **update_data}
         
-        # Update in database
-        db.update("agents", {"id": agent_id, "client_id": client_id}, update_data)
-        logger.info(f"[AGENTS] [UPDATE] Agent updated in database: {agent_id}")
-        
-        # Validate and sync to Ultravox
+        # Validate agent can be updated in Ultravox
         validation_result = await validate_agent_for_ultravox_sync(merged_agent, client_id)
         
-        if validation_result["can_sync"]:
-            try:
-                ultravox_response = await sync_agent_to_ultravox(agent_id, client_id)
-                # Update status to active on success
-                db.update("agents", {"id": agent_id, "client_id": client_id}, {"status": "active"})
-                logger.info(f"[AGENTS] [UPDATE] Agent synced to Ultravox: {agent_id}")
-            except Exception as uv_error:
-                # Log full error details
-                import traceback
-                error_details = {
-                    "error_type": type(uv_error).__name__,
-                    "error_message": str(uv_error),
-                    "full_traceback": traceback.format_exc(),
-                    "agent_id": agent_id,
-                    "validation_result": validation_result,
-                }
-                logger.error(f"[AGENTS] [UPDATE] Failed to sync agent to Ultravox (RAW ERROR): {json.dumps(error_details, indent=2, default=str)}", exc_info=True)
-                # Update status to failed
-                db.update("agents", {"id": agent_id, "client_id": client_id}, {"status": "failed"})
-                # Don't fail the request, but status reflects the failure
-        else:
-            # Validation failed - agent not ready for Ultravox
-            reason = validation_result.get("reason", "unknown")
-            logger.info(f"[AGENTS] [UPDATE] Agent not synced (validation failed: {reason})")
-            # Keep current status (draft or failed) - don't change it
+        if not validation_result["can_sync"]:
+            # Validation failed - return error immediately
+            error_msg = "; ".join(validation_result["errors"])
+            raise ValidationError(f"Agent validation failed: {error_msg}")
+        
+        # Get ultravox_agent_id
+        ultravox_agent_id = existing_agent.get("ultravox_agent_id")
+        
+        try:
+            if ultravox_agent_id:
+                # Update existing agent in Ultravox FIRST
+                ultravox_response = await update_agent_ultravox_first(ultravox_agent_id, merged_agent, client_id)
+                logger.info(f"[AGENTS] [UPDATE] Agent updated in Ultravox FIRST: {ultravox_agent_id}")
+            else:
+                # No ultravox_agent_id - create in Ultravox FIRST
+                ultravox_response = await create_agent_ultravox_first(merged_agent, client_id)
+                ultravox_agent_id = ultravox_response.get("agentId")
+                if not ultravox_agent_id:
+                    raise ValueError("Ultravox did not return agentId")
+                # Add ultravox_agent_id to update_data
+                update_data["ultravox_agent_id"] = ultravox_agent_id
+                logger.info(f"[AGENTS] [UPDATE] Agent created in Ultravox FIRST (was missing): {ultravox_agent_id}")
+            
+            # Now update Supabase
+            update_data["status"] = "active"
+            db.update("agents", {"id": agent_id, "client_id": client_id}, update_data)
+            logger.info(f"[AGENTS] [UPDATE] Agent updated in DB after Ultravox: {agent_id}")
+            
+        except Exception as uv_error:
+            # Ultravox update failed - DO NOT update DB
+            import traceback
+            error_details = {
+                "error_type": type(uv_error).__name__,
+                "error_message": str(uv_error),
+                "full_traceback": traceback.format_exc(),
+                "agent_id": agent_id,
+                "ultravox_agent_id": ultravox_agent_id,
+                "validation_result": validation_result,
+            }
+            logger.error(f"[AGENTS] [UPDATE] Failed to update in Ultravox FIRST (RAW ERROR): {json.dumps(error_details, indent=2, default=str)}", exc_info=True)
+            # Re-raise error to return to user
+            if isinstance(uv_error, ProviderError):
+                raise
+            raise ProviderError(
+                provider="ultravox",
+                message=f"Failed to update agent in Ultravox: {str(uv_error)}",
+                http_status=500,
+            )
         
         # Fetch updated agent
         updated_agent = db.select_one("agents", {"id": agent_id, "client_id": client_id})

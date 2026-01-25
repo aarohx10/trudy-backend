@@ -12,7 +12,7 @@ from app.core.auth import get_current_user
 from app.core.database import DatabaseService
 from app.core.exceptions import ForbiddenError, ValidationError
 from app.models.schemas import ResponseMeta
-from app.services.agent import sync_agent_to_ultravox, validate_agent_for_ultravox_sync
+from app.services.agent import create_agent_ultravox_first, validate_agent_for_ultravox_sync
 
 logger = logging.getLogger(__name__)
 
@@ -89,21 +89,28 @@ async def create_draft_agent(
              # Agent table doesn't have category.
              pass
         
-        db.insert("agents", agent_record)
-        logger.info(f"[AGENTS] [DRAFT] Created draft agent in database: {agent_id} (Template: {template_id})")
-        
-        # Try to sync to Ultravox if agent has valid voice
+        # Validate agent can be created in Ultravox
         validation_result = await validate_agent_for_ultravox_sync(agent_record, client_id)
         
         if validation_result["can_sync"]:
+            # Create in Ultravox FIRST
             try:
-                ultravox_response = await sync_agent_to_ultravox(agent_id, client_id)
-                # Update status to active on success
-                db.update("agents", {"id": agent_id, "client_id": client_id}, {
-                    "status": "active",
-                })
-                logger.info(f"[AGENTS] [DRAFT] Agent synced to Ultravox: {agent_id}")
+                ultravox_response = await create_agent_ultravox_first(agent_record, client_id)
+                ultravox_agent_id = ultravox_response.get("agentId")
+                
+                if not ultravox_agent_id:
+                    raise ValueError("Ultravox did not return agentId")
+                
+                # Add ultravox_agent_id to agent_record
+                agent_record["ultravox_agent_id"] = ultravox_agent_id
+                agent_record["status"] = "active"
+                
+                # Now save to Supabase
+                db.insert("agents", agent_record)
+                logger.info(f"[AGENTS] [DRAFT] Agent created in Ultravox FIRST, then saved to DB: {agent_id}")
+                
             except Exception as uv_error:
+                # Ultravox creation failed - DO NOT create in DB
                 import traceback
                 import json
                 error_details = {
@@ -112,19 +119,27 @@ async def create_draft_agent(
                     "full_traceback": traceback.format_exc(),
                     "agent_id": agent_id,
                 }
-                logger.error(f"[AGENTS] [DRAFT] Failed to sync to Ultravox (RAW ERROR): {json.dumps(error_details, indent=2, default=str)}", exc_info=True)
-                # Update status to failed
-                db.update("agents", {"id": agent_id, "client_id": client_id}, {
-                    "status": "failed",
-                })
+                logger.error(f"[AGENTS] [DRAFT] Failed to create in Ultravox FIRST (RAW ERROR): {json.dumps(error_details, indent=2, default=str)}", exc_info=True)
+                # Re-raise error to return to user
+                raise ValidationError(f"Failed to create agent in Ultravox: {str(uv_error)}")
         else:
-            # Voice not selected or invalid - keep as draft
+            # Validation failed - voice not selected
             reason = validation_result.get("reason", "unknown")
-            logger.info(f"[AGENTS] [DRAFT] Agent created as draft (validation failed: {reason})")
-            # Status is already 'draft' from agent_record
+            if reason == "voice_required":
+                # No voice selected - create as draft in DB only
+                agent_record["status"] = "draft"
+                db.insert("agents", agent_record)
+                logger.info(f"[AGENTS] [DRAFT] Agent created as draft (no voice selected): {agent_id}")
+            else:
+                # Other validation failure - return error
+                error_msg = "; ".join(validation_result["errors"])
+                raise ValidationError(f"Agent validation failed: {error_msg}")
         
-        # Fetch the created agent (with updated status)
+        # Fetch the created agent
         created_agent = db.select_one("agents", {"id": agent_id, "client_id": client_id})
+        
+        if not created_agent:
+            raise ValidationError(f"Failed to retrieve created agent: {agent_id}")
         
         return {
             "data": created_agent,

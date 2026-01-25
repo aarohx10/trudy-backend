@@ -396,6 +396,85 @@ async def get_agent_from_ultravox(ultravox_agent_id: str) -> Dict[str, Any]:
         )
 
 
+async def create_agent_ultravox_first(agent_data: Dict[str, Any], client_id: str) -> Dict[str, Any]:
+    """
+    Create agent in Ultravox FIRST (before database).
+    This is the primary source of truth.
+    
+    Args:
+        agent_data: Agent data dictionary (not yet in database)
+        client_id: Client UUID
+        
+    Returns:
+        Ultravox agent response (includes agentId)
+        
+    Raises:
+        ValueError: If validation fails
+        ProviderError: If Ultravox API call fails
+    """
+    # Validate agent can be created in Ultravox
+    validation_result = await validate_agent_for_ultravox_sync(agent_data, client_id)
+    if not validation_result["can_sync"]:
+        error_msg = "; ".join(validation_result["errors"])
+        raise ValueError(f"Agent cannot be created in Ultravox: {error_msg}")
+    
+    # Get voice Ultravox ID
+    voice_id = agent_data.get("voice_id")
+    ultravox_voice_id = await get_voice_ultravox_id(voice_id, client_id)
+    if not ultravox_voice_id:
+        raise ValueError(f"Voice {voice_id} does not have an Ultravox voice ID")
+    
+    # Build callTemplate
+    call_template = build_ultravox_call_template(agent_data, ultravox_voice_id)
+    
+    # Create agent in Ultravox FIRST
+    agent_name = agent_data.get("name", "Untitled Agent")
+    response = await ultravox_client.create_agent(agent_name, call_template)
+    
+    logger.info(f"[AGENT_SERVICE] Created agent in Ultravox FIRST: {response.get('agentId')}")
+    return response
+
+
+async def update_agent_ultravox_first(ultravox_agent_id: str, agent_data: Dict[str, Any], client_id: str) -> Dict[str, Any]:
+    """
+    Update agent in Ultravox FIRST (before database).
+    This is the primary source of truth.
+    
+    Args:
+        ultravox_agent_id: Ultravox agent ID
+        agent_data: Updated agent data dictionary
+        client_id: Client UUID
+        
+    Returns:
+        Ultravox agent response
+        
+    Raises:
+        ValueError: If validation fails
+        ProviderError: If Ultravox API call fails
+    """
+    # Validate agent can be updated in Ultravox
+    validation_result = await validate_agent_for_ultravox_sync(agent_data, client_id)
+    if not validation_result["can_sync"]:
+        error_msg = "; ".join(validation_result["errors"])
+        raise ValueError(f"Agent cannot be updated in Ultravox: {error_msg}")
+    
+    # Get voice Ultravox ID
+    voice_id = agent_data.get("voice_id")
+    ultravox_voice_id = await get_voice_ultravox_id(voice_id, client_id)
+    if not ultravox_voice_id:
+        raise ValueError(f"Voice {voice_id} does not have an Ultravox voice ID")
+    
+    # Build callTemplate
+    call_template = build_ultravox_call_template(agent_data, ultravox_voice_id)
+    
+    # Update agent in Ultravox FIRST
+    agent_name = agent_data.get("name", "Untitled Agent")
+    response = await ultravox_client.update_agent(ultravox_agent_id, agent_name, call_template)
+    
+    logger.info(f"[AGENT_SERVICE] Updated agent in Ultravox FIRST: {ultravox_agent_id}")
+    return response
+
+
 async def sync_agent_to_ultravox(agent_id: str, client_id: str) -> Dict[str, Any]:
     """
     Sync local agent to Ultravox (create or update).
