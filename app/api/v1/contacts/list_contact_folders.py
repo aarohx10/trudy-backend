@@ -37,13 +37,18 @@ async def list_contact_folders(
         # This ensures queries work regardless of RLS policy status
         db = DatabaseAdminService()
         
+        # Debug: Log before query
+        logger.info(f"[CONTACTS] [LIST_FOLDERS] Starting query for client_id={client_id}")
+        
         # Get all folders for client
         folders = list(db.select("contact_folders", {"client_id": client_id}))
         
         # Debug logging
         logger.info(f"[CONTACTS] [LIST_FOLDERS] Query result: {len(folders)} folders found for client_id={client_id}")
         
-        if not folders:
+        if folders:
+            logger.info(f"[CONTACTS] [LIST_FOLDERS] Folder IDs: {[f.get('id') for f in folders]}")
+        else:
             logger.warning(f"[CONTACTS] [LIST_FOLDERS] No folders found for client_id={client_id}")
         
         # Get contact count for each folder
@@ -69,7 +74,7 @@ async def list_contact_folders(
             "meta": ResponseMeta(
                 request_id=str(uuid.uuid4()),
                 ts=datetime.utcnow(),
-            ),
+            ).dict(),
         }
         
     except Exception as e:
