@@ -91,11 +91,8 @@ class ClientResponse(BaseModel):
 
 
 class ApiKeyCreate(BaseModel):
-    service: str = Field(..., description="Service name")
     key_name: str = Field(..., description="User-friendly name")
-    api_key: Optional[str] = Field(None, description="API key value (required if generate=False)")
-    settings: Optional[Dict[str, Any]] = Field(default={})
-    generate: bool = Field(False, description="If True, generate a random API key instead of using api_key field")
+    generate: bool = Field(True, description="Always generate a random API key")
 
 
 class ApiKeyResponse(BaseModel):
