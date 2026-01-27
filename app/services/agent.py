@@ -573,16 +573,33 @@ async def sync_agent_to_ultravox(agent_id: str, client_id: str) -> Dict[str, Any
         
         if ultravox_agent_id:
             # Update existing agent
-            return await update_agent_in_ultravox(ultravox_agent_id, agent_record)
+            response = await update_agent_in_ultravox(ultravox_agent_id, agent_record)
         else:
             # Create new agent
             response = await create_agent_in_ultravox(agent_record)
             # Update database with Ultravox agent ID
+            ultravox_agent_id = response.get("agentId")
             db.update("agents", {"id": agent_id, "client_id": client_id}, {
-                "ultravox_agent_id": response.get("agentId"),
+                "ultravox_agent_id": ultravox_agent_id,
                 "status": "active",
             })
-            return response
+        
+        # Sync phone number assignments to Ultravox
+        if ultravox_agent_id:
+            from app.services.telephony import TelephonyService
+            telephony_service = TelephonyService(db)
+            phone_numbers = await telephony_service.get_agent_phone_numbers(client_id, agent_id)
+            
+            # Update Ultravox with inbound numbers using inboundConfig API
+            if phone_numbers["inbound"]:
+                inbound_numbers = [n["phone_number"] for n in phone_numbers["inbound"]]
+                await ultravox_client.update_agent_inbound_config(
+                    agent_id=ultravox_agent_id,
+                    phone_numbers=inbound_numbers,
+                )
+                logger.info(f"[AGENT_SERVICE] Synced {len(inbound_numbers)} inbound numbers to Ultravox agent {ultravox_agent_id}")
+        
+        return response
             
     except ValueError:
         # Re-raise validation errors as-is

@@ -634,6 +634,7 @@ class UltravoxClient:
         """
         Create call in Ultravox.
         Automatically includes webhook callback if WEBHOOK_BASE_URL is configured.
+        Supports caller_id for outbound calls (the number to display as caller ID).
         """
         # Add webhook callback if configured
         if settings.WEBHOOK_BASE_URL and settings.ULTRAVOX_WEBHOOK_SECRET:
@@ -645,6 +646,16 @@ class UltravoxClient:
                     "url": webhook_url,
                     "secrets": [settings.ULTRAVOX_WEBHOOK_SECRET],
                 }
+        
+        # If caller_id is provided, add it to call_data for outbound calls
+        # Ultravox will use this as the "from" number
+        if "caller_id" in call_data:
+            # Ensure medium.telephony is set up for caller_id
+            if "medium" not in call_data:
+                call_data["medium"] = {}
+            if "telephony" not in call_data["medium"]:
+                call_data["medium"]["telephony"] = {}
+            call_data["medium"]["telephony"]["callerId"] = call_data.pop("caller_id")
         
         response = await self._request("POST", "/api/calls", data=call_data)
         return response
@@ -975,6 +986,126 @@ class UltravoxClient:
     async def get_sip_config(self) -> Dict[str, Any]:
         """Get SIP configuration from Ultravox"""
         response = await self._request("GET", "/api/sip")
+        return response
+    
+    async def update_telephony_config(self, telnyx_api_key: str, telnyx_application_sid: Optional[str] = None) -> Dict[str, Any]:
+        """Set account-level telephony configuration in Ultravox
+        
+        This stores the master Telnyx API key and Application SID in Ultravox
+        so it can generate the correct TeXML responses.
+        
+        Args:
+            telnyx_api_key: Telnyx API key
+            telnyx_application_sid: Optional Telnyx Application SID
+            
+        Returns:
+            Updated telephony config response
+        """
+        data = {
+            "telnyx": {
+                "apiKey": telnyx_api_key,
+            }
+        }
+        if telnyx_application_sid:
+            data["telnyx"]["applicationSid"] = telnyx_application_sid
+        
+        response = await self._request(
+            "PATCH",
+            "/api/accounts/me/telephony-config",
+            data=data,
+        )
+        return response
+    
+    async def register_sip(self, username: str, password: str, proxy: str) -> Dict[str, Any]:
+        """Register external SIP credentials with Ultravox
+        
+        Args:
+            username: SIP username
+            password: SIP password
+            proxy: SIP proxy server (e.g., sip.provider.com)
+            
+        Returns:
+            SIP registration response
+        """
+        response = await self._request(
+            "POST",
+            "/api/sip-registrations",
+            data={
+                "username": username,
+                "password": password,
+                "proxy": proxy,
+            },
+        )
+        return response
+    
+    async def update_agent_inbound_regex(self, agent_id: str, inbound_regex: str) -> Dict[str, Any]:
+        """Update agent's inbound regex pattern in Ultravox
+        
+        This is the "glue" that tells Ultravox which agent to wake up when a call
+        comes in on a specific number. The regex should match the phone number
+        (e.g., ^15551234567$ for number +15551234567).
+        
+        Args:
+            agent_id: Ultravox agent ID
+            inbound_regex: Regex pattern to match incoming calls (e.g., ^15551234567$)
+            
+        Returns:
+            Updated agent response
+        """
+        # Get current agent to preserve other fields
+        current_agent = await self.get_agent(agent_id)
+        current_call_template = current_agent.get("callTemplate", {})
+        
+        # Update callTemplate with inbound_regex
+        updated_call_template = {
+            **current_call_template,
+            "inboundRegex": inbound_regex,
+        }
+        
+        # Update agent with new callTemplate
+        response = await self.update_agent(
+            agent_id,
+            current_agent.get("name", "Agent"),
+            updated_call_template,
+        )
+        return response
+    
+    async def update_agent_inbound_config(
+        self,
+        agent_id: str,
+        phone_numbers: List[str],
+    ) -> Dict[str, Any]:
+        """Update agent's inbound configuration with phone numbers
+        
+        Uses Ultravox's inboundConfig API to register phone numbers for routing.
+        This is the proper way to configure inbound routing (not just regex).
+        
+        Args:
+            agent_id: Ultravox agent ID
+            phone_numbers: List of E.164 phone numbers (e.g., ["+15551234567"])
+            
+        Returns:
+            Updated agent response
+        """
+        # Get current agent to preserve other fields
+        current_agent = await self.get_agent(agent_id)
+        current_call_template = current_agent.get("callTemplate", {})
+        
+        # Update callTemplate with inboundConfig
+        updated_call_template = {
+            **current_call_template,
+            "inboundConfig": {
+                "phoneNumbers": phone_numbers,
+                "callCreationAllowed": True,
+            },
+        }
+        
+        # Update agent with new callTemplate
+        response = await self.update_agent(
+            agent_id,
+            current_agent.get("name", "Agent"),
+            updated_call_template,
+        )
         return response
 
 

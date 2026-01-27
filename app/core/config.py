@@ -148,6 +148,8 @@ class Settings(BaseSettings):
     ULTRAVOX_API_KEY: str = os.getenv("ULTRAVOX_API_KEY", "")
     ULTRAVOX_BASE_URL: str = os.getenv("ULTRAVOX_BASE_URL", "https://api.ultravox.ai")
     TELNYX_API_KEY: str = os.getenv("TELNYX_API_KEY", "")
+    TELNYX_CONNECTION_ID: str = os.getenv("TELNYX_CONNECTION_ID", "")  # Trudy's SIP Trunk Connection ID
+    TELNYX_APPLICATION_ID: str = os.getenv("TELNYX_APPLICATION_ID", "")  # Trudy's TeXML Application ID
     ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
     

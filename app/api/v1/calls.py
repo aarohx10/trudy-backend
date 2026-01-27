@@ -77,6 +77,16 @@ async def create_call(
     
     db.insert("calls", call_record)
     
+    # Get agent's outbound number if this is an outbound call
+    caller_id = None
+    if call_data.agent_id and call_data.direction.value == "outbound":
+        agent = db.select_one("agents", {"id": call_data.agent_id, "client_id": current_user["client_id"]})
+        if agent and agent.get("outbound_phone_number_id"):
+            outbound_number = db.select_one("phone_numbers", {"id": agent["outbound_phone_number_id"]})
+            if outbound_number:
+                caller_id = outbound_number["phone_number"]
+                logger.info(f"[CALLS] Using outbound number {caller_id} for agent {call_data.agent_id}")
+    
     # Call Ultravox API
     # Note: ultravox_agent_id must be provided directly in call_data or call_settings
     ultravox_agent_id = getattr(call_data, 'ultravox_agent_id', None) or (call_data.call_settings.dict() if call_data.call_settings else {}).get('ultravox_agent_id')
@@ -89,6 +99,10 @@ async def create_call(
                 "call_settings": call_data.call_settings.dict() if call_data.call_settings else {},
                 "context": call_data.context or {},
             }
+            # Add caller_id for outbound calls
+            if caller_id:
+                ultravox_data["caller_id"] = caller_id
+            
             ultravox_response = await ultravox_client.create_call(ultravox_data)
             
             # Update with Ultravox ID

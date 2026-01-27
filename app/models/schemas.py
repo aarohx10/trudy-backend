@@ -112,6 +112,85 @@ class TTSProviderUpdate(BaseModel):
 
 
 # ============================================
+# Telephony Models
+# ============================================
+
+class TelephonyProviderType(str, Enum):
+    TELNYX = "telnyx"
+    TWILIO = "twilio"
+    PLIVO = "plivo"
+    CUSTOM_SIP = "custom_sip"
+
+
+class PhoneNumberStatus(str, Enum):
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+    PENDING = "pending"
+
+
+class NumberSearchRequest(BaseModel):
+    country_code: str = Field(default="US", description="ISO country code")
+    locality: Optional[str] = Field(None, description="City/region to search in")
+    api_key: Optional[str] = Field(None, description="Optional Telnyx API key (uses master if not provided)")
+
+
+class NumberPurchaseRequest(BaseModel):
+    phone_number: str = Field(..., pattern=r"^\+[1-9]\d{1,14}$", description="Phone number in E.164 format")
+    api_key: Optional[str] = Field(None, description="Optional Telnyx API key (uses master if not provided)")
+
+
+class NumberImportRequest(BaseModel):
+    phone_number: str = Field(..., pattern=r"^\+[1-9]\d{1,14}$", description="Phone number in E.164 format")
+    provider_type: TelephonyProviderType = Field(..., description="Provider type")
+    friendly_name: Optional[str] = Field(None, description="Friendly name for credentials")
+    
+    # Provider-specific credentials
+    api_key: Optional[str] = Field(None, description="API key (for Telnyx/Twilio)")
+    account_sid: Optional[str] = Field(None, description="Account SID (for Twilio/Telnyx)")
+    auth_token: Optional[str] = Field(None, description="Auth token (for Twilio/Telnyx)")
+    
+    # SIP credentials
+    sip_username: Optional[str] = Field(None, description="SIP username (for custom_sip)")
+    sip_password: Optional[str] = Field(None, description="SIP password (for custom_sip)")
+    sip_server: Optional[str] = Field(None, description="SIP server (for custom_sip)")
+
+
+class NumberAssignmentRequest(BaseModel):
+    number_id: str = Field(..., description="Phone number UUID")
+    agent_id: str = Field(..., description="Agent UUID")
+    assignment_type: str = Field(..., description="'inbound' or 'outbound'")
+
+
+class TelephonyCredentialResponse(BaseModel):
+    id: str
+    organization_id: str
+    provider_type: str
+    friendly_name: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+
+
+class PhoneNumberResponse(BaseModel):
+    id: str
+    organization_id: str
+    agent_id: Optional[str]
+    phone_number: str
+    provider_id: Optional[str]
+    status: str
+    is_trudy_managed: bool
+    telephony_credential_id: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+
+
+class AvailableNumberResponse(BaseModel):
+    phone_number: str
+    region_information: Optional[Dict[str, Any]] = None
+    features: Optional[List[str]] = None
+    cost_information: Optional[Dict[str, Any]] = None
+
+
+# ============================================
 # Voice Models
 # ============================================
 
