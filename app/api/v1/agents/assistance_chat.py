@@ -11,7 +11,7 @@ import json
 import re
 
 from app.core.auth import get_current_user
-from app.core.database import DatabaseService, get_supabase_admin_client
+from app.core.database import get_supabase_admin_client
 from app.core.exceptions import ValidationError, NotFoundError, ForbiddenError
 from app.core.config import settings
 from app.models.schemas import ResponseMeta
@@ -152,6 +152,8 @@ Your task is to help the user improve this agent's system prompt. Analyze the cu
         )
         
         assistant_content = response.choices[0].message.content
+        if not assistant_content:
+            raise ValidationError("OpenAI returned an empty response")
         
         # Parse response for prompt suggestions
         suggested_prompt_change = None

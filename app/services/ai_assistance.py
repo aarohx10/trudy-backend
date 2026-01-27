@@ -6,7 +6,7 @@ import logging
 import uuid
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-from app.core.database import DatabaseService, get_supabase_admin_client
+from app.core.database import get_supabase_admin_client
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)

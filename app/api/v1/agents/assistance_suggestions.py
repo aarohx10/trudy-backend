@@ -10,7 +10,7 @@ import uuid
 import logging
 
 from app.core.auth import get_current_user
-from app.core.database import DatabaseService, get_supabase_admin_client
+from app.core.database import get_supabase_admin_client
 from app.core.exceptions import NotFoundError, ValidationError, ForbiddenError
 from app.models.schemas import ResponseMeta
 from app.services.ai_assistance import (
