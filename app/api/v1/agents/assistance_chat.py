@@ -45,8 +45,8 @@ class ChatRequest(BaseModel):
 
 @router.post("/{agent_id}/assistance/chat")
 async def chat_with_assistant(
-    agent_id: str = Path(..., description="Agent ID"),
     request_data: ChatRequest,
+    agent_id: str = Path(..., description="Agent ID"),
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):

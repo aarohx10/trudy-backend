@@ -85,8 +85,8 @@ async def list_assistance_sessions(
 
 @router.post("/{agent_id}/assistance/sessions")
 async def create_assistance_session(
-    agent_id: str = Path(..., description="Agent ID"),
     request_data: CreateSessionRequest,
+    agent_id: str = Path(..., description="Agent ID"),
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
@@ -210,9 +210,9 @@ async def get_assistance_session(
 
 @router.patch("/{agent_id}/assistance/sessions/{session_id}")
 async def update_assistance_session(
+    request_data: UpdateSessionRequest,
     agent_id: str = Path(..., description="Agent ID"),
     session_id: str = Path(..., description="Session ID"),
-    request_data: UpdateSessionRequest,
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
