@@ -16,6 +16,9 @@ from app.api.v1.agents import (
     sync,
     test_call,
     ai_assist,
+    assistance_chat,
+    assistance_sessions,
+    assistance_suggestions,
 )
 
 # Create main router
@@ -33,3 +36,6 @@ router.include_router(delete.router, tags=["agents"])
 router.include_router(sync.router, tags=["agents"])
 router.include_router(test_call.router, tags=["agents"])
 router.include_router(ai_assist.router, tags=["agents"])
+router.include_router(assistance_chat.router, tags=["agents"])
+router.include_router(assistance_sessions.router, tags=["agents"])
+router.include_router(assistance_suggestions.router, tags=["agents"])
