@@ -96,13 +96,13 @@ class DatabaseService:
             return False
     
     # Generic CRUD operations
-    def select(self, table: str, filters: Optional[Dict[str, Any]] = None, order_by: Optional[str] = None) -> List[Dict[str, Any]]:
+    def select(self, table: str, filters: Optional[Dict[str, Any]] = None, order_by: Optional[str] = None, limit: Optional[int] = None, offset: Optional[int] = None) -> List[Dict[str, Any]]:
         """Select records from table"""
         # #region debug log
         import json
         try:
             with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
-                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"K","location":"database.py:99","message":"Database select called","data":{"table":table,"filters":filters,"order_by":order_by},"timestamp":int(__import__("time").time()*1000)})+"\n")
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"K","location":"database.py:99","message":"Database select called","data":{"table":table,"filters":filters,"order_by":order_by,"limit":limit,"offset":offset},"timestamp":int(__import__("time").time()*1000)})+"\n")
         except: pass
         # #endregion
         query = self.client.table(table).select("*")
@@ -120,6 +120,12 @@ class DatabaseService:
                 descending = parts[1].upper() == "DESC"
             
             query = query.order(col, desc=descending)
+        
+        # Apply pagination if provided
+        if limit is not None:
+            query = query.limit(limit)
+        if offset is not None:
+            query = query.offset(offset)
         
         response = query.execute()
         return response.data if response.data else []
