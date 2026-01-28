@@ -189,6 +189,7 @@ async def general_exception_handler(request: Request, exc: Exception):
     import json
     
     # Log RAW error to console with full details
+    # CRITICAL: Include org_id for debugging - redact sensitive info but include org_id
     error_details_raw = {
         "error_type": type(exc).__name__,
         "error_message": str(exc),
@@ -204,7 +205,14 @@ async def general_exception_handler(request: Request, exc: Exception):
         "method": request.method if request else None,
         "client_id": getattr(request.state, "client_id", None) if request else None,
         "user_id": getattr(request.state, "user_id", None) if request else None,
+        "org_id": getattr(request.state, "org_id", None) if request else None,  # CRITICAL: Include org_id for debugging
     }
+    
+    # Try to get org_id from current_user if available
+    if hasattr(request.state, "current_user"):
+        current_user = request.state.current_user
+        if current_user and isinstance(current_user, dict):
+            error_details_raw["org_id"] = current_user.get("clerk_org_id") or error_details_raw.get("org_id")
     logger.error(f"[BACKEND] [GENERAL_EXCEPTION] Unhandled exception (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
     
     request_id = getattr(request.state, "request_id", None)

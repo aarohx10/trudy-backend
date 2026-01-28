@@ -918,12 +918,22 @@ class UltravoxClient:
         return response
     
     # Agent Methods
-    async def create_agent(self, name: str, call_template: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a new agent in Ultravox"""
+    async def create_agent(self, name: str, call_template: Dict[str, Any], metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Create a new agent in Ultravox
+        
+        Args:
+            name: Agent name
+            call_template: Call template configuration
+            metadata: Optional metadata dictionary (e.g., {"clerk_org_id": "org_xxx"})
+        """
+        payload = {"name": name, "callTemplate": call_template}
+        if metadata:
+            payload["metadata"] = metadata
         response = await self._request(
             "POST",
             "/api/agents",
-            data={"name": name, "callTemplate": call_template},
+            data=payload,
         )
         return response
     
@@ -932,12 +942,23 @@ class UltravoxClient:
         response = await self._request("GET", f"/api/agents/{agent_id}")
         return response
     
-    async def update_agent(self, agent_id: str, name: str, call_template: Dict[str, Any]) -> Dict[str, Any]:
-        """Update an agent in Ultravox"""
+    async def update_agent(self, agent_id: str, name: str, call_template: Dict[str, Any], metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Update an agent in Ultravox
+        
+        Args:
+            agent_id: Ultravox agent ID
+            name: Agent name
+            call_template: Call template configuration
+            metadata: Optional metadata dictionary (e.g., {"clerk_org_id": "org_xxx"})
+        """
+        payload = {"name": name, "callTemplate": call_template}
+        if metadata:
+            payload["metadata"] = metadata
         response = await self._request(
             "PATCH",
             f"/api/agents/{agent_id}",
-            data={"name": name, "callTemplate": call_template},
+            data=payload,
         )
         return response
     

@@ -24,13 +24,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if not settings.RATE_LIMIT_ENABLED:
             return await call_next(request)
         
-        # Get client identifier (from JWT or IP)
-        client_id = self._get_client_id(request)
+        # CRITICAL: Get organization identifier (from JWT or IP)
+        # Multi-tenant rate limiting: limit requests based on org_id to prevent one user from exhausting a whole team's quota
+        org_id = self._get_org_id(request)
         
-        if client_id:
+        if org_id:
             # Check rate limit
-            if not self._check_rate_limit(client_id, request.url.path):
-                logger.warning(f"Rate limit exceeded for client: {client_id}")
+            if not self._check_rate_limit(org_id, request.url.path):
+                logger.warning(f"Rate limit exceeded for organization: {org_id}")
                 raise HTTPException(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                     detail={
@@ -48,43 +49,60 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         return response
     
-    def _get_client_id(self, request: Request) -> Optional[str]:
-        """Get client identifier from request"""
-        # Try to get from JWT token (if available in request state)
-        if hasattr(request.state, "client_id"):
-            return request.state.client_id
+    def _get_org_id(self, request: Request) -> Optional[str]:
+        """
+        Get organization ID from request.
         
-        # Fallback to IP address
+        CRITICAL: Multi-tenant rate limiting - limit requests based on org_id.
+        This prevents one user from exhausting a whole team's quota.
+        """
+        # Try to get from JWT token (if available in request state)
+        # The auth middleware should set this from the JWT claims
+        if hasattr(request.state, "org_id"):
+            return request.state.org_id
+        
+        # Try to get from current_user if available (set by auth dependency)
+        if hasattr(request.state, "current_user"):
+            current_user = request.state.current_user
+            if current_user and isinstance(current_user, dict):
+                return current_user.get("clerk_org_id")
+        
+        # Fallback to IP address (for unauthenticated requests)
         client_host = request.client.host if request.client else "unknown"
-        return client_host
+        return f"ip:{client_host}"
     
-    def _check_rate_limit(self, client_id: str, path: str) -> bool:
-        """Check if request is within rate limit"""
+    def _check_rate_limit(self, org_id: str, path: str) -> bool:
+        """
+        Check if request is within rate limit.
+        
+        CRITICAL: Multi-tenant rate limiting - limit requests based on org_id.
+        This prevents one user from exhausting a whole team's quota.
+        """
         # Get current window
         current_window = int(time.time() / 60)  # 1-minute windows
         
-        # Get or create client rate limit data
-        client_data = _rate_limit_store[client_id]
+        # Get or create organization rate limit data
+        org_data = _rate_limit_store[org_id]
         
         # Clean old windows (older than 1 minute)
         current_time = time.time()
-        client_data = {
-            k: v for k, v in client_data.items()
+        org_data = {
+            k: v for k, v in org_data.items()
             if current_time - v.get("timestamp", 0) < 60
         }
-        _rate_limit_store[client_id] = client_data
+        _rate_limit_store[org_id] = org_data
         
         # Get or create window data
         window_key = f"{current_window}:{path}"
-        if window_key not in client_data:
-            client_data[window_key] = {"count": 0, "timestamp": current_time}
+        if window_key not in org_data:
+            org_data[window_key] = {"count": 0, "timestamp": current_time}
         
         # Increment count
-        client_data[window_key]["count"] += 1
+        org_data[window_key]["count"] += 1
         
         # Check limit
         limit = settings.RATE_LIMIT_PER_MINUTE
-        return client_data[window_key]["count"] <= limit
+        return org_data[window_key]["count"] <= limit
 
 
 # Per-client quota checking (for database-backed quotas)

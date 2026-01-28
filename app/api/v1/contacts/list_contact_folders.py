@@ -27,35 +27,26 @@ async def list_contact_folders(
     sort_by: Optional[str] = Query("created_at", description="Sort by: name, created_at, contact_count"),
     order: Optional[str] = Query("desc", description="Order: asc or desc"),
 ):
-    """List all contact folders for current client - Uses DatabaseAdminService to bypass RLS"""
+    """
+    List all contact folders for current organization.
+    
+    CRITICAL: Filters by clerk_org_id to show shared contact folders across the team.
+    If User A uploads a CSV, User B must see that folder in the Contacts sidebar.
+    """
     try:
-        client_id = current_user.get("client_id")
-        if not client_id:
-            logger.error(f"[CONTACTS] [LIST_FOLDERS] No client_id in current_user: {current_user}")
-            raise ValidationError("client_id is required")
+        # CRITICAL: Use clerk_org_id for organization-first approach
+        clerk_org_id = current_user.get("clerk_org_id")
+        if not clerk_org_id:
+            raise ValidationError("Missing organization ID in token")
         
-        # Step 1: Request Validation - Ensure x_client_id matches current_user client_id to prevent cross-tenant leaks
-        if x_client_id and x_client_id != str(client_id):
-            logger.warning(f"[CONTACTS] [LIST_FOLDERS] client_id mismatch: header={x_client_id}, token={client_id}")
-            # For non-agency-admin users, enforce strict matching
-            if current_user.get("role") != "agency_admin":
-                raise ValidationError("client_id mismatch between header and token")
+        logger.info(f"[CONTACTS] [LIST_FOLDERS] Listing folders for org_id: {clerk_org_id}")
         
-        # Step 1: Enhanced Logging - Log the type of client_id being used
-        logger.info(f"[CONTACTS] [LIST_FOLDERS] Listing folders for client_id: {client_id} (type: {type(client_id).__name__})")
-        logger.info(f"[CONTACTS] [LIST_FOLDERS] x_client_id header: {x_client_id} (type: {type(x_client_id).__name__ if x_client_id else 'None'})")
-        
-        # DO NOT cast to string - let the database handle UUID type matching
-        # The test script works without string casting, so we should match that behavior
-        
-        # Use DatabaseAdminService to bypass RLS (same as test script)
-        # This matches the test script approach that works
-        # Note: Create endpoint uses DatabaseService and works, but list might be blocked by RLS
+        # Use DatabaseAdminService to bypass RLS
         db = DatabaseAdminService()
         
-        # Get all folders for this client - EXACTLY like test script
+        # CRITICAL: Filter by org_id instead of client_id - shows all organization folders
         try:
-            folders = list(db.select("contact_folders", {"client_id": client_id}, order_by="created_at DESC"))
+            folders = list(db.select("contact_folders", {"clerk_org_id": clerk_org_id}, order_by="created_at DESC"))
             logger.info(f"[CONTACTS] [LIST_FOLDERS] Found {len(folders)} folder(s) for client_id: {client_id}")
             
             # Debug: Log first folder if found

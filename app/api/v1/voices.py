@@ -472,13 +472,20 @@ async def create_voice(
             logger.info(f"[VOICES] Ultravox import successful | ultravox_voice_id={ultravox_voice_id}")
             
             # Step 2: Save to DB (AFTER Ultravox import succeeds - no credit checks)
-            db = DatabaseService(current_user["token"])
+            # CRITICAL: Use clerk_org_id for organization-first approach
+            clerk_org_id = current_user.get("clerk_org_id")
+            if not clerk_org_id:
+                raise ValidationError("Missing organization ID in token")
+            
+            # Initialize database service with org_id context
+            db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
             db.set_auth(current_user["token"])
             
             voice_record = {
                 "id": voice_id,
-                "client_id": client_id,
-                "user_id": user_id,
+                "client_id": client_id,  # Legacy field
+                "clerk_org_id": clerk_org_id,  # CRITICAL: Organization ID for data partitioning
+                "user_id": user_id,  # Track which user created the voice
                 "name": name,
                 "provider": provider,
                 "type": "reference",
@@ -606,19 +613,29 @@ async def list_voices(
     x_client_id: Optional[str] = Header(None),
     source: Optional[str] = Query(None, description="Filter by source: 'ultravox' or 'custom'"),
 ):
-    """List voices - simple: from DB or Ultravox"""
-    client_id = current_user.get("client_id")
+    """
+    List voices - simple: from DB or Ultravox.
+    
+    CRITICAL: Filters by clerk_org_id to show organization voices.
+    Shows: system_voices + organization_voices (all voices available to the team).
+    """
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
     now = datetime.utcnow()
     
     # Custom voices: from database (includes imported "reference" voices - voice cloning has been removed)
     if source == "custom":
-        db = DatabaseService(current_user["token"])
+        # Initialize database service with org_id context
+        db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
         db.set_auth(current_user["token"])
         
         # Get all custom voices (type: "reference" for imported, type: "custom" for cloned)
-        # These are all "my voices" - voices owned by this client
-        imported_voices = db.select("voices", {"client_id": client_id, "type": "reference"}, order_by="created_at DESC")
-        cloned_voices = db.select("voices", {"client_id": client_id, "type": "custom"}, order_by="created_at DESC")
+        # CRITICAL: Filter by org_id instead of client_id - shows all organization voices
+        imported_voices = db.select("voices", {"clerk_org_id": clerk_org_id, "type": "reference"}, order_by="created_at DESC")
+        cloned_voices = db.select("voices", {"clerk_org_id": clerk_org_id, "type": "custom"}, order_by="created_at DESC")
         
         # Combine imported and cloned voices
         all_voices = list(imported_voices) + list(cloned_voices)
@@ -711,11 +728,18 @@ async def get_voice(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """Get single voice - from DB"""
-    db = DatabaseService(current_user["token"])
+    """Get single voice - from DB (filtered by org_id)"""
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
-    voice = db.get_voice(voice_id, current_user["client_id"])
+    # Filter by org_id via context (no need for explicit client_id filter)
+    voice = db.get_voice(voice_id)
     if not voice:
         raise NotFoundError("voice", voice_id)
     
@@ -736,10 +760,17 @@ async def update_voice(
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
-    voice = db.get_voice(voice_id, current_user["client_id"])
+    # Filter by org_id via context
+    voice = db.get_voice(voice_id)
     if not voice:
         raise NotFoundError("voice", voice_id)
     
@@ -755,7 +786,8 @@ async def update_voice(
     update_data["updated_at"] = datetime.utcnow().isoformat()
     db.update("voices", {"id": voice_id}, update_data)
     
-    updated_voice = db.get_voice(voice_id, current_user["client_id"])
+    # Filter by org_id via context
+    updated_voice = db.get_voice(voice_id)
     
     return {
         "data": VoiceResponse(**updated_voice),
@@ -773,14 +805,22 @@ async def delete_voice(
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
-    voice = db.get_voice(voice_id, current_user["client_id"])
+    # Filter by org_id via context
+    voice = db.get_voice(voice_id)
     if not voice:
         raise NotFoundError("voice", voice_id)
     
-    db.delete("voices", {"id": voice_id, "client_id": current_user["client_id"]})
+    # Delete by org_id (filtered via context)
+    db.delete("voices", {"id": voice_id})
     
     return {
         "data": {"id": voice_id, "deleted": True},
@@ -799,13 +839,20 @@ async def preview_voice(
     if not settings.ULTRAVOX_API_KEY:
         raise ValidationError("Ultravox API key not configured")
     
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
     # Get voice from DB - this is required for custom voices (cloned/imported)
     voice = None
     try:
-        voice = db.get_voice(voice_id, current_user["client_id"])
+        # Filter by org_id via context
+        voice = db.get_voice(voice_id)
         if voice:
             logger.info(f"[VOICES] Preview: Found voice in DB | voice_id={voice_id} | ultravox_voice_id={voice.get('ultravox_voice_id')} | provider_voice_id={voice.get('provider_voice_id')}")
         else:

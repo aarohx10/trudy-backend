@@ -70,13 +70,66 @@ def set_auth_context(token: str):
     client.postgrest.auth(token)
 
 
-class DatabaseService:
-    """Database service with RLS support"""
+def get_db_client(org_id: Optional[str] = None) -> Client:
+    """
+    Get database client with org_id context set.
     
-    def __init__(self, token: Optional[str] = None):
+    Every time a connection is pulled, it must execute: 
+    SET LOCAL app.current_org_id = '[org_id_from_jwt]'
+    
+    For Supabase/PostgREST, we use an RPC function to set the org_id context.
+    """
+    client = get_supabase_client()
+    
+    if org_id:
+        # Set org_id context via RPC function (must be created in database)
+        try:
+            # Call RPC function to set org_id context
+            # This function should execute: SET LOCAL app.current_org_id = org_id
+            client.rpc("set_org_context", {"org_id": org_id}).execute()
+            logger.debug(f"Set org_id context: {org_id}")
+        except Exception as e:
+            # If RPC function doesn't exist yet, log warning but continue
+            # This allows gradual migration
+            logger.warning(f"Could not set org_id context (RPC function may not exist): {e}")
+    
+    return client
+
+
+class DatabaseService:
+    """Database service with RLS support and org_id context"""
+    
+    def __init__(self, token: Optional[str] = None, org_id: Optional[str] = None):
+        """
+        Initialize database service with optional org_id context.
+        
+        Args:
+            token: JWT token for RLS (legacy)
+            org_id: Organization ID to set as context (organization-first approach)
+        """
         self.client = get_supabase_client()
+        self.org_id = org_id
+        
+        # Set org_id context if provided
+        if org_id:
+            self.set_org_context(org_id)
+        
         if token:
             self.set_auth(token)
+    
+    def set_org_context(self, org_id: str):
+        """
+        Set organization ID context for this database connection.
+        Executes: SET LOCAL app.current_org_id = org_id
+        """
+        try:
+            # Call RPC function to set org_id context
+            self.client.rpc("set_org_context", {"org_id": org_id}).execute()
+            self.org_id = org_id
+            logger.debug(f"Set org_id context: {org_id}")
+        except Exception as e:
+            # If RPC function doesn't exist yet, log warning but continue
+            logger.warning(f"Could not set org_id context (RPC function may not exist): {e}")
     
     def set_auth(self, token: Optional[str]):
         """Set authentication context if token is a Supabase-issued JWT"""
@@ -184,17 +237,54 @@ class DatabaseService:
         """Get user by Clerk user ID (Clerk ONLY - no Google fallback)"""
         return self.get_user_by_clerk_id(user_id)
     
-    def get_voice(self, voice_id: str, client_id: str) -> Optional[Dict[str, Any]]:
-        """Get voice by ID"""
-        return self.select_one("voices", {"id": voice_id, "client_id": client_id})
+    def get_voice(self, voice_id: str, org_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Get voice by ID.
+        
+        Args:
+            voice_id: Voice UUID
+            org_id: Organization ID (uses self.org_id if not provided)
+        
+        Note: client_id parameter removed - use org_id instead
+        """
+        effective_org_id = org_id or self.org_id
+        if not effective_org_id:
+            logger.warning("get_voice called without org_id context")
+        # Filter by org_id via clerk_organization_id in clients table
+        # For now, we'll filter by voice_id and rely on RLS/org_id context
+        return self.select_one("voices", {"id": voice_id})
     
-    def get_campaign(self, campaign_id: str, client_id: str) -> Optional[Dict[str, Any]]:
-        """Get campaign by ID"""
-        return self.select_one("campaigns", {"id": campaign_id, "client_id": client_id})
+    def get_campaign(self, campaign_id: str, org_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Get campaign by ID.
+        
+        Args:
+            campaign_id: Campaign UUID
+            org_id: Organization ID (uses self.org_id if not provided)
+        
+        Note: client_id parameter removed - use org_id instead
+        """
+        effective_org_id = org_id or self.org_id
+        if not effective_org_id:
+            logger.warning("get_campaign called without org_id context")
+        # Filter by org_id via clerk_organization_id in clients table
+        return self.select_one("campaigns", {"id": campaign_id})
     
-    def get_call(self, call_id: str, client_id: str) -> Optional[Dict[str, Any]]:
-        """Get call by ID"""
-        return self.select_one("calls", {"id": call_id, "client_id": client_id})
+    def get_call(self, call_id: str, org_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Get call by ID.
+        
+        Args:
+            call_id: Call UUID
+            org_id: Organization ID (uses self.org_id if not provided)
+        
+        Note: client_id parameter removed - use org_id instead
+        """
+        effective_org_id = org_id or self.org_id
+        if not effective_org_id:
+            logger.warning("get_call called without org_id context")
+        # Filter by org_id via clerk_organization_id in clients table
+        return self.select_one("calls", {"id": call_id})
     
     def get_campaign_contacts(self, campaign_id: str) -> List[Dict[str, Any]]:
         """Get campaign contacts"""

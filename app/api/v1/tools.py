@@ -26,12 +26,20 @@ async def list_tools(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """List tools from database for current client"""
+    """
+    List tools from database for current organization.
+    
+    CRITICAL: Filters by clerk_org_id to show all organization tools (team-shared).
+    """
     try:
-        # Fetch tools from database for current client
-        client_id = current_user.get("client_id")
-        db = DatabaseService()
-        tools_list = db.select("tools", {"client_id": client_id}, order_by="created_at DESC")
+        # CRITICAL: Use clerk_org_id for organization-first approach
+        clerk_org_id = current_user.get("clerk_org_id")
+        if not clerk_org_id:
+            raise ValidationError("Missing organization ID in token")
+        
+        # Initialize database service with org_id context
+        db = DatabaseService(org_id=clerk_org_id)
+        tools_list = db.select("tools", {"clerk_org_id": clerk_org_id}, order_by="created_at DESC")
         
         return {
             "data": list(tools_list),
@@ -61,13 +69,22 @@ async def get_tool(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """Get tool from database"""
+    """
+    Get tool from database.
+    
+    CRITICAL: Filters by clerk_org_id to ensure organization-scoped access.
+    """
     try:
-        client_id = current_user.get("client_id")
-        db = DatabaseService()
+        # CRITICAL: Use clerk_org_id for organization-first approach
+        clerk_org_id = current_user.get("clerk_org_id")
+        if not clerk_org_id:
+            raise ValidationError("Missing organization ID in token")
         
-        # Fetch tool from database
-        tool_record = db.select_one("tools", {"id": tool_id, "client_id": client_id})
+        # Initialize database service with org_id context
+        db = DatabaseService(org_id=clerk_org_id)
+        
+        # Fetch tool from database - filter by org_id instead of client_id
+        tool_record = db.select_one("tools", {"id": tool_id, "clerk_org_id": clerk_org_id})
         
         if not tool_record:
             raise NotFoundError("tool", tool_id)
@@ -134,7 +151,13 @@ async def create_tool(
         # Save tool to database
         if ultravox_tool_id:
             try:
-                db = DatabaseService()
+                # CRITICAL: Use clerk_org_id for organization-first approach
+                clerk_org_id = current_user.get("clerk_org_id")
+                if not clerk_org_id:
+                    raise ValidationError("Missing organization ID in token")
+                
+                # Initialize database service with org_id context
+                db = DatabaseService(org_id=clerk_org_id)
                 now = datetime.utcnow()
                 
                 # Extract tool definition from request or response
@@ -144,7 +167,8 @@ async def create_tool(
                 # Build database record
                 tool_db_record = {
                     "id": str(uuid.uuid4()),
-                    "client_id": current_user["client_id"],
+                    "client_id": current_user.get("client_id"),  # Legacy field
+                    "clerk_org_id": clerk_org_id,  # CRITICAL: Organization ID for data partitioning
                     "ultravox_tool_id": ultravox_tool_id,
                     "name": tool_data.get("name") or ultravox_response.get("name", ""),
                     "description": tool_definition.get("description") or tool_data.get("description"),
@@ -264,10 +288,11 @@ async def update_tool(
         if tool_definition.get("requirements", {}).get("httpSecurityOptions"):
             update_data["authentication"] = tool_definition.get("requirements", {}).get("httpSecurityOptions")
         
-        db.update("tools", {"id": tool_id, "client_id": client_id}, update_data)
+        # Filter by org_id instead of client_id
+        db.update("tools", {"id": tool_id, "clerk_org_id": clerk_org_id}, update_data)
         
-        # Fetch updated record
-        updated_tool = db.select_one("tools", {"id": tool_id, "client_id": client_id})
+        # Fetch updated record - filter by org_id instead of client_id
+        updated_tool = db.select_one("tools", {"id": tool_id, "clerk_org_id": clerk_org_id})
         
         return {
             "data": updated_tool,
@@ -306,11 +331,16 @@ async def delete_tool(
         raise ForbiddenError("Insufficient permissions")
     
     try:
-        client_id = current_user.get("client_id")
-        db = DatabaseService()
+        # CRITICAL: Use clerk_org_id for organization-first approach
+        clerk_org_id = current_user.get("clerk_org_id")
+        if not clerk_org_id:
+            raise ValidationError("Missing organization ID in token")
         
-        # Get tool from database to get ultravox_tool_id
-        tool_record = db.select_one("tools", {"id": tool_id, "client_id": client_id})
+        # Initialize database service with org_id context
+        db = DatabaseService(org_id=clerk_org_id)
+        
+        # Get tool from database to get ultravox_tool_id - filter by org_id instead of client_id
+        tool_record = db.select_one("tools", {"id": tool_id, "clerk_org_id": clerk_org_id})
         if not tool_record:
             raise NotFoundError("tool", tool_id)
         
@@ -324,8 +354,8 @@ async def delete_tool(
                 logger.warning(f"[TOOLS] [DELETE] Failed to delete tool from Ultravox (non-critical): {uv_error}", exc_info=True)
                 # Continue to delete from database even if Ultravox delete fails
         
-        # Delete from database
-        db.delete("tools", {"id": tool_id, "client_id": client_id})
+        # Delete from database - filter by org_id instead of client_id
+        db.delete("tools", {"id": tool_id, "clerk_org_id": clerk_org_id})
         
         return {
             "data": {"id": tool_id, "deleted": True},

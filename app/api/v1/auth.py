@@ -506,18 +506,30 @@ async def create_api_key(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """Create API key (encrypted storage)"""
+    """
+    Create API key (encrypted storage).
+    
+    CRITICAL: API keys are generated per Organization, not per User.
+    This ensures team members can share API keys within an organization.
+    """
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
-    # Check for duplicate key name
+    # Check for duplicate key name within the organization
+    # CRITICAL: Check by org_id, not just client_id
     existing = db.select_one(
         "api_keys",
         {
-            "client_id": current_user["client_id"],
+            "client_id": current_user["client_id"],  # Legacy field
             "key_name": api_key_data.key_name,
         },
     )
@@ -526,7 +538,7 @@ async def create_api_key(
     
     # Always generate API key
     api_key_value = generate_random_api_key()
-    logger.info(f"Generated random API key, key_name: {api_key_data.key_name}")
+    logger.info(f"Generated random API key for org {clerk_org_id}, key_name: {api_key_data.key_name}")
     
     # Encrypt API key
     encrypted_key = encrypt_api_key(api_key_value)
@@ -534,14 +546,17 @@ async def create_api_key(
         raise ValidationError("Failed to encrypt API key")
     
     # Insert API key with default service value (required by DB schema)
+    # CRITICAL: API keys are per Organization (clerk_org_id), not per User
     api_key_record = db.insert(
         "api_keys",
         {
-            "client_id": current_user["client_id"],
+            "client_id": current_user["client_id"],  # Legacy field
             "service": "custom",  # Default service since we don't require it
             "key_name": api_key_data.key_name,
             "encrypted_key": encrypted_key,
-            "settings": {},
+            "settings": {
+                "clerk_org_id": clerk_org_id,  # Store org_id in settings for organization scoping
+            },
             "is_active": True,
         },
     )

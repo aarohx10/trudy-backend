@@ -15,6 +15,7 @@ async def log_audit_event(
     record_id: str,
     user_id: str,
     client_id: str,
+    clerk_org_id: Optional[str] = None,
     diff: Optional[Dict[str, Any]] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
@@ -25,8 +26,9 @@ async def log_audit_event(
         action: Action type (INSERT, UPDATE, DELETE)
         table_name: Name of the table
         record_id: ID of the record
-        user_id: User ID (Auth0 sub)
-        client_id: Client ID
+        user_id: User ID (Clerk user ID)
+        client_id: Client ID (legacy)
+        clerk_org_id: Clerk organization ID (CRITICAL: for organization-first approach)
         diff: Before/after diff for updates
         metadata: Additional metadata
     """
@@ -39,6 +41,7 @@ async def log_audit_event(
             "record_id": record_id,
             "user_id": user_id,
             "client_id": client_id,
+            "clerk_org_id": clerk_org_id,  # CRITICAL: Record org_id for every action
             "diff": diff or {},
             "metadata": metadata or {},
             "created_at": datetime.utcnow().isoformat(),

@@ -25,12 +25,22 @@ async def get_agent(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """Get single agent"""
+    """
+    Get single agent.
+    
+    CRITICAL: Filters by clerk_org_id to ensure organization-scoped access.
+    """
     try:
-        client_id = current_user.get("client_id")
-        db = DatabaseService()
+        # CRITICAL: Use clerk_org_id for organization-first approach
+        clerk_org_id = current_user.get("clerk_org_id")
+        if not clerk_org_id:
+            raise ValidationError("Missing organization ID in token")
         
-        agent = db.select_one("agents", {"id": agent_id, "client_id": client_id})
+        # Initialize database service with org_id context
+        db = DatabaseService(org_id=clerk_org_id)
+        
+        # Filter by org_id instead of client_id
+        agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
         
         if not agent:
             raise NotFoundError("agent", agent_id)

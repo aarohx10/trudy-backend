@@ -31,18 +31,26 @@ async def sync_agent(
         raise ForbiddenError("Insufficient permissions")
     
     try:
-        client_id = current_user.get("client_id")
+        # CRITICAL: Use clerk_org_id for organization-first approach
+        clerk_org_id = current_user.get("clerk_org_id")
+        if not clerk_org_id:
+            raise ValidationError("Missing organization ID in token")
+        
+        client_id = current_user.get("client_id")  # Legacy field
         
         # Sync agent
         ultravox_response = await sync_agent_to_ultravox(agent_id, client_id)
         
         # Update database with Ultravox agent ID if it was created
-        db = DatabaseService()
-        agent = db.select_one("agents", {"id": agent_id, "client_id": client_id})
+        # Initialize database service with org_id context
+        db = DatabaseService(org_id=clerk_org_id)
+        # Filter by org_id instead of client_id
+        agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
         if agent and not agent.get("ultravox_agent_id"):
             ultravox_agent_id = ultravox_response.get("agentId")
             if ultravox_agent_id:
-                db.update("agents", {"id": agent_id, "client_id": client_id}, {
+                # Filter by org_id instead of client_id
+                db.update("agents", {"id": agent_id, "clerk_org_id": clerk_org_id}, {
                     "ultravox_agent_id": ultravox_agent_id,
                     "status": "active",
                 })

@@ -82,21 +82,28 @@ async def extract_and_store_content(
         raise
 
 
-async def get_knowledge_base_content(kb_id: str, client_id: Optional[str] = None) -> str:
+async def get_knowledge_base_content(kb_id: str, org_id: Optional[str] = None, client_id: Optional[str] = None) -> str:
     """
     Fetch content from knowledge_bases table.
     
     Args:
         kb_id: Knowledge base UUID
-        client_id: Optional client ID for ownership validation (if None, skips validation)
+        org_id: Organization ID for scoping (organization-first approach)
+        client_id: Optional client ID for backward compatibility (deprecated)
     
     Returns:
         Plain text content
     """
     try:
-        db = DatabaseService()
+        # CRITICAL: Use org_id for organization-first approach
+        db = DatabaseService(org_id=org_id) if org_id else DatabaseService()
         filters = {"id": kb_id}
-        if client_id:
+        
+        # Filter by org_id if provided (preferred)
+        if org_id:
+            filters["clerk_org_id"] = org_id
+        elif client_id:
+            # Fallback to client_id for backward compatibility
             filters["client_id"] = client_id
         
         kb_record = db.select_one("knowledge_bases", filters)

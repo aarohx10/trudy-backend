@@ -94,7 +94,11 @@ def _jwk_to_rsa_public_key(jwk: Dict[str, Any]):
 
 
 async def verify_clerk_jwt(token: str) -> Dict[str, Any]:
-    """Verify Clerk JWT token and return claims"""
+    """Verify Clerk JWT token and return claims with org_id extraction logic
+    
+    CRITICAL: If org_id is null (user is in their personal workspace), 
+    use user_id as the org_id to ensure solo users still have a data partition.
+    """
     debug_logger.log_auth("TOKEN_VERIFY", "Starting Clerk JWT verification")
     try:
         # Get Clerk JWKs
@@ -127,6 +131,13 @@ async def verify_clerk_jwt(token: str) -> Dict[str, Any]:
         # HARD-CODED: Use custom Clerk domain issuer (FORCE - ignores env vars)
         clerk_issuer = 'https://clerk.truedy.sendora.ai'
         debug_logger.log_auth("TOKEN_VERIFY", f"Verifying token with issuer: {clerk_issuer}")
+        
+        # CRITICAL: CORS Policy Lockdown - validate Clerk issuer
+        from app.core.cors import validate_clerk_issuer
+        if not validate_clerk_issuer(clerk_issuer):
+            debug_logger.log_auth("TOKEN_VERIFY", f"Invalid Clerk issuer: {clerk_issuer}")
+            raise UnauthorizedError("Invalid Clerk issuer")
+        
         claims = jwt.decode(
             token,
             public_key,
@@ -135,9 +146,25 @@ async def verify_clerk_jwt(token: str) -> Dict[str, Any]:
             options={"verify_aud": False},  # Clerk doesn't use standard audience
         )
         
+        # CRITICAL LOGIC: Extract org_id and user_id, with fallback
+        user_id = claims.get("sub")
+        org_id = claims.get("org_id")
+        
+        # If org_id is null (user is in their personal workspace), use user_id as org_id
+        if not org_id and user_id:
+            org_id = user_id
+            debug_logger.log_auth("TOKEN_VERIFY", "org_id is null, using user_id as org_id for personal workspace", {
+                "user_id": user_id,
+                "org_id": org_id
+            })
+        
+        # Store the effective org_id in claims for downstream use
+        claims["_effective_org_id"] = org_id
+        
         debug_logger.log_auth("TOKEN_VERIFY", "Clerk JWT verified successfully", {
-            "user_id": claims.get("sub"),
-            "org_id": claims.get("org_id"),
+            "user_id": user_id,
+            "org_id": org_id,
+            "effective_org_id": claims.get("_effective_org_id"),
             "email": claims.get("email")
         })
         
@@ -196,7 +223,16 @@ async def get_current_user(
     authorization: Optional[str] = Header(None),
     x_client_id: Optional[str] = Header(None),
 ) -> Dict[str, Any]:
-    """Get current user from Clerk JWT token"""
+    """
+    Get current user from Clerk JWT token.
+    
+    Returns a UserContext object containing:
+    - clerk_user_id: The Clerk user ID
+    - clerk_org_id: The effective organization ID (uses user_id as fallback for personal workspace)
+    - role: User's role in the organization
+    """
+    from app.models.schemas import UserContext
+    
     debug_logger.log_auth("GET_USER", "Starting user lookup")
     # Extract and verify token
     token = get_jwt_header(authorization)
@@ -209,21 +245,20 @@ async def get_current_user(
     picture = claims.get("picture", "") or claims.get("image_url", "")
     
     # Extract Clerk-specific claims
-    clerk_org_id = claims.get("org_id")  # Clerk organization ID
+    # CRITICAL: Use _effective_org_id from verify_clerk_jwt (handles personal workspace fallback)
+    clerk_org_id = claims.get("_effective_org_id") or claims.get("org_id")
     clerk_role = claims.get("org_role")  # Clerk organization role
-    
-    def _normalize_uuid(value: Optional[str]) -> Optional[str]:
-        if not value:
-            return None
-        try:
-            return str(UUID(str(value)))
-        except (ValueError, TypeError):
-            return None
-    
-    normalized_header_client_id = _normalize_uuid(x_client_id)
     
     if not user_id:
         raise UnauthorizedError("Invalid token: missing user ID")
+    
+    if not clerk_org_id:
+        # This should never happen after verify_clerk_jwt, but safety check
+        clerk_org_id = user_id
+        debug_logger.log_auth("GET_USER", "WARNING: No org_id found, using user_id as fallback", {
+            "user_id": user_id,
+            "org_id": clerk_org_id
+        })
     
     # Try to get user from database
     # Use admin client to bypass RLS for this lookup
@@ -231,7 +266,6 @@ async def get_current_user(
     admin_db = get_supabase_admin_client()
     
     user_data = None
-    client_id = None
     role = "client_user"
     
     # Look up by clerk_user_id first
@@ -245,64 +279,41 @@ async def get_current_user(
                 "client_id": user_data.get("client_id")
             })
     
-    # If not found and we have org_id, try to find client by clerk_organization_id
-    if not user_data and clerk_org_id:
-        debug_logger.log_auth("GET_USER", "User not found, looking up client by clerk_organization_id", {
-            "org_id": clerk_org_id
-        })
-        org_record = admin_db.table("clients").select("*").eq("clerk_organization_id", clerk_org_id).execute()
-        if org_record.data:
-            client_id = org_record.data[0].get("id")
-            debug_logger.log_auth("GET_USER", "Client found by clerk_organization_id", {"client_id": client_id})
-            # Map Clerk role to our role system
-            if clerk_role == "org:admin":
-                role = "client_admin"
-            elif clerk_role:
-                role = "client_user"
-    
+    # Determine role from database or Clerk org role
     if user_data:
-        # User exists, get client_id and role from database
-        client_id = user_data.get("client_id")
+        # User exists, get role from database
         role = user_data.get("role", "client_user")
-    elif clerk_org_id and not user_data:
-        # User doesn't exist yet, but we have org_id - client_id will be set from org
-        # This will be handled in /auth/me endpoint
-        pass
-    elif normalized_header_client_id:
-        # User doesn't exist yet, but client_id provided in header (legacy)
-        # This will be handled in /auth/me endpoint
-        client_id = normalized_header_client_id
+    elif clerk_role:
+        # Map Clerk role to our role system
+        if clerk_role == "org:admin":
+            role = "client_admin"
+        else:
+            role = "client_user"
     
-    # If header client_id provided, validate it matches database (unless agency_admin)
-    if normalized_header_client_id and client_id:
-        if role != "agency_admin" and normalized_header_client_id != client_id:
-            debug_logger.log_auth("GET_USER", "client_id mismatch detected", {
-                "header_client_id": normalized_header_client_id,
-                "db_client_id": client_id,
-                "role": role
-            })
-            raise ForbiddenError("client_id mismatch")
-        client_id = normalized_header_client_id
+    # Create UserContext object
+    user_context = UserContext(
+        clerk_user_id=user_id,
+        clerk_org_id=clerk_org_id,  # Always set - uses user_id as fallback for personal workspace
+        role=role,
+        email=email,
+        name=name.strip() if name else None,
+        picture=picture,
+        token=token,
+        claims=claims,
+    )
     
-    result = {
-        "user_id": user_id,
-        "client_id": client_id,  # From database, org, or header
-        "role": role,  # From database or Clerk org role
-        "email": email,
-        "name": name.strip(),
-        "picture": picture,
-        "token": token,
-        "claims": claims,
-        "token_type": "clerk",  # Always Clerk
-        "clerk_org_id": clerk_org_id,  # Clerk organization ID if present
-    }
+    # Return as dict for backward compatibility (many endpoints expect dict)
+    result = user_context.dict()
+    # Add legacy fields for backward compatibility
+    result["user_id"] = user_id
+    result["client_id"] = None  # Deprecated - use clerk_org_id instead
+    result["token_type"] = "clerk"
     
     debug_logger.log_auth("GET_USER", "User lookup completed", {
-        "user_id": user_id,
-        "client_id": client_id,
+        "clerk_user_id": user_id,
+        "clerk_org_id": clerk_org_id,
         "role": role,
         "token_type": "clerk",
-        "has_org_id": bool(clerk_org_id)
     })
     
     return result

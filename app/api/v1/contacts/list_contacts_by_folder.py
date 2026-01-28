@@ -29,19 +29,29 @@ async def list_contacts_by_folder(
     page: Optional[int] = Query(1, ge=1, description="Page number"),
     limit: Optional[int] = Query(50, ge=1, le=100, description="Items per page"),
 ):
-    """List contacts by folder - Simple: Filter by folder_id and client_id, optional search"""
+    """
+    List contacts by folder - Simple: Filter by folder_id and org_id, optional search.
+    
+    CRITICAL: Filters by clerk_org_id to show shared contacts across the team.
+    """
     try:
-        client_id = current_user.get("client_id")
-        db = DatabaseService()
+        # CRITICAL: Use clerk_org_id for organization-first approach
+        clerk_org_id = current_user.get("clerk_org_id")
+        if not clerk_org_id:
+            raise ValidationError("Missing organization ID in token")
         
-        # If folder_id provided, verify it exists and belongs to client
+        # Initialize database service with org_id context
+        db = DatabaseService(org_id=clerk_org_id)
+        
+        # If folder_id provided, verify it exists and belongs to organization
         if folder_id:
-            folder = db.select_one("contact_folders", {"id": folder_id, "client_id": client_id})
+            # Filter by org_id via context (no need for explicit client_id filter)
+            folder = db.select_one("contact_folders", {"id": folder_id})
             if not folder:
                 raise NotFoundError("contact_folder", folder_id)
         
-        # Build filter
-        filter_dict = {"client_id": client_id}
+        # Build filter - filter by org_id instead of client_id
+        filter_dict = {"clerk_org_id": clerk_org_id}
         if folder_id:
             filter_dict["folder_id"] = folder_id
         

@@ -423,14 +423,15 @@ def normalize_agent_name(name: str) -> str:
     return normalized
 
 
-async def create_agent_ultravox_first(agent_data: Dict[str, Any], client_id: str) -> Dict[str, Any]:
+async def create_agent_ultravox_first(agent_data: Dict[str, Any], client_id: str, clerk_org_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Create agent in Ultravox FIRST (before database).
     This is the primary source of truth.
     
     Args:
         agent_data: Agent data dictionary (not yet in database)
-        client_id: Client UUID
+        client_id: Client UUID (legacy - for backward compatibility)
+        clerk_org_id: Clerk organization ID (required for organization-first approach)
         
     Returns:
         Ultravox agent response (includes agentId)
@@ -476,7 +477,13 @@ async def create_agent_ultravox_first(agent_data: Dict[str, Any], client_id: str
     if normalized_name != agent_name:
         logger.warning(f"[AGENT_SERVICE] Agent name normalized from '{agent_name}' to '{normalized_name}' for Ultravox")
     
-    response = await ultravox_client.create_agent(normalized_name, call_template)
+    # Build metadata with clerk_org_id for webhook billing/logging
+    metadata = None
+    if clerk_org_id:
+        metadata = {"clerk_org_id": clerk_org_id}
+        logger.debug(f"[AGENT_SERVICE] Adding clerk_org_id to Ultravox agent metadata: {clerk_org_id}")
+    
+    response = await ultravox_client.create_agent(normalized_name, call_template, metadata=metadata)
     
     logger.info(f"[AGENT_SERVICE] Created agent in Ultravox FIRST: {response.get('agentId')}")
     return response

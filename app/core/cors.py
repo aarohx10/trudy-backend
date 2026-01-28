@@ -27,6 +27,9 @@ def is_origin_allowed(origin: str) -> bool:
     """
     SINGLE SOURCE OF TRUTH for CORS origin validation.
     
+    CRITICAL: CORS Policy Lockdown - validates frontend domains but also validates Clerk Issuer
+    for JWT-based requests to ensure requests come from legitimate Clerk-authenticated clients.
+    
     This function is used by:
     - UnifiedCORSMiddleware (app/core/middleware.py)
     - CORS health check endpoints (app/main.py)
@@ -49,6 +52,44 @@ def is_origin_allowed(origin: str) -> bool:
     for pattern in _cors_compiled_patterns:
         if pattern.match(origin):
             return True
+    
+    return False
+
+
+def validate_clerk_issuer(issuer: str) -> bool:
+    """
+    Validate Clerk JWT issuer claim.
+    
+    CRITICAL: CORS Policy Lockdown - ensures JWT tokens come from legitimate Clerk instances.
+    This prevents unauthorized access even if CORS origin is allowed.
+    
+    Args:
+        issuer: The 'iss' claim from the JWT token
+        
+    Returns:
+        True if issuer is valid Clerk instance, False otherwise
+    """
+    if not issuer:
+        return False
+    
+    # Valid Clerk issuer patterns
+    # Production: https://clerk.{your-domain}.com or https://{your-domain}.clerk.accounts.dev
+    # Development: https://{your-domain}.clerk.accounts.dev
+    valid_issuer_patterns = [
+        r"^https://.*\.clerk\.accounts\.dev$",  # Clerk development instances
+        r"^https://clerk\..*\.com$",  # Clerk production instances (custom domain)
+        r"^https://.*\.clerk\.accounts\.com$",  # Clerk production instances
+    ]
+    
+    import re
+    for pattern in valid_issuer_patterns:
+        if re.match(pattern, issuer):
+            return True
+    
+    # Allow specific Clerk issuer from environment if configured
+    allowed_issuer = getattr(settings, "CLERK_ISSUER", None)
+    if allowed_issuer and issuer == allowed_issuer:
+        return True
     
     return False
 

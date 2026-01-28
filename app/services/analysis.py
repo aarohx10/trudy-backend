@@ -229,6 +229,9 @@ async def process_call_metadata(
     Process call metadata after call ends.
     Fetches call and agent data, analyzes transcript, and updates database.
     Returns analysis results.
+    
+    CRITICAL: Call summaries and sentiment analysis results are stored with clerk_org_id
+    for organization-first data access.
     """
     admin_db = DatabaseAdminService()
     
@@ -237,6 +240,11 @@ async def process_call_metadata(
     if not call:
         logger.error(f"Call {call_id} not found for analysis")
         return {"error": "Call not found"}
+    
+    # CRITICAL: Ensure call has clerk_org_id for organization scoping
+    clerk_org_id = call.get("clerk_org_id")
+    if not clerk_org_id:
+        logger.warning(f"Call {call_id} missing clerk_org_id - analysis results may not be properly scoped")
     
     # Update status to processing
     admin_db.update(

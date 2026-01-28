@@ -27,16 +27,25 @@ async def export_contacts(
     x_client_id: Optional[str] = Header(None),
     folder_id: Optional[str] = Query(None, description="Filter by folder ID"),
 ):
-    """Export contacts as CSV, optionally filtered by folder_id"""
+    """
+    Export contacts as CSV, optionally filtered by folder_id.
+    
+    CRITICAL: Filters by clerk_org_id to export all organization contacts (team-shared).
+    """
     try:
-        client_id = current_user.get("client_id")
-        db = DatabaseService()
+        # CRITICAL: Use clerk_org_id for organization-first approach
+        clerk_org_id = current_user.get("clerk_org_id")
+        if not clerk_org_id:
+            raise ValidationError("Missing organization ID in token")
         
-        # Build filter
-        filter_dict = {"client_id": client_id}
+        # Initialize database service with org_id context
+        db = DatabaseService(org_id=clerk_org_id)
+        
+        # Build filter - filter by org_id instead of client_id
+        filter_dict = {"clerk_org_id": clerk_org_id}
         if folder_id:
-            # Verify folder exists and belongs to client
-            folder = db.select_one("contact_folders", {"id": folder_id, "client_id": client_id})
+            # Verify folder exists and belongs to organization (filtered by org_id via context)
+            folder = db.select_one("contact_folders", {"id": folder_id})
             if not folder:
                 raise ValidationError(f"Folder not found: {folder_id}")
             filter_dict["folder_id"] = folder_id

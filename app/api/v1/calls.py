@@ -59,14 +59,22 @@ async def create_call(
                 status_code=cached["status_code"],
             )
     
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
     # Create call record
     call_id = str(uuid.uuid4())
     call_record = {
         "id": call_id,
-        "client_id": current_user["client_id"],
+        "client_id": current_user.get("client_id"),  # Legacy field
+        "clerk_org_id": clerk_org_id,  # CRITICAL: Organization ID for data partitioning
+        "created_by_user_id": current_user.get("clerk_user_id"),  # Track which user created the call
         "agent_id": call_data.agent_id if call_data.agent_id else None,
         "phone_number": call_data.phone_number,
         "direction": call_data.direction.value,
@@ -80,7 +88,8 @@ async def create_call(
     # Get agent's outbound number if this is an outbound call
     caller_id = None
     if call_data.agent_id and call_data.direction.value == "outbound":
-        agent = db.select_one("agents", {"id": call_data.agent_id, "client_id": current_user["client_id"]})
+        # Filter by org_id via context (no need for explicit client_id filter)
+        agent = db.select_one("agents", {"id": call_data.agent_id})
         if agent and agent.get("outbound_phone_number_id"):
             outbound_number = db.select_one("phone_numbers", {"id": agent["outbound_phone_number_id"]})
             if outbound_number:
@@ -150,14 +159,15 @@ async def create_call(
     if call_record.get("ultravox_call_id"):
         await emit_call_created(
             call_id=call_id,
-            client_id=current_user["client_id"],
+            client_id=current_user.get("client_id"),  # Legacy
+            org_id=clerk_org_id,  # Organization ID
             ultravox_call_id=call_record["ultravox_call_id"],
             phone_number=call_data.phone_number,
             direction=call_data.direction.value,
         )
     
-    # Fetch the call from database to get all fields including created_at
-    call = db.get_call(call_id, current_user["client_id"])
+    # Fetch the call from database to get all fields including created_at (filtered by org_id via context)
+    call = db.get_call(call_id)
     if not call:
         raise NotFoundError("call", call_id)
     
@@ -193,12 +203,23 @@ async def list_calls(
     limit: int = 50,
     offset: int = 0,
 ):
-    """List calls with filtering and pagination"""
-    db = DatabaseService(current_user["token"])
+    """
+    List calls with filtering and pagination.
+    
+    CRITICAL: Filters by clerk_org_id to allow teammates to see each other's calls.
+    Removed user_id filter - all calls in the organization are visible.
+    """
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
-    # Build filters
-    filters = {"client_id": current_user["client_id"]}
+    # Build filters - filter by org_id instead of client_id/user_id
+    filters = {"clerk_org_id": clerk_org_id}  # CRITICAL: Organization-scoped filtering
     # Note: agent_id filtering removed - agent functionality has been removed
     if status:
         filters["status"] = status
@@ -236,10 +257,17 @@ async def get_call(
     refresh: bool = False,
 ):
     """Get call with optional status refresh from Ultravox"""
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
-    call = db.get_call(call_id, current_user["client_id"])
+    # Filter by org_id via context (no need for explicit client_id filter)
+    call = db.get_call(call_id)
     if not call:
         raise NotFoundError("call", call_id)
     
@@ -263,8 +291,8 @@ async def get_call(
             
             if update_data:
                 db.update("calls", {"id": call_id}, update_data)
-                # Refresh call data
-                call = db.get_call(call_id, current_user["client_id"])
+                # Refresh call data (filtered by org_id via context)
+                call = db.get_call(call_id)
         except Exception as e:
             import traceback
             import json
@@ -296,10 +324,17 @@ async def get_call_transcript(
     x_client_id: Optional[str] = Header(None),
 ):
     """Get call transcript"""
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
-    call = db.get_call(call_id, current_user["client_id"])
+    # Filter by org_id via context
+    call = db.get_call(call_id)
     if not call:
         raise NotFoundError("call", call_id)
     
@@ -350,10 +385,17 @@ async def get_call_recording(
     x_client_id: Optional[str] = Header(None),
 ):
     """Get call recording URL"""
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
-    call = db.get_call(call_id, current_user["client_id"])
+    # Filter by org_id via context
+    call = db.get_call(call_id)
     if not call:
         raise NotFoundError("call", call_id)
     
@@ -389,9 +431,9 @@ async def get_call_recording(
             elif "ogg" in content_type.lower():
                 file_ext = "ogg"
             
-            # Generate storage key: recordings/client_id/calls/call_id/recording.{ext}
-            client_id = current_user["client_id"]
-            storage_key = f"recordings/{client_id}/calls/{call_id}/recording.{file_ext}"
+            # Generate storage key: recordings/org_id/calls/call_id/recording.{ext}
+            # Use org_id instead of client_id for organization-first approach
+            storage_key = f"recordings/{clerk_org_id}/calls/{call_id}/recording.{file_ext}"
             
             # Upload recording
             logger.info(f"Uploading call recording: {storage_key} ({len(recording_data)} bytes)")
@@ -460,11 +502,17 @@ async def update_call(
     x_client_id: Optional[str] = Header(None),
 ):
     """Update call (context and settings only)"""
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
-    # Check if call exists
-    call = db.get_call(call_id, current_user["client_id"])
+    # Check if call exists (filtered by org_id via context)
+    call = db.get_call(call_id)
     if not call:
         raise NotFoundError("call", call_id)
     
@@ -490,8 +538,8 @@ async def update_call(
     update_data["updated_at"] = datetime.utcnow().isoformat()
     db.update("calls", {"id": call_id}, update_data)
     
-    # Get updated call
-    updated_call = db.get_call(call_id, current_user["client_id"])
+    # Get updated call (filtered by org_id via context)
+    updated_call = db.get_call(call_id)
     
     return {
         "data": CallResponse(**updated_call),
@@ -512,7 +560,13 @@ async def bulk_delete_calls(
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
     deleted_ids = []
@@ -520,7 +574,8 @@ async def bulk_delete_calls(
     
     for call_id in request_data.ids:
         try:
-            call = db.get_call(call_id, current_user["client_id"])
+            # Filter by org_id via context
+            call = db.get_call(call_id)
             if not call:
                 failed_ids.append(call_id)
                 continue
@@ -573,11 +628,17 @@ async def delete_call(
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
-    # Check if call exists
-    call = db.get_call(call_id, current_user["client_id"])
+    # Check if call exists (filtered by org_id via context)
+    call = db.get_call(call_id)
     if not call:
         raise NotFoundError("call", call_id)
     

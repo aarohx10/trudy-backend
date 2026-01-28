@@ -30,16 +30,27 @@ async def update_agent(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """Update agent (updates both Supabase + Ultravox)"""
+    """
+    Update agent (updates both Supabase + Ultravox).
+    
+    CRITICAL: Filters by clerk_org_id to ensure organization-scoped access.
+    """
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
     try:
-        client_id = current_user.get("client_id")
-        db = DatabaseService()
+        # CRITICAL: Use clerk_org_id for organization-first approach
+        clerk_org_id = current_user.get("clerk_org_id")
+        if not clerk_org_id:
+            raise ValidationError("Missing organization ID in token")
         
-        # Get existing agent
-        existing_agent = db.select_one("agents", {"id": agent_id, "client_id": client_id})
+        client_id = current_user.get("client_id")  # Legacy field
+        
+        # Initialize database service with org_id context
+        db = DatabaseService(org_id=clerk_org_id)
+        
+        # Get existing agent - filter by org_id instead of client_id
+        existing_agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
         if not existing_agent:
             raise NotFoundError("agent", agent_id)
         
@@ -130,9 +141,9 @@ async def update_agent(
                 update_data["ultravox_agent_id"] = ultravox_agent_id
                 logger.info(f"[AGENTS] [UPDATE] Agent created in Ultravox FIRST (was missing): {ultravox_agent_id}")
             
-            # Now update Supabase
+            # Now update Supabase - filter by org_id instead of client_id
             update_data["status"] = "active"
-            db.update("agents", {"id": agent_id, "client_id": client_id}, update_data)
+            db.update("agents", {"id": agent_id, "clerk_org_id": clerk_org_id}, update_data)
             logger.info(f"[AGENTS] [UPDATE] Agent updated in DB after Ultravox: {agent_id}")
             
         except Exception as uv_error:
@@ -156,8 +167,8 @@ async def update_agent(
                 http_status=500,
             )
         
-        # Fetch updated agent
-        updated_agent = db.select_one("agents", {"id": agent_id, "client_id": client_id})
+        # Fetch updated agent - filter by org_id instead of client_id
+        updated_agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
         
         return {
             "data": updated_agent,

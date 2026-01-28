@@ -87,7 +87,12 @@ async def create_knowledge_base(
     Validates file, extracts text, stores in database, and creates Ultravox tool.
     """
     try:
-        client_id = current_user.get("client_id")
+        # CRITICAL: Use clerk_org_id for organization-first approach
+        clerk_org_id = current_user.get("clerk_org_id")
+        if not clerk_org_id:
+            raise ValidationError("Missing organization ID in token")
+        
+        client_id = current_user.get("client_id")  # Legacy field
         
         if current_user["role"] not in ["client_admin", "agency_admin"]:
             raise ForbiddenError("Insufficient permissions")
@@ -138,10 +143,12 @@ async def create_knowledge_base(
         kb_id = str(uuid.uuid4())
         now = datetime.utcnow()
         
-        db = DatabaseService()
+        # Initialize database service with org_id context
+        db = DatabaseService(org_id=clerk_org_id)
         kb_record = {
             "id": kb_id,
-            "client_id": client_id,
+            "client_id": client_id,  # Legacy field
+            "clerk_org_id": clerk_org_id,  # CRITICAL: Organization ID for data partitioning
             "name": name,
             "description": request_data.description,
             "language": "en-US",
@@ -162,12 +169,12 @@ async def create_knowledge_base(
                 temp_file.write(file_content)
                 temp_file_path = temp_file.name
             
-            # Extract text and store content
+            # Extract text and store content (pass org_id)
             extracted_text = await extract_and_store_content(
                 file_path=temp_file_path,
                 file_type=file_type,
                 kb_id=kb_id,
-                client_id=client_id,
+                client_id=clerk_org_id,  # Pass org_id as client_id for backward compatibility
                 file_name=request_data.file.filename,
                 file_size=file_size
             )
@@ -179,8 +186,8 @@ async def create_knowledge_base(
             except Exception as tool_error:
                 logger.warning(f"[KB] Failed to create Ultravox tool (non-critical): {tool_error}", exc_info=True)
             
-            # Fetch updated record
-            updated_kb = db.select_one("knowledge_bases", {"id": kb_id, "client_id": client_id})
+            # Fetch updated record (filtered by org_id via context)
+            updated_kb = db.select_one("knowledge_bases", {"id": kb_id})
             
             return {
                 "data": updated_kb,
@@ -219,12 +226,22 @@ async def list_knowledge_bases(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """List all knowledge bases for current client"""
+    """
+    List all knowledge bases for current organization.
+    
+    CRITICAL: Filters by clerk_org_id to show shared knowledge bases across the team.
+    """
     try:
-        client_id = current_user.get("client_id")
-        db = DatabaseService()
+        # CRITICAL: Use clerk_org_id for organization-first approach
+        clerk_org_id = current_user.get("clerk_org_id")
+        if not clerk_org_id:
+            raise ValidationError("Missing organization ID in token")
         
-        kb_list = db.select("knowledge_bases", {"client_id": client_id}, order_by="created_at DESC")
+        # Initialize database service with org_id context
+        db = DatabaseService(org_id=clerk_org_id)
+        
+        # Filter by org_id instead of client_id - shows all organization knowledge bases
+        kb_list = db.select("knowledge_bases", {"clerk_org_id": clerk_org_id}, order_by="created_at DESC")
         
         return {
             "data": list(kb_list),

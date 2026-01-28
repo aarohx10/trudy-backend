@@ -31,16 +31,27 @@ async def add_contact_to_folder(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """Add contact to folder - Simple: Verify folder, validate contact, insert with folder_id"""
+    """
+    Add contact to folder - Simple: Verify folder, validate contact, insert with folder_id.
+    
+    CRITICAL: Contacts are shared across the organization.
+    """
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
     try:
-        client_id = current_user.get("client_id")
-        db = DatabaseService()
+        # CRITICAL: Use clerk_org_id for organization-first approach
+        clerk_org_id = current_user.get("clerk_org_id")
+        if not clerk_org_id:
+            raise ValidationError("Missing organization ID in token")
         
-        # Verify folder exists and belongs to client
-        folder = db.select_one("contact_folders", {"id": contact_data.folder_id, "client_id": client_id})
+        client_id = current_user.get("client_id")  # Legacy field
+        
+        # Initialize database service with org_id context
+        db = DatabaseService(org_id=clerk_org_id)
+        
+        # Verify folder exists and belongs to organization (filtered by org_id via context)
+        folder = db.select_one("contact_folders", {"id": contact_data.folder_id})
         if not folder:
             raise NotFoundError("contact_folder", contact_data.folder_id)
         
@@ -53,7 +64,8 @@ async def add_contact_to_folder(
         contact_id = str(uuid.uuid4())
         contact_record = {
             "id": contact_id,
-            "client_id": client_id,
+            "client_id": client_id,  # Legacy field
+            "clerk_org_id": clerk_org_id,  # CRITICAL: Organization ID for data partitioning
             "folder_id": validated_contact["folder_id"],
             "first_name": validated_contact.get("first_name"),
             "last_name": validated_contact.get("last_name"),

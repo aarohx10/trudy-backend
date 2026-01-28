@@ -114,13 +114,20 @@ async def purchase_number(
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
     telephony_service = TelephonyService(db)
     
     try:
-        organization_id = current_user["client_id"]
+        # CRITICAL: Use clerk_org_id instead of client_id
+        organization_id = clerk_org_id
         
         result = await telephony_service.purchase_number(
             organization_id=organization_id,
@@ -269,13 +276,20 @@ async def assign_number_to_agent(
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
     telephony_service = TelephonyService(db)
     
     try:
-        organization_id = current_user["client_id"]
+        # CRITICAL: Use clerk_org_id instead of client_id
+        organization_id = clerk_org_id
         
         # Validate assignment_type
         if request.assignment_type not in ["inbound", "outbound"]:

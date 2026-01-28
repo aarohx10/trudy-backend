@@ -190,9 +190,14 @@ async def handle_organization_created(admin_db, data: dict):
         "subscription_status": "active",
         "credits_balance": 0,
         "credits_ceiling": 10000,
+        "stripe_customer_id": None,  # Will be set when subscription is created
     }
     admin_db.table("clients").insert(client_data).execute()
     logger.info(f"Created client for Clerk organization: {client_id}, org: {clerk_org_id}")
+    
+    # CRITICAL: Link Stripe CustomerIDs to clerk_org_id in the clients table
+    # When Stripe webhook fires for subscription.created, it should update this client's stripe_customer_id
+    # This ensures billing is scoped to the organization, not individual users
     
     # Sync client_id to organization metadata
     await sync_client_id_to_org_metadata(clerk_org_id, client_id)

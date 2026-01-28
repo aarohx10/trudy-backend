@@ -43,15 +43,26 @@ async def create_campaign(
     x_client_id: Optional[str] = Header(None),
     idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
-    """Create campaign"""
+    """
+    Create campaign.
+    
+    CRITICAL: Campaigns are scoped to organizations, not individual users.
+    """
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
+    
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    client_id = current_user.get("client_id")  # Legacy field
     
     # Check idempotency key
     body_dict = campaign_data.dict() if hasattr(campaign_data, 'dict') else json.loads(json.dumps(campaign_data, default=str))
     if idempotency_key:
         cached = await check_idempotency_key(
-            current_user["client_id"],
+            client_id,  # Idempotency still uses client_id for key uniqueness
             idempotency_key,
             request,
             body_dict,
@@ -63,14 +74,16 @@ async def create_campaign(
                 status_code=cached["status_code"],
             )
     
-    db = DatabaseService(current_user["token"])
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
     # Create campaign record
     campaign_id = str(uuid.uuid4())
     campaign_record = {
         "id": campaign_id,
-        "client_id": current_user["client_id"],
+        "client_id": client_id,  # Legacy field
+        "clerk_org_id": clerk_org_id,  # CRITICAL: Organization ID for data partitioning
         "agent_id": campaign_data.agent_id if campaign_data.agent_id else None,
         "name": campaign_data.name,
         "schedule_type": campaign_data.schedule_type.value,
@@ -86,7 +99,8 @@ async def create_campaign(
     # Emit event
     await emit_campaign_created(
         campaign_id=campaign_id,
-        client_id=current_user["client_id"],
+        client_id=client_id,  # Legacy
+        org_id=clerk_org_id,  # CRITICAL: Include org_id
         name=campaign_data.name,
     )
     
@@ -101,7 +115,7 @@ async def create_campaign(
     # Store idempotency response
     if idempotency_key:
         await store_idempotency_response(
-            current_user["client_id"],
+            client_id,  # Idempotency still uses client_id
             idempotency_key,
             request,
             body_dict,
@@ -122,17 +136,24 @@ async def presign_contacts_csv(
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
-    campaign = db.get_campaign(campaign_id, current_user["client_id"])
+    campaign = db.get_campaign(campaign_id, clerk_org_id)
     if not campaign:
         raise NotFoundError("campaign", campaign_id)
     
     if campaign.get("status") != "draft":
         raise ValidationError("Campaign must be in draft status")
     
-    storage_key = f"uploads/client_{current_user['client_id']}/campaigns/{campaign_id}/contacts.csv"
+    # CRITICAL: Use org_id in storage path instead of client_id
+    storage_key = f"uploads/org_{clerk_org_id}/campaigns/{campaign_id}/contacts.csv"
     url = generate_presigned_url(
         bucket=settings.STORAGE_BUCKET_UPLOADS,
         key=storage_key,
@@ -165,10 +186,16 @@ async def upload_campaign_contacts(
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
-    campaign = db.get_campaign(campaign_id, current_user["client_id"])
+    campaign = db.get_campaign(campaign_id, clerk_org_id)
     if not campaign:
         raise NotFoundError("campaign", campaign_id)
     
@@ -243,7 +270,7 @@ async def upload_campaign_contacts(
             "campaign_id": campaign_id,
             "contacts_added": contacts_added,
             "contacts_failed": len(contacts) - contacts_added,
-            "stats": db.get_campaign(campaign_id, current_user["client_id"]).get("stats", {}),
+            "stats": db.get_campaign(campaign_id, clerk_org_id).get("stats", {}),
         },
         "meta": ResponseMeta(
             request_id=str(uuid.uuid4()),
@@ -266,10 +293,16 @@ async def schedule_campaign(
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
-    campaign = db.get_campaign(campaign_id, current_user["client_id"])
+    campaign = db.get_campaign(campaign_id, clerk_org_id)
     if not campaign:
         raise NotFoundError("campaign", campaign_id)
     
@@ -411,7 +444,7 @@ async def schedule_campaign(
                 {"error": str(e), "campaign_id": campaign_id}
             )
     
-    updated_campaign = db.get_campaign(campaign_id, current_user["client_id"])
+    updated_campaign = db.get_campaign(campaign_id, clerk_org_id)
     
     return {
         "data": CampaignResponse(**updated_campaign),
@@ -434,12 +467,20 @@ async def list_campaigns(
     """
     List campaigns with filtering and pagination.
     Campaigns in scheduled/active status are reconciled with Ultravox for live stats.
+    
+    CRITICAL: Filters by clerk_org_id to show all organization campaigns (team-shared).
     """
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
-    # Build filters
-    filters = {"client_id": current_user["client_id"]}
+    # Build filters - filter by org_id instead of client_id
+    filters = {"clerk_org_id": clerk_org_id}
     if agent_id:
         filters["agent_id"] = agent_id
     if status:
@@ -540,7 +581,7 @@ async def list_campaigns(
                 db.update_campaign_stats(campaign["id"])
     
     # Refresh campaigns after stats update
-    paginated_campaigns = [db.get_campaign(c["id"], current_user["client_id"]) for c in paginated_campaigns]
+    paginated_campaigns = [db.get_campaign(c["id"], clerk_org_id) for c in paginated_campaigns]
     
     return {
         "data": [CampaignResponse(**campaign) for campaign in paginated_campaigns],
@@ -566,11 +607,19 @@ async def get_campaign(
     """
     Get campaign with live reconciliation from Ultravox.
     When campaign is scheduled or active, fetches real-time stats from Ultravox batches.
+    
+    CRITICAL: Filters by clerk_org_id to ensure organization-scoped access.
     """
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
-    campaign = db.get_campaign(campaign_id, current_user["client_id"])
+    campaign = db.get_campaign(campaign_id, clerk_org_id)
     if not campaign:
         raise NotFoundError("campaign", campaign_id)
     
@@ -667,7 +716,7 @@ async def get_campaign(
     else:
         # For non-active campaigns, just update local stats
         db.update_campaign_stats(campaign_id)
-        campaign = db.get_campaign(campaign_id, current_user["client_id"])
+        campaign = db.get_campaign(campaign_id, clerk_org_id)
     
     return {
         "data": CampaignResponse(**campaign),
@@ -689,11 +738,17 @@ async def update_campaign(
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
     # Check if campaign exists
-    campaign = db.get_campaign(campaign_id, current_user["client_id"])
+    campaign = db.get_campaign(campaign_id, clerk_org_id)
     if not campaign:
         raise NotFoundError("campaign", campaign_id)
     
@@ -727,7 +782,7 @@ async def update_campaign(
     db.update("campaigns", {"id": campaign_id}, update_data)
     
     # Get updated campaign
-    updated_campaign = db.get_campaign(campaign_id, current_user["client_id"])
+    updated_campaign = db.get_campaign(campaign_id, clerk_org_id)
     
     return {
         "data": CampaignResponse(**updated_campaign),
@@ -748,11 +803,17 @@ async def pause_campaign(
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
     # Check if campaign exists
-    campaign = db.get_campaign(campaign_id, current_user["client_id"])
+    campaign = db.get_campaign(campaign_id, clerk_org_id)
     if not campaign:
         raise NotFoundError("campaign", campaign_id)
     
@@ -778,7 +839,7 @@ async def pause_campaign(
     # The actual pausing of calls will be handled by the campaign execution logic
     
     # Get updated campaign
-    updated_campaign = db.get_campaign(campaign_id, current_user["client_id"])
+    updated_campaign = db.get_campaign(campaign_id, clerk_org_id)
     
     return {
         "data": CampaignResponse(**updated_campaign),
@@ -799,11 +860,17 @@ async def resume_campaign(
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
     # Check if campaign exists
-    campaign = db.get_campaign(campaign_id, current_user["client_id"])
+    campaign = db.get_campaign(campaign_id, clerk_org_id)
     if not campaign:
         raise NotFoundError("campaign", campaign_id)
     
@@ -851,7 +918,7 @@ async def resume_campaign(
     # The actual resuming of calls will be handled by the campaign execution logic
     
     # Get updated campaign
-    updated_campaign = db.get_campaign(campaign_id, current_user["client_id"])
+    updated_campaign = db.get_campaign(campaign_id, clerk_org_id)
     
     return {
         "data": CampaignResponse(**updated_campaign),
@@ -872,7 +939,13 @@ async def bulk_delete_campaigns(
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
     deleted_ids = []
@@ -880,7 +953,7 @@ async def bulk_delete_campaigns(
     
     for campaign_id in request_data.ids:
         try:
-            campaign = db.get_campaign(campaign_id, current_user["client_id"])
+            campaign = db.get_campaign(campaign_id, clerk_org_id)
             if not campaign:
                 failed_ids.append(campaign_id)
                 continue
@@ -939,11 +1012,17 @@ async def delete_campaign(
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
     # Check if campaign exists
-    campaign = db.get_campaign(campaign_id, current_user["client_id"])
+    campaign = db.get_campaign(campaign_id, clerk_org_id)
     if not campaign:
         raise NotFoundError("campaign", campaign_id)
     

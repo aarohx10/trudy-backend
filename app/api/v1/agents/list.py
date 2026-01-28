@@ -24,11 +24,20 @@ async def list_agents(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """List all agents for current client"""
+    """
+    List all agents for current organization.
+    
+    CRITICAL: Filters by clerk_org_id to show all organization agents (team-shared).
+    """
     try:
-        client_id = current_user.get("client_id")
-        db = DatabaseService()
-        agents = db.select("agents", {"client_id": client_id}, order_by="created_at DESC")
+        # CRITICAL: Use clerk_org_id for organization-first approach
+        clerk_org_id = current_user.get("clerk_org_id")
+        if not clerk_org_id:
+            raise ValidationError("Missing organization ID in token")
+        
+        # Initialize database service with org_id context
+        db = DatabaseService(org_id=clerk_org_id)
+        agents = db.select("agents", {"clerk_org_id": clerk_org_id}, order_by="created_at DESC")
         
         return {
             "data": list(agents),

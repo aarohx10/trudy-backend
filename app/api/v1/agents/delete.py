@@ -26,16 +26,25 @@ async def delete_agent(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """Delete agent (deletes from both Supabase + Ultravox)"""
+    """
+    Delete agent (deletes from both Supabase + Ultravox).
+    
+    CRITICAL: Filters by clerk_org_id to ensure organization-scoped access.
+    """
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
     try:
-        client_id = current_user.get("client_id")
-        db = DatabaseService()
+        # CRITICAL: Use clerk_org_id for organization-first approach
+        clerk_org_id = current_user.get("clerk_org_id")
+        if not clerk_org_id:
+            raise ValidationError("Missing organization ID in token")
         
-        # Get existing agent
-        existing_agent = db.select_one("agents", {"id": agent_id, "client_id": client_id})
+        # Initialize database service with org_id context
+        db = DatabaseService(org_id=clerk_org_id)
+        
+        # Get existing agent - filter by org_id instead of client_id
+        existing_agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
         if not existing_agent:
             raise NotFoundError("agent", agent_id)
         
@@ -49,8 +58,8 @@ async def delete_agent(
                 logger.warning(f"[AGENTS] [DELETE] Failed to delete agent from Ultravox (non-critical): {uv_error}", exc_info=True)
                 # Continue to delete from database even if Ultravox delete fails
         
-        # Delete from database
-        db.delete("agents", {"id": agent_id, "client_id": client_id})
+        # Delete from database - filter by org_id instead of client_id
+        db.delete("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
         logger.info(f"[AGENTS] [DELETE] Agent deleted from database: {agent_id}")
         
         return {

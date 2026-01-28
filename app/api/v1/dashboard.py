@@ -21,11 +21,21 @@ async def get_dashboard_stats(
     date_from: Optional[str] = Query(None, description="Start date (ISO format: YYYY-MM-DD)"),
     date_to: Optional[str] = Query(None, description="End date (ISO format: YYYY-MM-DD)"),
 ):
-    """Get dashboard statistics"""
-    db = DatabaseService(current_user["token"])
-    db.set_auth(current_user["token"])
+    """
+    Get dashboard statistics.
     
-    client_id = current_user["client_id"]
+    CRITICAL: Filters by clerk_org_id to show all organization data (team-shared).
+    """
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    client_id = current_user.get("client_id")  # Legacy field
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
+    db.set_auth(current_user["token"])
     
     # Parse date filters
     date_from_dt = None
@@ -54,8 +64,8 @@ async def get_dashboard_stats(
     if date_from_dt and date_to_dt and date_from_dt > date_to_dt:
         raise ValidationError("date_from must be before date_to")
     
-    # Build filters for calls
-    call_filters = {"client_id": client_id}
+    # Build filters for calls - filter by org_id instead of client_id
+    call_filters = {"clerk_org_id": clerk_org_id}
     
     # Get all calls for the client (we'll filter by date in Python)
     all_calls = db.select("calls", call_filters, order_by="created_at")
@@ -115,8 +125,8 @@ async def get_dashboard_stats(
     total_cost_usd = sum(costs)
     average_cost_usd = total_cost_usd / len(costs) if costs else 0
     
-    # Get campaign statistics
-    campaign_filters = {"client_id": client_id}
+    # Get campaign statistics - filter by org_id instead of client_id
+    campaign_filters = {"clerk_org_id": clerk_org_id}
     
     all_campaigns = db.select("campaigns", campaign_filters)
     
@@ -160,7 +170,7 @@ async def get_dashboard_stats(
     
     stats = {
         "calls": {
-            "total_all_time": len(db.select("calls", {"client_id": client_id})),  # Total across all time
+            "total_all_time": len(db.select("calls", {"clerk_org_id": clerk_org_id})),  # Total across all time
             "total_date_range": total_calls,
             "active": active_calls,
             "completed": completed_calls,

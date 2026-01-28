@@ -71,6 +71,22 @@ class ErrorResponse(BaseModel):
 # Auth Models
 # ============================================
 
+class UserContext(BaseModel):
+    """User context for organization-first authentication"""
+    clerk_user_id: str
+    clerk_org_id: str  # Always set - uses user_id as fallback for personal workspace
+    role: str
+    email: Optional[str] = None
+    name: Optional[str] = None
+    picture: Optional[str] = None
+    token: Optional[str] = None
+    claims: Optional[Dict[str, Any]] = None
+    
+    class Config:
+        # Allow dict-like access for backward compatibility
+        extra = "allow"
+
+
 class UserResponse(BaseModel):
     id: str
     auth0_sub: Optional[str] = ""  # Legacy field - empty string for Clerk-only users

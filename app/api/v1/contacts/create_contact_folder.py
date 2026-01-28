@@ -30,14 +30,24 @@ async def create_contact_folder(
     current_user: dict = Depends(get_current_user),
     x_client_id: Optional[str] = Header(None),
 ):
-    """Create new contact folder - Simple: Insert to Supabase with client_id"""
+    """
+    Create new contact folder - Simple: Insert to Supabase with org_id.
+    
+    CRITICAL: Contact folders are shared across the organization.
+    If User A uploads a CSV, User B must see that folder in the Contacts sidebar.
+    """
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
     try:
-        client_id = current_user.get("client_id")
-        # Step 4: Use DatabaseAdminService to match list endpoint (ensures consistency)
-        # Both create and list now use the same service to bypass RLS
+        # CRITICAL: Use clerk_org_id for organization-first approach
+        clerk_org_id = current_user.get("clerk_org_id")
+        if not clerk_org_id:
+            raise ValidationError("Missing organization ID in token")
+        
+        client_id = current_user.get("client_id")  # Legacy field
+        
+        # Use DatabaseAdminService to match list endpoint (ensures consistency)
         db = DatabaseAdminService()
         now = datetime.utcnow()
         
@@ -45,7 +55,8 @@ async def create_contact_folder(
         folder_id = str(uuid.uuid4())
         folder_record = {
             "id": folder_id,
-            "client_id": client_id,
+            "client_id": client_id,  # Legacy field
+            "clerk_org_id": clerk_org_id,  # CRITICAL: Organization ID for data partitioning
             "name": folder_data.name,
             "description": folder_data.description,
             "created_at": now.isoformat(),
