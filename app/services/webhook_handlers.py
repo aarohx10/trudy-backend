@@ -5,7 +5,8 @@ Handles different Ultravox webhook event types
 import logging
 from typing import Dict, Any, Optional
 from datetime import datetime
-from app.core.database import DatabaseService, DatabaseAdminService
+from app.core.database import DatabaseAdminService
+# Note: Webhook handlers use DatabaseAdminService since they don't have user context
 from app.services.ultravox import ultravox_client
 from app.core.events import (
     emit_call_started,
@@ -18,8 +19,8 @@ from app.core.events import (
 logger = logging.getLogger(__name__)
 
 
-async def handle_call_started(event_data: Dict[str, Any], db: DatabaseService) -> Optional[str]:
-    """Handle call.started event"""
+async def handle_call_started(event_data: Dict[str, Any], db: DatabaseAdminService) -> Optional[str]:
+    """Handle call.started event - returns org_id instead of client_id"""
     ultravox_call_id = event_data.get("call_id") or event_data.get("callId")
     if not ultravox_call_id:
         logger.warning("call.started event missing call_id")
@@ -39,11 +40,14 @@ async def handle_call_started(event_data: Dict[str, Any], db: DatabaseService) -
         },
     )
     
-    await emit_call_started(call_id=call["id"], client_id=call["client_id"])
-    return call["client_id"]
+    # CRITICAL: Extract org_id from call record (organization-first approach)
+    org_id = call.get("clerk_org_id") or call.get("client_id")  # Fallback to client_id for backward compatibility
+    
+    await emit_call_started(call_id=call["id"], client_id=call.get("client_id"), org_id=org_id)
+    return org_id  # Return org_id instead of client_id
 
 
-async def handle_call_ended(event_data: Dict[str, Any], db: DatabaseService) -> Optional[str]:
+async def handle_call_ended(event_data: Dict[str, Any], db: DatabaseAdminService) -> Optional[str]:
     """
     Handle call.ended event - sync transcript and recording
     """
@@ -57,7 +61,9 @@ async def handle_call_ended(event_data: Dict[str, Any], db: DatabaseService) -> 
         logger.warning(f"Call not found for ultravox_call_id: {ultravox_call_id}")
         return None
     
-    client_id = call["client_id"]
+    # CRITICAL: Extract org_id from call record (organization-first approach)
+    org_id = call.get("clerk_org_id") or call.get("client_id")  # Fallback to client_id for backward compatibility
+    client_id = call.get("client_id")  # Legacy field
     data = event_data.get("data", {})
     
     # Fetch transcript and recording from Ultravox
@@ -133,10 +139,11 @@ async def handle_call_ended(event_data: Dict[str, Any], db: DatabaseService) -> 
     
     db.update("calls", {"id": call["id"]}, update_data)
     
-    # Emit event
+    # Emit event - pass org_id for organization-first approach
     await emit_call_completed(
         call_id=call["id"],
-        client_id=client_id,
+        client_id=client_id,  # Legacy field
+        org_id=org_id,  # CRITICAL: Organization ID
         duration_seconds=int(duration) if duration else 0,
         cost_usd=float(cost) if cost else 0,
     )
@@ -180,7 +187,7 @@ async def handle_call_ended(event_data: Dict[str, Any], db: DatabaseService) -> 
             logger.error(f"[WEBHOOK_HANDLERS] [CALL_ENDED] Failed to trigger call analysis (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
             # Don't fail the webhook - analysis is secondary
     
-    return client_id
+    return org_id  # Return org_id instead of client_id
 
 
 async def _process_call_analysis_and_webhook(
@@ -214,7 +221,7 @@ async def _process_call_analysis_and_webhook(
         logger.error(f"[WEBHOOK_HANDLERS] [CALL_ANALYSIS] Error in background call analysis task (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
 
 
-async def handle_call_failed(event_data: Dict[str, Any], db: DatabaseService) -> Optional[str]:
+async def handle_call_failed(event_data: Dict[str, Any], db: DatabaseAdminService) -> Optional[str]:
     """Handle call.failed event"""
     ultravox_call_id = event_data.get("call_id") or event_data.get("callId")
     if not ultravox_call_id:
@@ -226,7 +233,9 @@ async def handle_call_failed(event_data: Dict[str, Any], db: DatabaseService) ->
         logger.warning(f"Call not found for ultravox_call_id: {ultravox_call_id}")
         return None
     
-    client_id = call["client_id"]
+    # CRITICAL: Extract org_id from call record (organization-first approach)
+    org_id = call.get("clerk_org_id") or call.get("client_id")  # Fallback to client_id for backward compatibility
+    client_id = call.get("client_id")  # Legacy field
     error_message = event_data.get("data", {}).get("error_message") or event_data.get("error_message", "Call failed")
     
     db.update(
@@ -239,7 +248,7 @@ async def handle_call_failed(event_data: Dict[str, Any], db: DatabaseService) ->
         },
     )
     
-    await emit_call_failed(call_id=call["id"], client_id=client_id, error_message=error_message)
+    await emit_call_failed(call_id=call["id"], client_id=client_id, org_id=org_id, error_message=error_message)
     
     # Update campaign contact if applicable
     if call.get("context", {}).get("campaign_id"):
@@ -253,10 +262,10 @@ async def handle_call_failed(event_data: Dict[str, Any], db: DatabaseService) ->
             )
             db.update_campaign_stats(campaign_id)
     
-    return client_id
+    return org_id  # Return org_id instead of client_id
 
 
-async def handle_batch_status_changed(event_data: Dict[str, Any], db: DatabaseService) -> Optional[str]:
+async def handle_batch_status_changed(event_data: Dict[str, Any], db: DatabaseAdminService) -> Optional[str]:
     """
     Handle batch.status.changed event - update campaign progress
     """
@@ -278,7 +287,9 @@ async def handle_batch_status_changed(event_data: Dict[str, Any], db: DatabaseSe
         logger.warning(f"Campaign not found for batch_id: {batch_id}")
         return None
     
-    client_id = campaign["client_id"]
+    # CRITICAL: Extract org_id from campaign record (organization-first approach)
+    org_id = campaign.get("clerk_org_id") or campaign.get("client_id")  # Fallback to client_id for backward compatibility
+    client_id = campaign.get("client_id")  # Legacy field
     data = event_data.get("data", {})
     new_status = data.get("status") or event_data.get("status")
     
@@ -330,10 +341,10 @@ async def handle_batch_status_changed(event_data: Dict[str, Any], db: DatabaseSe
         }
         logger.error(f"[WEBHOOK_HANDLERS] [BATCH_STATUS] Failed to fetch batch status (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
     
-    return client_id
+    return org_id  # Return org_id instead of client_id
 
 
-async def handle_voice_training_completed(event_data: Dict[str, Any], db: DatabaseService) -> Optional[str]:
+async def handle_voice_training_completed(event_data: Dict[str, Any], db: DatabaseAdminService) -> Optional[str]:
     """Handle voice.training.completed event"""
     ultravox_voice_id = event_data.get("voice_id") or event_data.get("voiceId")
     if not ultravox_voice_id:
@@ -345,7 +356,9 @@ async def handle_voice_training_completed(event_data: Dict[str, Any], db: Databa
         logger.warning(f"Voice not found for ultravox_voice_id: {ultravox_voice_id}")
         return None
     
-    client_id = voice["client_id"]
+    # CRITICAL: Extract org_id from voice record (organization-first approach)
+    org_id = voice.get("clerk_org_id") or voice.get("client_id")  # Fallback to client_id for backward compatibility
+    client_id = voice.get("client_id")  # Legacy field
     
     db.update(
         "voices",
@@ -361,14 +374,15 @@ async def handle_voice_training_completed(event_data: Dict[str, Any], db: Databa
     
     await emit_voice_training_completed(
         voice_id=voice["id"],
-        client_id=client_id,
+        client_id=client_id,  # Legacy field
+        org_id=org_id,  # CRITICAL: Organization ID
         ultravox_voice_id=ultravox_voice_id,
     )
     
-    return client_id
+    return org_id  # Return org_id instead of client_id
 
 
-async def handle_voice_training_failed(event_data: Dict[str, Any], db: DatabaseService) -> Optional[str]:
+async def handle_voice_training_failed(event_data: Dict[str, Any], db: DatabaseAdminService) -> Optional[str]:
     """Handle voice.training.failed event"""
     ultravox_voice_id = event_data.get("voice_id") or event_data.get("voiceId")
     if not ultravox_voice_id:
@@ -380,7 +394,9 @@ async def handle_voice_training_failed(event_data: Dict[str, Any], db: DatabaseS
         logger.warning(f"Voice not found for ultravox_voice_id: {ultravox_voice_id}")
         return None
     
-    client_id = voice["client_id"]
+    # CRITICAL: Extract org_id from voice record (organization-first approach)
+    org_id = voice.get("clerk_org_id") or voice.get("client_id")  # Fallback to client_id for backward compatibility
+    client_id = voice.get("client_id")  # Legacy field
     error_message = event_data.get("error_message") or event_data.get("data", {}).get("error_message", "Voice training failed")
     
     db.update(
@@ -396,12 +412,13 @@ async def handle_voice_training_failed(event_data: Dict[str, Any], db: DatabaseS
     
     await emit_voice_training_failed(
         voice_id=voice["id"],
-        client_id=client_id,
+        client_id=client_id,  # Legacy field
+        org_id=org_id,  # CRITICAL: Organization ID
         ultravox_voice_id=ultravox_voice_id,
         error_message=error_message,
     )
     
-    return client_id
+    return org_id  # Return org_id instead of client_id
 
 
 # Event handler mapping (Strategy Pattern)

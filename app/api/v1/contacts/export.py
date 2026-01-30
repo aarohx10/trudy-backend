@@ -44,8 +44,8 @@ async def export_contacts(
         # Build filter - filter by org_id instead of client_id
         filter_dict = {"clerk_org_id": clerk_org_id}
         if folder_id:
-            # Verify folder exists and belongs to organization (filtered by org_id via context)
-            folder = db.select_one("contact_folders", {"id": folder_id})
+            # Verify folder exists and belongs to organization
+            folder = db.select_one("contact_folders", {"id": folder_id, "clerk_org_id": clerk_org_id})
             if not folder:
                 raise ValidationError(f"Folder not found: {folder_id}")
             filter_dict["folder_id"] = folder_id

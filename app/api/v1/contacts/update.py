@@ -36,17 +36,22 @@ async def update_contact(
         raise ForbiddenError("Insufficient permissions")
     
     try:
-        client_id = current_user.get("client_id")
-        db = DatabaseService()
+        # CRITICAL: Use clerk_org_id for organization-first approach
+        clerk_org_id = current_user.get("clerk_org_id")
+        if not clerk_org_id:
+            raise ValidationError("Missing organization ID in token")
         
-        # Verify contact exists and belongs to client
-        contact = db.select_one("contacts", {"id": contact_id, "client_id": client_id})
+        # Initialize database service with org_id context
+        db = DatabaseService(org_id=clerk_org_id)
+        
+        # Verify contact exists and belongs to organization - filter by org_id instead of client_id
+        contact = db.select_one("contacts", {"id": contact_id, "clerk_org_id": clerk_org_id})
         if not contact:
             raise NotFoundError("contact", contact_id)
         
-        # If folder_id is being updated, verify new folder exists and belongs to client
+        # If folder_id is being updated, verify new folder exists and belongs to organization
         if contact_data.folder_id and contact_data.folder_id != contact.get("folder_id"):
-            folder = db.select_one("contact_folders", {"id": contact_data.folder_id, "client_id": client_id})
+            folder = db.select_one("contact_folders", {"id": contact_data.folder_id, "clerk_org_id": clerk_org_id})
             if not folder:
                 raise NotFoundError("contact_folder", contact_data.folder_id)
         
@@ -64,11 +69,11 @@ async def update_contact(
         
         update_dict["updated_at"] = datetime.utcnow().isoformat()
         
-        # Update contact
-        db.update("contacts", {"id": contact_id}, update_dict)
+        # Update contact - filter by org_id to enforce org scoping
+        db.update("contacts", {"id": contact_id, "clerk_org_id": clerk_org_id}, update_dict)
         
         # Get updated contact
-        updated_contact = db.select_one("contacts", {"id": contact_id})
+        updated_contact = db.select_one("contacts", {"id": contact_id, "clerk_org_id": clerk_org_id})
         
         return {
             "data": updated_contact,

@@ -62,7 +62,7 @@ async def create_campaign(
     body_dict = campaign_data.dict() if hasattr(campaign_data, 'dict') else json.loads(json.dumps(campaign_data, default=str))
     if idempotency_key:
         cached = await check_idempotency_key(
-            client_id,  # Idempotency still uses client_id for key uniqueness
+            clerk_org_id,  # CRITICAL: Use org_id for idempotency (organization-first approach)
             idempotency_key,
             request,
             body_dict,
@@ -115,7 +115,7 @@ async def create_campaign(
     # Store idempotency response
     if idempotency_key:
         await store_idempotency_response(
-            client_id,  # Idempotency still uses client_id
+            clerk_org_id,  # CRITICAL: Use org_id for idempotency (organization-first approach)
             idempotency_key,
             request,
             body_dict,
@@ -330,7 +330,7 @@ async def schedule_campaign(
     # ATOMIC OPERATION: Update status to 'scheduling' (temporary)
     db.update(
         "campaigns",
-        {"id": campaign_id},
+        {"id": campaign_id, "clerk_org_id": clerk_org_id},
         {"status": "scheduling"},  # Temporary status
     )
     
@@ -377,7 +377,7 @@ async def schedule_campaign(
         # SUCCESS: Update campaign to scheduled with batch IDs
         db.update(
             "campaigns",
-            {"id": campaign_id},
+            {"id": campaign_id, "clerk_org_id": clerk_org_id},
             {
                 "status": "scheduled",
                 "ultravox_batch_ids": batch_ids,
@@ -388,7 +388,8 @@ async def schedule_campaign(
         # Emit event
         await emit_campaign_scheduled(
             campaign_id=campaign_id,
-            client_id=current_user["client_id"],
+            client_id=client_id,  # Legacy field
+            org_id=clerk_org_id,  # CRITICAL: Organization ID
             scheduled_at=campaign.get("scheduled_at"),
             contact_count=len(pending_contacts),
             batch_ids=batch_ids,
@@ -411,7 +412,7 @@ async def schedule_campaign(
         
         db.update(
             "campaigns",
-            {"id": campaign_id},
+            {"id": campaign_id, "clerk_org_id": clerk_org_id},
             {
                 "status": "draft",  # Rollback to draft
                 "updated_at": datetime.utcnow().isoformat(),
@@ -550,7 +551,7 @@ async def list_campaigns(
                     # Update stats
                     db.update(
                         "campaigns",
-                        {"id": campaign["id"]},
+                        {"id": campaign["id"], "clerk_org_id": clerk_org_id},
                         {"stats": ultravox_stats},
                     )
                     
@@ -558,7 +559,7 @@ async def list_campaigns(
                     if all_completed and campaign_status != "completed":
                         db.update(
                             "campaigns",
-                            {"id": campaign["id"]},
+                            {"id": campaign["id"], "clerk_org_id": clerk_org_id},
                             {
                                 "status": "completed",
                                 "updated_at": datetime.utcnow().isoformat(),
@@ -683,7 +684,7 @@ async def get_campaign(
                     # Update campaign stats with live Ultravox data
                     db.update(
                         "campaigns",
-                        {"id": campaign_id},
+                        {"id": campaign_id, "clerk_org_id": clerk_org_id},
                         {"stats": ultravox_stats},
                     )
                     
@@ -691,7 +692,7 @@ async def get_campaign(
                     if all_completed and campaign_status != "completed":
                         db.update(
                             "campaigns",
-                            {"id": campaign_id},
+                            {"id": campaign_id, "clerk_org_id": clerk_org_id},
                             {
                                 "status": "completed",
                                 "updated_at": datetime.utcnow().isoformat(),
@@ -777,9 +778,9 @@ async def update_campaign(
         if hasattr(update_data["scheduled_at"], "isoformat"):
             update_data["scheduled_at"] = update_data["scheduled_at"].isoformat()
     
-    # Update database
+    # Update database - filter by org_id to enforce org scoping
     update_data["updated_at"] = datetime.utcnow().isoformat()
-    db.update("campaigns", {"id": campaign_id}, update_data)
+    db.update("campaigns", {"id": campaign_id, "clerk_org_id": clerk_org_id}, update_data)
     
     # Get updated campaign
     updated_campaign = db.get_campaign(campaign_id, clerk_org_id)
@@ -827,7 +828,7 @@ async def pause_campaign(
     # Update campaign status to paused
     db.update(
         "campaigns",
-        {"id": campaign_id},
+        {"id": campaign_id, "clerk_org_id": clerk_org_id},
         {
             "status": "paused",
             "updated_at": datetime.utcnow().isoformat(),
@@ -903,10 +904,10 @@ async def resume_campaign(
             # If parsing fails, default to running
             resume_status = "running"
     
-    # Update campaign status
+    # Update campaign status - filter by org_id to enforce org scoping
     db.update(
         "campaigns",
-        {"id": campaign_id},
+        {"id": campaign_id, "clerk_org_id": clerk_org_id},
         {
             "status": resume_status,
             "updated_at": datetime.utcnow().isoformat(),
@@ -971,8 +972,8 @@ async def bulk_delete_campaigns(
             except Exception:
                 pass  # Continue even if contacts deletion fails
             
-            # Delete campaign
-            db.delete("campaigns", {"id": campaign_id})
+            # Delete campaign - filter by org_id to enforce org scoping
+            db.delete("campaigns", {"id": campaign_id, "clerk_org_id": clerk_org_id})
             deleted_ids.append(campaign_id)
         except Exception as e:
             import traceback
@@ -1038,8 +1039,8 @@ async def delete_campaign(
     except Exception:
         pass  # Continue even if contacts deletion fails
     
-    # Delete campaign
-    db.delete("campaigns", {"id": campaign_id})
+    # Delete campaign - filter by org_id to enforce org scoping
+    db.delete("campaigns", {"id": campaign_id, "clerk_org_id": clerk_org_id})
     
     return {
         "data": {"id": campaign_id, "deleted": True},

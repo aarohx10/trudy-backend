@@ -136,7 +136,9 @@ async def ultravox_webhook(
         # Continue processing even if logging fails
     
     # Route to appropriate handler (Strategy Pattern)
-    db = DatabaseService()
+    # Use DatabaseAdminService for webhook handlers (no user context)
+    from app.core.database import DatabaseAdminService
+    db = DatabaseAdminService()
     client_id_for_webhook = None
     processing_error = None
     
@@ -193,12 +195,11 @@ async def ultravox_webhook(
     
     # Trigger egress webhooks
     # CRITICAL: Use org_id for organization-first approach
-    org_id_for_webhook = event_data.get("org_id") or client_id_for_webhook  # Prefer org_id, fallback to client_id
+    org_id_for_webhook = client_id_for_webhook  # Handler now returns org_id instead of client_id
     if org_id_for_webhook:
         try:
             await trigger_egress_webhooks(
-                client_id=client_id_for_webhook,  # Legacy field
-                org_id=org_id_for_webhook,  # CRITICAL: Organization ID
+                org_id=org_id_for_webhook,  # CRITICAL: Organization ID (primary)
                 event_type=event_type,
                 event_data=event_data,
             )
@@ -220,7 +221,6 @@ async def ultravox_webhook(
 
 
 async def trigger_egress_webhooks(
-    client_id: Optional[str] = None,
     org_id: Optional[str] = None,
     event_type: str = "",
     event_data: dict = {},
@@ -229,21 +229,18 @@ async def trigger_egress_webhooks(
     Trigger egress webhooks for an organization.
     
     CRITICAL: Filters by clerk_org_id to trigger webhooks for the organization.
+    Organization-first approach - org_id is required.
     """
     from app.core.database import DatabaseAdminService
     
+    if not org_id:
+        logger.warning("[WEBHOOKS] trigger_egress_webhooks called without org_id")
+        return
+    
     db = DatabaseAdminService()
     
-    # CRITICAL: Filter by org_id if provided, otherwise fallback to client_id for backward compatibility
-    filters = {"enabled": True}
-    if org_id:
-        filters["clerk_org_id"] = org_id
-    elif client_id:
-        # Fallback to client_id for backward compatibility
-        filters["client_id"] = client_id
-    else:
-        logger.warning("[WEBHOOKS] trigger_egress_webhooks called without org_id or client_id")
-        return
+    # CRITICAL: Filter by org_id (organization-first approach)
+    filters = {"enabled": True, "clerk_org_id": org_id}
     
     # Get enabled webhook endpoints for this organization and event type
     endpoints = db.select(
@@ -377,7 +374,9 @@ async def telnyx_webhook(
         
         logger.info(f"Received Telnyx webhook: {event_type}")
         
-        db = DatabaseService()
+        # Use DatabaseAdminService for webhook handlers (no user context)
+        from app.core.database import DatabaseAdminService
+        db = DatabaseAdminService()
         
         # Handle Telnyx events (number events, call events, etc.)
         # Implementation details to be defined based on Telnyx webhook requirements
@@ -558,9 +557,9 @@ async def update_webhook_endpoint(
             ),
         }
     
-    # Update database
+    # Update database - filter by org_id to enforce org scoping
     update_data["updated_at"] = datetime.utcnow().isoformat()
-    db.update("webhook_endpoints", {"id": webhook_id}, update_data)
+    db.update("webhook_endpoints", {"id": webhook_id, "clerk_org_id": clerk_org_id}, update_data)
     
     # Get updated webhook
     updated_webhook = db.select_one("webhook_endpoints", {"id": webhook_id, "clerk_org_id": clerk_org_id})
@@ -594,12 +593,11 @@ async def delete_webhook_endpoint(
     db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
-    # Filter by org_id instead of client_id
     webhook = db.select_one("webhook_endpoints", {"id": webhook_id, "clerk_org_id": clerk_org_id})
     if not webhook:
         raise NotFoundError("webhook_endpoint", webhook_id)
     
-    db.delete("webhook_endpoints", {"id": webhook_id})
+    db.delete("webhook_endpoints", {"id": webhook_id, "clerk_org_id": clerk_org_id})
     
     return {"status": "deleted"}
 

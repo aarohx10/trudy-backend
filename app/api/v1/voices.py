@@ -738,8 +738,7 @@ async def get_voice(
     db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
-    # Filter by org_id via context (no need for explicit client_id filter)
-    voice = db.get_voice(voice_id)
+    voice = db.get_voice(voice_id, org_id=clerk_org_id)
     if not voice:
         raise NotFoundError("voice", voice_id)
     
@@ -769,8 +768,7 @@ async def update_voice(
     db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
-    # Filter by org_id via context
-    voice = db.get_voice(voice_id)
+    voice = db.get_voice(voice_id, org_id=clerk_org_id)
     if not voice:
         raise NotFoundError("voice", voice_id)
     
@@ -784,10 +782,9 @@ async def update_voice(
         }
     
     update_data["updated_at"] = datetime.utcnow().isoformat()
-    db.update("voices", {"id": voice_id}, update_data)
+    db.update("voices", {"id": voice_id, "clerk_org_id": clerk_org_id}, update_data)
     
-    # Filter by org_id via context
-    updated_voice = db.get_voice(voice_id)
+    updated_voice = db.get_voice(voice_id, org_id=clerk_org_id)
     
     return {
         "data": VoiceResponse(**updated_voice),
@@ -814,13 +811,11 @@ async def delete_voice(
     db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
-    # Filter by org_id via context
-    voice = db.get_voice(voice_id)
+    voice = db.get_voice(voice_id, org_id=clerk_org_id)
     if not voice:
         raise NotFoundError("voice", voice_id)
     
-    # Delete by org_id (filtered via context)
-    db.delete("voices", {"id": voice_id})
+    db.delete("voices", {"id": voice_id, "clerk_org_id": clerk_org_id})
     
     return {
         "data": {"id": voice_id, "deleted": True},
@@ -852,7 +847,7 @@ async def preview_voice(
     voice = None
     try:
         # Filter by org_id via context
-        voice = db.get_voice(voice_id)
+        voice = db.get_voice(voice_id, org_id=clerk_org_id)
         if voice:
             logger.info(f"[VOICES] Preview: Found voice in DB | voice_id={voice_id} | ultravox_voice_id={voice.get('ultravox_voice_id')} | provider_voice_id={voice.get('provider_voice_id')}")
         else:

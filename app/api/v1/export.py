@@ -11,7 +11,7 @@ import io
 
 from app.core.auth import get_current_user
 from app.core.database import DatabaseService
-from app.core.exceptions import ForbiddenError
+from app.core.exceptions import ForbiddenError, ValidationError
 from app.models.schemas import ResponseMeta
 
 router = APIRouter()

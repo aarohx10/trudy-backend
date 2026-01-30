@@ -250,9 +250,10 @@ class DatabaseService:
         effective_org_id = org_id or self.org_id
         if not effective_org_id:
             logger.warning("get_voice called without org_id context")
-        # Filter by org_id via clerk_organization_id in clients table
-        # For now, we'll filter by voice_id and rely on RLS/org_id context
-        return self.select_one("voices", {"id": voice_id})
+        filters = {"id": voice_id}
+        if effective_org_id:
+            filters["clerk_org_id"] = effective_org_id
+        return self.select_one("voices", filters)
     
     def get_campaign(self, campaign_id: str, org_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
@@ -267,8 +268,10 @@ class DatabaseService:
         effective_org_id = org_id or self.org_id
         if not effective_org_id:
             logger.warning("get_campaign called without org_id context")
-        # Filter by org_id via clerk_organization_id in clients table
-        return self.select_one("campaigns", {"id": campaign_id})
+        filters = {"id": campaign_id}
+        if effective_org_id:
+            filters["clerk_org_id"] = effective_org_id
+        return self.select_one("campaigns", filters)
     
     def get_call(self, call_id: str, org_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
@@ -283,8 +286,10 @@ class DatabaseService:
         effective_org_id = org_id or self.org_id
         if not effective_org_id:
             logger.warning("get_call called without org_id context")
-        # Filter by org_id via clerk_organization_id in clients table
-        return self.select_one("calls", {"id": call_id})
+        filters = {"id": call_id}
+        if effective_org_id:
+            filters["clerk_org_id"] = effective_org_id
+        return self.select_one("calls", filters)
     
     def get_campaign_contacts(self, campaign_id: str) -> List[Dict[str, Any]]:
         """Get campaign contacts"""

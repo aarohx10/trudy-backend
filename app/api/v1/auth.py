@@ -485,8 +485,8 @@ async def delete_api_key(
     if not api_key:
         raise NotFoundError("api_key", api_key_id)
     
-    # Hard delete from database
-    db.delete("api_keys", {"id": api_key_id})
+    # Hard delete from database - filter by client_id to enforce org scoping
+    db.delete("api_keys", {"id": api_key_id, "client_id": current_user["client_id"]})
     
     return {
         "data": {

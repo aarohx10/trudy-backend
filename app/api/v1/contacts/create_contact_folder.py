@@ -66,8 +66,8 @@ async def create_contact_folder(
         # Insert into database
         db.insert("contact_folders", folder_record)
         
-        # Get contact count (0 initially)
-        contact_count = db.count("contacts", {"folder_id": folder_id})
+        # Get contact count (0 initially) - filter by org_id for consistency
+        contact_count = db.count("contacts", {"folder_id": folder_id, "clerk_org_id": clerk_org_id})
         
         # Build response
         response_data = ContactFolderResponse(

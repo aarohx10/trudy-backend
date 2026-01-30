@@ -306,7 +306,9 @@ async def get_current_user(
     result = user_context.dict()
     # Add legacy fields for backward compatibility
     result["user_id"] = user_id
-    result["client_id"] = None  # Deprecated - use clerk_org_id instead
+    # CRITICAL: Populate client_id from DB so legacy fields (e.g. agent_record["client_id"]) and
+    # auth endpoints (/clients, /users, api_keys) work. User is created with client_id by /auth/me.
+    result["client_id"] = user_data.get("client_id") if user_data else None
     result["token_type"] = "clerk"
     
     debug_logger.log_auth("GET_USER", "User lookup completed", {

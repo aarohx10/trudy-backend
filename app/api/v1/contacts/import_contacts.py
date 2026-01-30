@@ -38,13 +38,19 @@ async def import_contacts(
         raise ForbiddenError("Insufficient permissions")
     
     try:
-        client_id = current_user.get("client_id")
+        # CRITICAL: Use clerk_org_id for organization-first approach
+        clerk_org_id = current_user.get("clerk_org_id")
+        if not clerk_org_id:
+            raise ValidationError("Missing organization ID in token")
+        
+        client_id = current_user.get("client_id")  # Legacy field for backward compatibility
+        
         # Use DatabaseAdminService for bulk operations and consistency
         db = DatabaseAdminService()
         now = datetime.utcnow()
         
-        # Verify folder exists and belongs to client
-        folder = db.select_one("contact_folders", {"id": import_data.folder_id, "client_id": client_id})
+        # Verify folder exists and belongs to organization - filter by org_id instead of client_id
+        folder = db.select_one("contact_folders", {"id": import_data.folder_id, "clerk_org_id": clerk_org_id})
         if not folder:
             raise NotFoundError("contact_folder", import_data.folder_id)
         
@@ -133,7 +139,8 @@ async def import_contacts(
             contact_id = str(uuid.uuid4())
             contact_record = {
                 "id": contact_id,
-                "client_id": client_id,
+                "client_id": client_id,  # Legacy field
+                "clerk_org_id": clerk_org_id,  # CRITICAL: Organization ID for data partitioning
                 "folder_id": contact_data["folder_id"],
                 "first_name": contact_data.get("first_name"),
                 "last_name": contact_data.get("last_name"),

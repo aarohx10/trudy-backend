@@ -126,10 +126,15 @@ async def create_tool(
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
     # Check idempotency key
     if idempotency_key:
         cached = await check_idempotency_key(
-            current_user["client_id"],
+            clerk_org_id,
             idempotency_key,
             request,
             tool_data,
@@ -203,7 +208,7 @@ async def create_tool(
         # Store idempotency response
         if idempotency_key:
             await store_idempotency_response(
-                current_user["client_id"],
+                clerk_org_id,
                 idempotency_key,
                 request,
                 tool_data,
@@ -246,11 +251,16 @@ async def update_tool(
         raise ForbiddenError("Insufficient permissions")
     
     try:
-        client_id = current_user.get("client_id")
-        db = DatabaseService()
+        # CRITICAL: Use clerk_org_id for organization-first approach
+        clerk_org_id = current_user.get("clerk_org_id")
+        if not clerk_org_id:
+            raise ValidationError("Missing organization ID in token")
         
-        # First, get the tool from database to get ultravox_tool_id
-        tool_record = db.select_one("tools", {"id": tool_id, "client_id": client_id})
+        # Initialize database service with org_id context
+        db = DatabaseService(org_id=clerk_org_id)
+        
+        # First, get the tool from database to get ultravox_tool_id - filter by org_id instead of client_id
+        tool_record = db.select_one("tools", {"id": tool_id, "clerk_org_id": clerk_org_id})
         if not tool_record:
             raise NotFoundError("tool", tool_id)
         

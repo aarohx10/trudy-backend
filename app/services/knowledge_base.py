@@ -122,26 +122,37 @@ async def get_knowledge_base_content(kb_id: str, org_id: Optional[str] = None, c
         raise
 
 
-async def update_knowledge_base_content(kb_id: str, client_id: str, new_content: str) -> bool:
+async def update_knowledge_base_content(kb_id: str, org_id: Optional[str] = None, client_id: Optional[str] = None, new_content: str = "") -> bool:
     """
     Update content field in knowledge_bases table.
     
     Args:
         kb_id: Knowledge base UUID
-        client_id: Client UUID for ownership validation
+        org_id: Organization ID for ownership validation (organization-first approach)
+        client_id: Optional client ID for backward compatibility (deprecated)
         new_content: New text content
     
     Returns:
         True if successful
     """
     try:
-        db = DatabaseService()
+        # CRITICAL: Use org_id for organization-first approach
+        db = DatabaseService(org_id=org_id) if org_id else DatabaseService()
         update_data = {
             "content": new_content,
             "updated_at": datetime.utcnow().isoformat(),
         }
         
-        result = db.update("knowledge_bases", {"id": kb_id, "client_id": client_id}, update_data)
+        # Filter by org_id if provided (preferred), otherwise fallback to client_id
+        filters = {"id": kb_id}
+        if org_id:
+            filters["clerk_org_id"] = org_id
+        elif client_id:
+            filters["client_id"] = client_id
+        else:
+            raise ValueError("Either org_id or client_id must be provided")
+        
+        result = db.update("knowledge_bases", filters, update_data)
         
         if not result:
             raise ValueError(f"Failed to update knowledge base: {kb_id}")

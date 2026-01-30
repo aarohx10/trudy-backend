@@ -50,8 +50,8 @@ async def add_contact_to_folder(
         # Initialize database service with org_id context
         db = DatabaseService(org_id=clerk_org_id)
         
-        # Verify folder exists and belongs to organization (filtered by org_id via context)
-        folder = db.select_one("contact_folders", {"id": contact_data.folder_id})
+        # Verify folder exists and belongs to organization
+        folder = db.select_one("contact_folders", {"id": contact_data.folder_id, "clerk_org_id": clerk_org_id})
         if not folder:
             raise NotFoundError("contact_folder", contact_data.folder_id)
         

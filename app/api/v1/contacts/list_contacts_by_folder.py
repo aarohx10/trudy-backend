@@ -45,8 +45,7 @@ async def list_contacts_by_folder(
         
         # If folder_id provided, verify it exists and belongs to organization
         if folder_id:
-            # Filter by org_id via context (no need for explicit client_id filter)
-            folder = db.select_one("contact_folders", {"id": folder_id})
+            folder = db.select_one("contact_folders", {"id": folder_id, "clerk_org_id": clerk_org_id})
             if not folder:
                 raise NotFoundError("contact_folder", folder_id)
         
@@ -82,10 +81,10 @@ async def list_contacts_by_folder(
         end = start + limit
         paginated_contacts = contacts[start:end]
         
-        # Get folder info for each contact
+        # Get folder info for each contact (folders already org-scoped)
         for contact in paginated_contacts:
             if contact.get("folder_id"):
-                folder = db.select_one("contact_folders", {"id": contact["folder_id"]})
+                folder = db.select_one("contact_folders", {"id": contact["folder_id"], "clerk_org_id": clerk_org_id})
                 if folder:
                     contact["folder"] = {
                         "id": folder["id"],

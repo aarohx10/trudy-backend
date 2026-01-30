@@ -43,11 +43,16 @@ async def create_call(
     idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     """Create call"""
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
     # Check idempotency key
     body_dict = call_data.dict() if hasattr(call_data, 'dict') else json.loads(json.dumps(call_data, default=str))
     if idempotency_key:
         cached = await check_idempotency_key(
-            current_user["client_id"],
+            clerk_org_id,  # CRITICAL: Use org_id for idempotency (organization-first approach)
             idempotency_key,
             request,
             body_dict,
@@ -88,8 +93,7 @@ async def create_call(
     # Get agent's outbound number if this is an outbound call
     caller_id = None
     if call_data.agent_id and call_data.direction.value == "outbound":
-        # Filter by org_id via context (no need for explicit client_id filter)
-        agent = db.select_one("agents", {"id": call_data.agent_id})
+        agent = db.select_one("agents", {"id": call_data.agent_id, "clerk_org_id": clerk_org_id})
         if agent and agent.get("outbound_phone_number_id"):
             outbound_number = db.select_one("phone_numbers", {"id": agent["outbound_phone_number_id"]})
             if outbound_number:
@@ -117,7 +121,7 @@ async def create_call(
             # Update with Ultravox ID
             db.update(
                 "calls",
-                {"id": call_id},
+                {"id": call_id, "clerk_org_id": clerk_org_id},
                 {"ultravox_call_id": ultravox_response.get("id")},
             )
             call_record["ultravox_call_id"] = ultravox_response.get("id")
@@ -139,7 +143,7 @@ async def create_call(
             # Update call status to failed
             db.update(
                 "calls",
-                {"id": call_id},
+                {"id": call_id, "clerk_org_id": clerk_org_id},
                 {"status": "failed"},
             )
             call_record["status"] = "failed"
@@ -150,7 +154,7 @@ async def create_call(
         logger.warning(f"No ultravox_agent_id provided - call created without Ultravox integration")
         db.update(
             "calls",
-            {"id": call_id},
+            {"id": call_id, "clerk_org_id": clerk_org_id},
             {"status": "failed"},
         )
         call_record["status"] = "failed"
@@ -167,7 +171,7 @@ async def create_call(
         )
     
     # Fetch the call from database to get all fields including created_at (filtered by org_id via context)
-    call = db.get_call(call_id)
+    call = db.get_call(call_id, org_id=clerk_org_id)
     if not call:
         raise NotFoundError("call", call_id)
     
@@ -182,7 +186,7 @@ async def create_call(
     # Store idempotency response
     if idempotency_key:
         await store_idempotency_response(
-            current_user["client_id"],
+            clerk_org_id,  # CRITICAL: Use org_id for idempotency (organization-first approach)
             idempotency_key,
             request,
             body_dict,
@@ -267,7 +271,7 @@ async def get_call(
     db.set_auth(current_user["token"])
     
     # Filter by org_id via context (no need for explicit client_id filter)
-    call = db.get_call(call_id)
+    call = db.get_call(call_id, org_id=clerk_org_id)
     if not call:
         raise NotFoundError("call", call_id)
     
@@ -290,9 +294,8 @@ async def get_call(
                 update_data["cost_usd"] = ultravox_call["cost_usd"]
             
             if update_data:
-                db.update("calls", {"id": call_id}, update_data)
-                # Refresh call data (filtered by org_id via context)
-                call = db.get_call(call_id)
+                db.update("calls", {"id": call_id, "clerk_org_id": clerk_org_id}, update_data)
+                call = db.get_call(call_id, org_id=clerk_org_id)
         except Exception as e:
             import traceback
             import json
@@ -334,7 +337,7 @@ async def get_call_transcript(
     db.set_auth(current_user["token"])
     
     # Filter by org_id via context
-    call = db.get_call(call_id)
+    call = db.get_call(call_id, org_id=clerk_org_id)
     if not call:
         raise NotFoundError("call", call_id)
     
@@ -349,7 +352,7 @@ async def get_call_transcript(
         try:
             transcript_data = await ultravox_client.get_call_transcript(call["ultravox_call_id"])
             # Update cache
-            db.update("calls", {"id": call_id}, {"transcript": transcript_data})
+            db.update("calls", {"id": call_id, "clerk_org_id": clerk_org_id}, {"transcript": transcript_data})
         except Exception as e:
             import traceback
             import json
@@ -395,7 +398,7 @@ async def get_call_recording(
     db.set_auth(current_user["token"])
     
     # Filter by org_id via context
-    call = db.get_call(call_id)
+    call = db.get_call(call_id, org_id=clerk_org_id)
     if not call:
         raise NotFoundError("call", call_id)
     
@@ -445,7 +448,7 @@ async def get_call_recording(
             )
             
             # Update database with storage URL
-            db.update("calls", {"id": call_id}, {"recording_url": storage_url})
+            db.update("calls", {"id": call_id, "clerk_org_id": clerk_org_id}, {"recording_url": storage_url})
             logger.info(f"Call recording uploaded to storage and database updated: {storage_url}")
             
             recording_url = storage_url
@@ -512,7 +515,7 @@ async def update_call(
     db.set_auth(current_user["token"])
     
     # Check if call exists (filtered by org_id via context)
-    call = db.get_call(call_id)
+    call = db.get_call(call_id, org_id=clerk_org_id)
     if not call:
         raise NotFoundError("call", call_id)
     
@@ -536,10 +539,10 @@ async def update_call(
     
     # Update database
     update_data["updated_at"] = datetime.utcnow().isoformat()
-    db.update("calls", {"id": call_id}, update_data)
+    db.update("calls", {"id": call_id, "clerk_org_id": clerk_org_id}, update_data)
     
     # Get updated call (filtered by org_id via context)
-    updated_call = db.get_call(call_id)
+    updated_call = db.get_call(call_id, org_id=clerk_org_id)
     
     return {
         "data": CallResponse(**updated_call),
@@ -575,7 +578,7 @@ async def bulk_delete_calls(
     for call_id in request_data.ids:
         try:
             # Filter by org_id via context
-            call = db.get_call(call_id)
+            call = db.get_call(call_id, org_id=clerk_org_id)
             if not call:
                 failed_ids.append(call_id)
                 continue
@@ -588,7 +591,7 @@ async def bulk_delete_calls(
                 continue
             
             # Delete call
-            db.delete("calls", {"id": call_id})
+            db.delete("calls", {"id": call_id, "clerk_org_id": clerk_org_id})
             deleted_ids.append(call_id)
         except Exception as e:
             import traceback
@@ -638,7 +641,7 @@ async def delete_call(
     db.set_auth(current_user["token"])
     
     # Check if call exists (filtered by org_id via context)
-    call = db.get_call(call_id)
+    call = db.get_call(call_id, org_id=clerk_org_id)
     if not call:
         raise NotFoundError("call", call_id)
     
@@ -651,7 +654,7 @@ async def delete_call(
         )
     
     # Delete call
-    db.delete("calls", {"id": call_id})
+    db.delete("calls", {"id": call_id, "clerk_org_id": clerk_org_id})
     
     return {
         "data": {"id": call_id, "deleted": True},

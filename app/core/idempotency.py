@@ -48,12 +48,22 @@ def calculate_request_hash(request: Request, body: Any = None) -> str:
 
 
 async def check_idempotency_key(
-    client_id: str,
+    org_id: str,
     idempotency_key: str,
     request: Request,
     body: Any = None,
 ) -> Optional[Dict[str, Any]]:
-    """Check if idempotency key exists and return cached response"""
+    """
+    Check if idempotency key exists and return cached response.
+    
+    Args:
+        org_id: Organization ID (organization-first approach) - used as client_id for backward compatibility
+        idempotency_key: Idempotency key from header
+        request: FastAPI request object
+        body: Request body for hash calculation
+    
+    Note: Uses org_id as client_id for idempotency_keys table (backward compatibility)
+    """
     if not idempotency_key:
         return None
     
@@ -65,10 +75,11 @@ async def check_idempotency_key(
     
     try:
         # Query idempotency_keys table
+        # Note: Using org_id as client_id for backward compatibility with existing table structure
         existing = admin_db.select_one(
             "idempotency_keys",
             {
-                "client_id": client_id,
+                "client_id": org_id,  # Using org_id as client_id for idempotency
                 "key": idempotency_key,
                 "request_hash": request_hash,
             },
@@ -84,7 +95,7 @@ async def check_idempotency_key(
             
             # Return cached response
             logger.info(
-                f"Idempotency key hit: {idempotency_key} for client {client_id}",
+                f"Idempotency key hit: {idempotency_key} for org {org_id}",
                 extra={"request_hash": request_hash},
             )
             
@@ -104,7 +115,7 @@ async def check_idempotency_key(
             "error_args": e.args if hasattr(e, 'args') else None,
             "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
             "full_traceback": traceback.format_exc(),
-            "client_id": client_id,
+            "org_id": org_id,
             "idempotency_key": idempotency_key,
         }
         logger.error(f"[IDEMPOTENCY] Error checking idempotency key (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
@@ -113,14 +124,26 @@ async def check_idempotency_key(
 
 
 async def store_idempotency_response(
-    client_id: str,
+    org_id: str,
     idempotency_key: str,
     request: Request,
     body: Any,
     response_body: Dict[str, Any],
     status_code: int,
 ) -> None:
-    """Store idempotency key response for future use"""
+    """
+    Store idempotency key response for future use.
+    
+    Args:
+        org_id: Organization ID (organization-first approach) - used as client_id for backward compatibility
+        idempotency_key: Idempotency key from header
+        request: FastAPI request object
+        body: Request body for hash calculation
+        response_body: Response body to cache
+        status_code: Response status code
+    
+    Note: Uses org_id as client_id for idempotency_keys table (backward compatibility)
+    """
     if not idempotency_key:
         return
     
@@ -137,7 +160,7 @@ async def store_idempotency_response(
         admin_db.insert(
             "idempotency_keys",
             {
-                "client_id": client_id,
+                "client_id": org_id,  # Using org_id as client_id for idempotency (backward compatibility)
                 "key": idempotency_key,
                 "request_hash": request_hash,
                 "response_body": response_body,
@@ -147,7 +170,7 @@ async def store_idempotency_response(
         )
         
         logger.info(
-            f"Stored idempotency key: {idempotency_key} for client {client_id}",
+            f"Stored idempotency key: {idempotency_key} for org {org_id}",
             extra={"request_hash": request_hash, "status_code": status_code},
         )
         
@@ -160,7 +183,7 @@ async def store_idempotency_response(
             "error_args": e.args if hasattr(e, 'args') else None,
             "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
             "full_traceback": traceback.format_exc(),
-            "client_id": client_id,
+            "org_id": org_id,
             "idempotency_key": idempotency_key,
         }
         # Handle unique constraint violation (key already exists)

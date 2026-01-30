@@ -401,7 +401,7 @@ class TelephonyService:
         if not number:
             raise ValidationError("Phone number not found")
         
-        agent = self.db.select_one("agents", {"id": agent_id, "client_id": organization_id})
+        agent = self.db.select_one("agents", {"id": agent_id, "clerk_org_id": organization_id})
         if not agent:
             raise ValidationError("Agent not found")
         
@@ -415,19 +415,19 @@ class TelephonyService:
             if existing_inbound and existing_inbound.get("inbound_agent_id"):
                 # Clear reverse lookup on old agent
                 old_agent_id = existing_inbound["inbound_agent_id"]
-                self.db.update("agents", {"id": old_agent_id}, {"inbound_phone_number_id": None})
+                self.db.update("agents", {"id": old_agent_id, "clerk_org_id": organization_id}, {"inbound_phone_number_id": None})
             
             # Update phone_numbers table
             self.db.update("phone_numbers", {"id": number_id}, {"inbound_agent_id": agent_id})
             # Update agents table (reverse lookup)
-            self.db.update("agents", {"id": agent_id}, {"inbound_phone_number_id": number_id})
+            self.db.update("agents", {"id": agent_id, "clerk_org_id": organization_id}, {"inbound_phone_number_id": number_id})
             
             # Build inbound regex from phone number (for backward compatibility)
             phone_number = number["phone_number"].replace("+", "").replace("-", "").replace(" ", "")
             inbound_regex = f"^{phone_number}$"
             
             # Update agent's inbound_regex in database
-            self.db.update("agents", {"id": agent_id}, {"inbound_regex": inbound_regex})
+            self.db.update("agents", {"id": agent_id, "clerk_org_id": organization_id}, {"inbound_regex": inbound_regex})
             
             # Update Ultravox inboundConfig with all inbound numbers for this agent
             ultravox_agent_id = agent.get("ultravox_agent_id")
@@ -453,12 +453,12 @@ class TelephonyService:
             if existing_outbound and existing_outbound.get("outbound_agent_id"):
                 # Clear reverse lookup on old agent
                 old_agent_id = existing_outbound["outbound_agent_id"]
-                self.db.update("agents", {"id": old_agent_id}, {"outbound_phone_number_id": None})
+                self.db.update("agents", {"id": old_agent_id, "clerk_org_id": organization_id}, {"outbound_phone_number_id": None})
             
             # Update phone_numbers table
             self.db.update("phone_numbers", {"id": number_id}, {"outbound_agent_id": agent_id})
             # Update agents table (reverse lookup)
-            self.db.update("agents", {"id": agent_id}, {"outbound_phone_number_id": number_id})
+            self.db.update("agents", {"id": agent_id, "clerk_org_id": organization_id}, {"outbound_phone_number_id": number_id})
             
             logger.info(f"[TELEPHONY] Assigned number {number['phone_number']} to agent {agent_id} for OUTBOUND")
         
@@ -493,10 +493,10 @@ class TelephonyService:
             if agent_id:
                 # Clear assignment
                 self.db.update("phone_numbers", {"id": number_id}, {"inbound_agent_id": None})
-                self.db.update("agents", {"id": agent_id}, {"inbound_phone_number_id": None})
+                self.db.update("agents", {"id": agent_id, "clerk_org_id": organization_id}, {"inbound_phone_number_id": None})
                 
                 # Update Ultravox - remove this number from agent's inboundConfig
-                agent = self.db.select_one("agents", {"id": agent_id})
+                agent = self.db.select_one("agents", {"id": agent_id, "clerk_org_id": organization_id})
                 ultravox_agent_id = agent.get("ultravox_agent_id") if agent else None
                 if ultravox_agent_id:
                     # Get remaining inbound numbers for this agent
@@ -517,7 +517,7 @@ class TelephonyService:
             if agent_id:
                 # Clear assignment
                 self.db.update("phone_numbers", {"id": number_id}, {"outbound_agent_id": None})
-                self.db.update("agents", {"id": agent_id}, {"outbound_phone_number_id": None})
+                self.db.update("agents", {"id": agent_id, "clerk_org_id": organization_id}, {"outbound_phone_number_id": None})
         
         return {"number_id": number_id, "assignment_type": assignment_type, "unassigned": True}
     

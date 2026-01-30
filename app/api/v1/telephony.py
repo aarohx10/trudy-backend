@@ -36,14 +36,20 @@ async def init_telephony(
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
     telephony_service = TelephonyService(db)
     
     try:
-        # Get organization_id from client_id (they should be the same in our system)
-        organization_id = current_user["client_id"]
+        # CRITICAL: Use clerk_org_id instead of client_id
+        organization_id = clerk_org_id
         
         result = await telephony_service.init_telephony_config(organization_id)
         
@@ -157,13 +163,20 @@ async def import_number(
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
     telephony_service = TelephonyService(db)
     
     try:
-        organization_id = current_user["client_id"]
+        # CRITICAL: Use clerk_org_id instead of client_id
+        organization_id = clerk_org_id
         
         # Validate credentials based on provider type
         if request.provider_type == "custom_sip":
@@ -214,11 +227,18 @@ async def list_phone_numbers(
     offset: int = Query(0, ge=0),
 ):
     """List all phone numbers for the organization"""
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
     try:
-        organization_id = current_user["client_id"]
+        # CRITICAL: Use clerk_org_id instead of client_id
+        organization_id = clerk_org_id
         
         # Get phone numbers from database
         numbers = db.select(
@@ -326,13 +346,20 @@ async def unassign_number_from_agent(
     if current_user["role"] not in ["client_admin", "agency_admin"]:
         raise ForbiddenError("Insufficient permissions")
     
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
     telephony_service = TelephonyService(db)
     
     try:
-        organization_id = current_user["client_id"]
+        # CRITICAL: Use clerk_org_id instead of client_id
+        organization_id = clerk_org_id
         number_id = request.get("number_id")
         assignment_type = request.get("assignment_type")
         
@@ -369,11 +396,18 @@ async def list_telephony_credentials(
     x_client_id: Optional[str] = Header(None),
 ):
     """List all telephony credentials for the organization"""
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
     try:
-        organization_id = current_user["client_id"]
+        # CRITICAL: Use clerk_org_id instead of client_id
+        organization_id = clerk_org_id
         
         credentials = db.select(
             "telephony_credentials",
@@ -412,16 +446,23 @@ async def get_agent_numbers(
     x_client_id: Optional[str] = Header(None),
 ):
     """Get all phone numbers assigned to an agent"""
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
     telephony_service = TelephonyService(db)
     
     try:
-        organization_id = current_user["client_id"]
+        # CRITICAL: Use clerk_org_id instead of client_id
+        organization_id = clerk_org_id
         
-        # Verify agent belongs to organization
-        agent = db.select_one("agents", {"id": agent_id, "client_id": organization_id})
+        # Verify agent belongs to organization - filter by org_id instead of client_id
+        agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
         if not agent:
             raise NotFoundError("Agent not found")
         
@@ -477,14 +518,21 @@ async def get_agent_webhook_url(
     Returns the webhook URL that users need to configure in their carrier
     console (Twilio, Telnyx, etc.) for BYOC numbers.
     """
-    db = DatabaseService(current_user["token"])
+    # CRITICAL: Use clerk_org_id for organization-first approach
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    
+    # Initialize database service with org_id context
+    db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
     try:
-        organization_id = current_user["client_id"]
+        # CRITICAL: Use clerk_org_id instead of client_id
+        organization_id = clerk_org_id
         
-        # Get agent and verify ownership
-        agent = db.select_one("agents", {"id": agent_id, "client_id": organization_id})
+        # Get agent and verify ownership - filter by org_id instead of client_id
+        agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
         if not agent:
             raise NotFoundError("Agent not found")
         
@@ -546,7 +594,7 @@ async def get_telephony_config(
         return {
             "data": {
                 "sip_endpoint": "sip.ultravox.ai",
-                "username": current_user.get("client_id", ""),
+                "username": current_user.get("clerk_org_id", ""),
                 "password": "",
                 "domain": "ultravox.ai",
             },

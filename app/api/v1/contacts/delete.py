@@ -31,16 +31,21 @@ async def delete_contact(
         raise ForbiddenError("Insufficient permissions")
     
     try:
-        client_id = current_user.get("client_id")
-        db = DatabaseService()
+        # CRITICAL: Use clerk_org_id for organization-first approach
+        clerk_org_id = current_user.get("clerk_org_id")
+        if not clerk_org_id:
+            raise ValidationError("Missing organization ID in token")
         
-        # Verify contact exists and belongs to client
-        contact = db.select_one("contacts", {"id": contact_id, "client_id": client_id})
+        # Initialize database service with org_id context
+        db = DatabaseService(org_id=clerk_org_id)
+        
+        # Verify contact exists and belongs to organization - filter by org_id instead of client_id
+        contact = db.select_one("contacts", {"id": contact_id, "clerk_org_id": clerk_org_id})
         if not contact:
             raise NotFoundError("contact", contact_id)
         
-        # Delete contact
-        db.delete("contacts", {"id": contact_id})
+        # Delete contact - filter by org_id to enforce org scoping
+        db.delete("contacts", {"id": contact_id, "clerk_org_id": clerk_org_id})
         
         return {
             "data": {

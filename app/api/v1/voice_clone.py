@@ -122,7 +122,10 @@ async def create_voice_clone(
     logger.info("=" * 80)
     
     try:
-        # Auth check
+        # CRITICAL: Use clerk_org_id for organization-first approach
+        clerk_org_id = current_user.get("clerk_org_id")
+        if not clerk_org_id:
+            raise ValidationError("Missing organization ID in token")
         client_id = current_user.get("client_id")
         user_id = current_user.get("user_id")
         
@@ -188,12 +191,13 @@ async def create_voice_clone(
         voice_id = str(uuid.uuid4())
         now = datetime.utcnow()
         
-        db = DatabaseService(current_user["token"])
+        db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
         db.set_auth(current_user["token"])
         
         voice_record = {
             "id": voice_id,
             "client_id": client_id,
+            "clerk_org_id": clerk_org_id,
             "user_id": user_id,
             "name": name,
             "provider": "elevenlabs",
