@@ -106,26 +106,98 @@ fi
 
 # Restart service (adjust based on your service manager)
 echo -e "${GREEN}Restarting service...${NC}"
-if systemctl is-active --quiet trudy-backend; then
+SERVICE_NAME=""
+if systemctl list-units --type=service --all | grep -q "trudy-backend"; then
+    SERVICE_NAME="trudy-backend"
     sudo systemctl restart trudy-backend
-    echo -e "${GREEN}Service restarted${NC}"
-elif systemctl is-active --quiet uvicorn; then
+    echo -e "${GREEN}Service 'trudy-backend' restarted${NC}"
+elif systemctl list-units --type=service --all | grep -q "uvicorn"; then
+    SERVICE_NAME="uvicorn"
     sudo systemctl restart uvicorn
-    echo -e "${GREEN}Service restarted${NC}"
+    echo -e "${GREEN}Service 'uvicorn' restarted${NC}"
 else
     echo -e "${YELLOW}No systemd service found. Please restart manually.${NC}"
+    SERVICE_NAME="unknown"
 fi
 
-# Health check
+# Wait for service to start and check status
+if [ "$SERVICE_NAME" != "unknown" ]; then
+    echo -e "${GREEN}Waiting for service to start...${NC}"
+    sleep 3
+    
+    # Check service status
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        echo -e "${GREEN}✅ Service '$SERVICE_NAME' is active${NC}"
+    else
+        echo -e "${YELLOW}⚠️  Service '$SERVICE_NAME' is not active. Checking status...${NC}"
+        sudo systemctl status "$SERVICE_NAME" --no-pager -l || true
+    fi
+fi
+
+# Health check with retries
 echo -e "${GREEN}Performing health check...${NC}"
-sleep 5  # Give service more time to start
 HEALTH_URL="${FILE_SERVER_URL:-http://localhost:8000}/internal/health"
-if curl -f "$HEALTH_URL" > /dev/null 2>&1 || curl -f http://localhost:8000/internal/health > /dev/null 2>&1; then
-    echo -e "${GREEN}✅ Health check passed!${NC}"
-else
-    echo -e "${RED}❌ Health check failed!${NC}"
-    echo "Check logs: journalctl -u trudy-backend -n 50"
-    echo "Service status: systemctl status trudy-backend"
+MAX_RETRIES=6
+RETRY_DELAY=5
+HEALTH_CHECK_PASSED=false
+
+for i in $(seq 1 $MAX_RETRIES); do
+    echo -e "${YELLOW}Health check attempt $i/$MAX_RETRIES...${NC}"
+    
+    # Try health check (try both internal/health and /health endpoints)
+    if curl -f -s "$HEALTH_URL" > /dev/null 2>&1 || \
+       curl -f -s http://localhost:8000/internal/health > /dev/null 2>&1 || \
+       curl -f -s http://localhost:8000/health > /dev/null 2>&1; then
+        echo -e "${GREEN}✅ Health check passed!${NC}"
+        HEALTH_CHECK_PASSED=true
+        break
+    else
+        if [ $i -lt $MAX_RETRIES ]; then
+            echo -e "${YELLOW}Health check failed, retrying in ${RETRY_DELAY} seconds...${NC}"
+            sleep $RETRY_DELAY
+        fi
+    fi
+done
+
+if [ "$HEALTH_CHECK_PASSED" = false ]; then
+    echo -e "${RED}❌ Health check failed after $MAX_RETRIES attempts!${NC}"
+    echo ""
+    echo -e "${YELLOW}Debugging information:${NC}"
+    
+    # Check service status
+    if [ "$SERVICE_NAME" != "unknown" ]; then
+        echo -e "${YELLOW}Service status:${NC}"
+        sudo systemctl status "$SERVICE_NAME" --no-pager -l || true
+        echo ""
+    fi
+    
+    # Check if port is listening
+    echo -e "${YELLOW}Checking if port 8000 is listening:${NC}"
+    netstat -tlnp 2>/dev/null | grep :8000 || ss -tlnp 2>/dev/null | grep :8000 || echo "Port 8000 not found in listening ports"
+    echo ""
+    
+    # Try to get more details from health endpoints
+    echo -e "${YELLOW}Attempting to get health endpoint responses:${NC}"
+    echo -e "${YELLOW}Trying /internal/health:${NC}"
+    curl -v http://localhost:8000/internal/health 2>&1 | head -20 || true
+    echo ""
+    echo -e "${YELLOW}Trying /health:${NC}"
+    curl -v http://localhost:8000/health 2>&1 | head -20 || true
+    echo ""
+    
+    # Show recent logs
+    if [ "$SERVICE_NAME" != "unknown" ]; then
+        echo -e "${YELLOW}Recent service logs:${NC}"
+        sudo journalctl -u "$SERVICE_NAME" -n 50 --no-pager || true
+    else
+        echo -e "${YELLOW}Recent system logs (looking for Python/FastAPI):${NC}"
+        sudo journalctl -n 50 --no-pager | grep -i "python\|fastapi\|uvicorn\|trudy" || true
+    fi
+    
+    echo ""
+    echo -e "${RED}Please check the logs above to diagnose the issue.${NC}"
+    echo "Check logs: sudo journalctl -u $SERVICE_NAME -n 100"
+    echo "Service status: sudo systemctl status $SERVICE_NAME"
     exit 1
 fi
 
