@@ -72,6 +72,11 @@ class Settings(BaseSettings):
             "https://www.truedy.closi.tech",
             "https://app.truedy.closi.tech",
             
+            # Sendora HQ backend (primary production API)
+            "https://truedy.sendorahq.com",
+            "https://www.truedy.sendorahq.com",
+            "https://app.truedy.sendorahq.com",
+            
             # Vercel production domain (common patterns)
             "https://truedy.vercel.app",
             "https://truedy-frontend.vercel.app",
@@ -115,6 +120,9 @@ class Settings(BaseSettings):
             # Closi.tech subdomains (temporary hosting)
             # Matches: https://anything.closi.tech
             r"https://[a-zA-Z0-9][-a-zA-Z0-9]*\.closi\.tech",
+            
+            # Sendorahq subdomains (backend + app)
+            r"https://[a-zA-Z0-9][-a-zA-Z0-9]*\.sendorahq\.com",
             
             # Sendora subdomains
             # Matches: https://anything.sendora.ai

@@ -183,7 +183,7 @@ async def create_ultravox_tool_for_kb(kb_id: str, kb_name: str, client_id: str) 
             return None
         
         # Get backend base URL from config
-        backend_url = settings.WEBHOOK_BASE_URL or settings.FILE_SERVER_URL or "https://truedy.closi.tech"
+        backend_url = settings.WEBHOOK_BASE_URL or settings.FILE_SERVER_URL or "https://truedy.sendorahq.com"
         # Ensure no trailing slash
         backend_url = backend_url.rstrip('/')
         

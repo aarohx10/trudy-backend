@@ -1,7 +1,7 @@
 import requests
 import sys
 
-BACKEND_URL = "https://truedy.closi.tech/api/v1"
+BACKEND_URL = "https://truedy.sendorahq.com/api/v1"
 TEST_ORIGIN = "https://truedy.sendora.ai"
 
 def test_cors():
