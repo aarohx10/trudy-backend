@@ -8,6 +8,7 @@ import uuid
 import logging
 
 from app.core.auth import get_current_user
+from app.core.permissions import require_admin_role
 from app.core.database import DatabaseService
 from app.core.encryption import encrypt_api_key, decrypt_api_key
 from app.core.exceptions import NotFoundError, ForbiddenError, ConflictError, ValidationError

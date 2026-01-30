@@ -10,6 +10,7 @@ import csv
 import io
 
 from app.core.auth import get_current_user
+from app.core.permissions import require_admin_role
 from app.core.database import DatabaseService
 from app.core.exceptions import ForbiddenError, ValidationError
 from app.models.schemas import ResponseMeta
