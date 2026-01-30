@@ -94,8 +94,29 @@ async def create_knowledge_base(
         
         client_id = current_user.get("client_id")  # Legacy field
         
+        # CRITICAL: Auto-upgrade first user to admin if they're trying to create KB
+        # This handles edge cases where role upgrade didn't happen during auth
         if current_user["role"] not in ["client_admin", "agency_admin"]:
-            raise ForbiddenError("Insufficient permissions")
+            # Try to upgrade user if they're the first/only user in their client
+            if client_id:
+                try:
+                    from app.core.database import get_supabase_admin_client
+                    admin_db = get_supabase_admin_client()
+                    org_users = admin_db.table("users").select("id,role").eq("client_id", client_id).execute()
+                    if org_users.data:
+                        other_admins = [u for u in org_users.data if u.get("id") != current_user.get("user_id") and u.get("role") == "client_admin"]
+                        if not other_admins:
+                            # This user is the first admin - upgrade them immediately
+                            logger.info(f"Auto-upgrading user {current_user.get('user_id')} to client_admin (first user attempting KB creation)")
+                            admin_db.table("users").update({"role": "client_admin"}).eq("clerk_user_id", current_user.get("user_id")).execute()
+                            # Update current_user dict for this request
+                            current_user["role"] = "client_admin"
+                except Exception as e:
+                    logger.warning(f"Failed to auto-upgrade user role: {e}")
+            
+            # Check again after potential upgrade
+            if current_user["role"] not in ["client_admin", "agency_admin"]:
+                raise ForbiddenError("Insufficient permissions")
         
         # Validate input
         name = request_data.name.strip()
