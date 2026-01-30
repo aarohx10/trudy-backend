@@ -103,8 +103,9 @@ class Settings(BaseSettings):
             # Matches: https://anything.vercel.app or https://anything-anything.vercel.app
             r"https://[a-zA-Z0-9][-a-zA-Z0-9]*\.vercel\.app",
             
-            # Specific Vercel preview subdomain pattern requested
-            # Matches: https://*-aarohx10.vercel.app
+            # Specific Vercel preview subdomain pattern (broad match)
+            # Matches: https://*-aarohx10.vercel.app and https://anything-aarohx10.vercel.app
+            r"https://.*-aarohx10\.vercel\.app",
             r"https://[a-zA-Z0-9][-a-zA-Z0-9]*\-aarohx10\.vercel\.app",
             
             # Truedy subdomains

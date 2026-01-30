@@ -118,11 +118,11 @@ logger.info(f"✅ CORS Wildcard Patterns ({len(settings.CORS_WILDCARD_PATTERNS)}
 # Execution order for requests: CORS -> RateLimit -> Logging -> RequestID -> app
 # Execution order for responses: app -> RequestID -> Logging -> RateLimit -> CORS
 
-# Add Middleware
+# Add Middleware (order: last added = outermost; CORS MUST be last to wrap all responses)
 app.add_middleware(RequestIDMiddleware)
 app.add_middleware(LoggingMiddleware)
 app.add_middleware(RateLimitMiddleware)
-app.add_middleware(UnifiedCORSMiddleware)  # SINGLE SOURCE OF TRUTH for CORS
+app.add_middleware(UnifiedCORSMiddleware)  # MUST BE LAST - wraps 429, 500, and all errors with CORS headers
 
 logger.info("✅ Middlewares configured (CORS is outermost)")
 
