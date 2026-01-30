@@ -66,21 +66,21 @@ else
 fi
 echo ""
 
-# Test 4: Test through nginx (if accessible)
+# Test 4: Test through nginx HTTPS (port 80 only redirects; CORS is on 443)
 if command -v curl >/dev/null 2>&1; then
     echo "Test 4: Testing through nginx (if configured)"
-    NGINX_URL="http://localhost"
-    NGINX_RESPONSE=$(curl -s -i -H "Origin: $TEST_ORIGIN" "$NGINX_URL/api/v1/health" 2>/dev/null || echo "NGINX_NOT_ACCESSIBLE")
+    # Hit HTTPS so we get the actual API response with CORS (port 80 returns 301 with no CORS)
+    NGINX_RESPONSE=$(curl -s -i -k -H "Origin: $TEST_ORIGIN" "https://localhost/api/v1/health" 2>/dev/null || echo "NGINX_NOT_ACCESSIBLE")
     if [ "$NGINX_RESPONSE" != "NGINX_NOT_ACCESSIBLE" ]; then
         if echo "$NGINX_RESPONSE" | grep -qi "access-control-allow-origin"; then
             CORS_HEADER=$(echo "$NGINX_RESPONSE" | grep -i "Access-Control-Allow-Origin" | head -1)
-            echo "✅ PASS: Nginx forwards request and backend adds CORS headers"
+            echo "✅ PASS: Nginx forwards request and adds CORS headers"
             echo "   $CORS_HEADER"
         else
             echo "⚠️  WARNING: Nginx request missing CORS headers"
         fi
     else
-        echo "ℹ️  INFO: Nginx not accessible from this location (expected if running on server)"
+        echo "ℹ️  INFO: Nginx HTTPS not accessible (e.g. script run off-server); Tests 1–3 validate backend CORS"
     fi
     echo ""
 fi
