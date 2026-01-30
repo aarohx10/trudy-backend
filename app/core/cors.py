@@ -108,12 +108,15 @@ def get_cors_headers(origin: str, request_headers: str = None) -> dict:
     if not is_origin_allowed(origin):
         return {}
     
+    # CRITICAL: Since we are using Allow-Credentials: true, 
+    # the Access-Control-Allow-Origin header MUST NOT be '*'.
+    # It must reflect the validated incoming origin exactly.
     headers = {
         "Access-Control-Allow-Origin": origin,
         "Access-Control-Allow-Credentials": "true",
         "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD",
         "Access-Control-Max-Age": "86400",  # Cache preflight for 24 hours
-        "Vary": "Origin",  # CRITICAL: Prevent cache poisoning
+        "Vary": "Origin",  # CRITICAL: Prevent cache poisoning and signal dynamic origin
     }
 
     # Standard compliance: specific headers or * based on credentials

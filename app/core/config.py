@@ -100,8 +100,12 @@ class Settings(BaseSettings):
         # Pattern format: Full regex that will be matched against origin
         object.__setattr__(self, "CORS_WILDCARD_PATTERNS", [
             # Vercel preview deployments (handles all preview URLs)
-            # Matches: https://anything.vercel.app
+            # Matches: https://anything.vercel.app or https://anything-anything.vercel.app
             r"https://[a-zA-Z0-9][-a-zA-Z0-9]*\.vercel\.app",
+            
+            # Specific Vercel preview subdomain pattern requested
+            # Matches: https://*-aarohx10.vercel.app
+            r"https://[a-zA-Z0-9][-a-zA-Z0-9]*\-aarohx10\.vercel\.app",
             
             # Truedy subdomains
             # Matches: https://anything.truedy.ai
