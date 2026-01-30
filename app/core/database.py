@@ -72,12 +72,12 @@ def set_auth_context(token: str):
 
 def get_db_client(org_id: Optional[str] = None) -> Client:
     """
-    Get database client with org_id context set.
+    Get database client with org_id context set for RLS.
     
-    Every time a connection is pulled, it must execute: 
-    SET LOCAL app.current_org_id = '[org_id_from_jwt]'
-    
-    For Supabase/PostgREST, we use an RPC function to set the org_id context.
+    Call this at the start of every request with the Clerk org_id from the JWT.
+    The RPC set_org_context(org_id) executes the equivalent of:
+    SET LOCAL app.current_org_id = org_id
+    so RLS policies (clerk_org_id = current_setting('app.current_org_id', true)) apply.
     """
     client = get_supabase_client()
     

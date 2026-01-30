@@ -96,7 +96,10 @@ def validate_clerk_issuer(issuer: str) -> bool:
 
 def get_cors_headers(origin: str, request_headers: str = None) -> dict:
     """
-    Get CORS headers for an allowed origin.
+    Dynamic Origin Mirroring: return the incoming Origin as the allowed origin.
+    With Allow-Credentials: true, browsers forbid wildcard (*); we mirror only
+    when the origin matches the allowlist (exact origins + Vercel regex e.g.
+    https://.*-aarohx10.vercel.app).
     
     Args:
         origin: The Origin header value (must be validated with is_origin_allowed first)
@@ -108,9 +111,7 @@ def get_cors_headers(origin: str, request_headers: str = None) -> dict:
     if not is_origin_allowed(origin):
         return {}
     
-    # CRITICAL: Since we are using Allow-Credentials: true, 
-    # the Access-Control-Allow-Origin header MUST NOT be '*'.
-    # It must reflect the validated incoming origin exactly.
+    # Mirror the incoming origin (never use * when credentials are enabled)
     headers = {
         "Access-Control-Allow-Origin": origin,
         "Access-Control-Allow-Credentials": "true",
