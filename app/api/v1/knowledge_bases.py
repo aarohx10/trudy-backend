@@ -102,17 +102,23 @@ async def create_knowledge_base(
                 try:
                     from app.core.database import get_supabase_admin_client
                     admin_db = get_supabase_admin_client()
-                    org_users = admin_db.table("users").select("id,role").eq("client_id", client_id).execute()
+                    clerk_user_id = current_user.get("clerk_user_id") or current_user.get("user_id")
+                    org_users = admin_db.table("users").select("id,role,clerk_user_id").eq("client_id", client_id).execute()
                     if org_users.data:
-                        other_admins = [u for u in org_users.data if u.get("id") != current_user.get("user_id") and u.get("role") == "client_admin"]
+                        # Check if any other users are admins (excluding current user)
+                        other_admins = [
+                            u for u in org_users.data 
+                            if u.get("clerk_user_id") != clerk_user_id and u.get("role") == "client_admin"
+                        ]
                         if not other_admins:
                             # This user is the first admin - upgrade them immediately
-                            logger.info(f"Auto-upgrading user {current_user.get('user_id')} to client_admin (first user attempting KB creation)")
-                            admin_db.table("users").update({"role": "client_admin"}).eq("clerk_user_id", current_user.get("user_id")).execute()
+                            logger.info(f"Auto-upgrading user {clerk_user_id} to client_admin (first user attempting KB creation)")
+                            admin_db.table("users").update({"role": "client_admin"}).eq("clerk_user_id", clerk_user_id).execute()
                             # Update current_user dict for this request
                             current_user["role"] = "client_admin"
+                            logger.info(f"User {clerk_user_id} successfully upgraded to client_admin")
                 except Exception as e:
-                    logger.warning(f"Failed to auto-upgrade user role: {e}")
+                    logger.warning(f"Failed to auto-upgrade user role: {e}", exc_info=True)
             
             # Check again after potential upgrade
             if current_user["role"] not in ["client_admin", "agency_admin"]:
