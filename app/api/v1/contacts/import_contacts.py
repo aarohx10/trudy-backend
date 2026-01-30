@@ -11,6 +11,7 @@ import logging
 import json
 
 from app.core.auth import get_current_user
+from app.core.permissions import require_admin_role
 from app.core.database import DatabaseAdminService
 from app.core.exceptions import ValidationError, ForbiddenError, NotFoundError
 from app.core.storage import get_file_path
@@ -30,12 +31,11 @@ router = APIRouter()
 @router.post("/import-contacts", response_model=dict)
 async def import_contacts(
     import_data: ContactImportRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Import contacts from CSV file (base64) or direct array with dynamic field mapping"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     try:
         # CRITICAL: Use clerk_org_id for organization-first approach

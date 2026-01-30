@@ -14,6 +14,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 from app.core.auth import get_current_user
+from app.core.permissions import require_admin_role
+from app.core.permissions import require_admin_role
 from app.core.database import DatabaseService
 from app.core.storage import generate_presigned_url
 import os
@@ -39,7 +41,7 @@ router = APIRouter()
 async def create_campaign(
     campaign_data: CampaignCreate,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
     idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
@@ -48,8 +50,7 @@ async def create_campaign(
     
     CRITICAL: Campaigns are scoped to organizations, not individual users.
     """
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     # CRITICAL: Use clerk_org_id for organization-first approach
     clerk_org_id = current_user.get("clerk_org_id")
@@ -129,12 +130,11 @@ async def create_campaign(
 @router.post("/{campaign_id}/contacts/presign")
 async def presign_contacts_csv(
     campaign_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Get presigned URL for contacts CSV upload"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     # CRITICAL: Use clerk_org_id for organization-first approach
     clerk_org_id = current_user.get("clerk_org_id")
@@ -179,12 +179,11 @@ async def presign_contacts_csv(
 async def upload_campaign_contacts(
     campaign_id: str,
     contacts_data: CampaignContactsUpload,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Upload campaign contacts (CSV or direct array)"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     # CRITICAL: Use clerk_org_id for organization-first approach
     clerk_org_id = current_user.get("clerk_org_id")
@@ -282,7 +281,7 @@ async def upload_campaign_contacts(
 @router.post("/{campaign_id}/schedule")
 async def schedule_campaign(
     campaign_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """
@@ -290,8 +289,7 @@ async def schedule_campaign(
     Validates credits and ultravox_agent_id before calling Ultravox.
     Rolls back to draft status if Ultravox returns an error.
     """
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     # CRITICAL: Use clerk_org_id for organization-first approach
     clerk_org_id = current_user.get("clerk_org_id")
@@ -732,12 +730,11 @@ async def get_campaign(
 async def update_campaign(
     campaign_id: str,
     campaign_data: CampaignUpdate,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Update campaign"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     # CRITICAL: Use clerk_org_id for organization-first approach
     clerk_org_id = current_user.get("clerk_org_id")
@@ -797,12 +794,11 @@ async def update_campaign(
 @router.post("/{campaign_id}/pause")
 async def pause_campaign(
     campaign_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Pause a running campaign"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     # CRITICAL: Use clerk_org_id for organization-first approach
     clerk_org_id = current_user.get("clerk_org_id")
@@ -854,12 +850,11 @@ async def pause_campaign(
 @router.post("/{campaign_id}/resume")
 async def resume_campaign(
     campaign_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Resume a paused campaign"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     # CRITICAL: Use clerk_org_id for organization-first approach
     clerk_org_id = current_user.get("clerk_org_id")
@@ -933,12 +928,11 @@ async def resume_campaign(
 @router.post("/bulk")
 async def bulk_delete_campaigns(
     request_data: BulkDeleteRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Bulk delete campaigns"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     # CRITICAL: Use clerk_org_id for organization-first approach
     clerk_org_id = current_user.get("clerk_org_id")
@@ -1006,12 +1000,11 @@ async def bulk_delete_campaigns(
 @router.delete("/{campaign_id}")
 async def delete_campaign(
     campaign_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Delete campaign"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     # CRITICAL: Use clerk_org_id for organization-first approach
     clerk_org_id = current_user.get("clerk_org_id")

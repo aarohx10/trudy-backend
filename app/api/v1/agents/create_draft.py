@@ -9,6 +9,7 @@ import uuid
 import logging
 
 from app.core.auth import get_current_user
+from app.core.permissions import require_admin_role
 from app.core.database import DatabaseService
 from app.core.exceptions import ForbiddenError, ValidationError
 from app.models.schemas import ResponseMeta
@@ -22,12 +23,11 @@ router = APIRouter()
 @router.post("/draft")
 async def create_draft_agent(
     payload: Dict[str, Any] = Body(default={}),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Create a draft agent with default settings, optionally from a template"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     try:
         # CRITICAL: Use clerk_org_id for organization-first approach

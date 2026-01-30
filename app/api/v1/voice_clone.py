@@ -13,6 +13,7 @@ import base64
 from pydantic import BaseModel
 
 from app.core.auth import get_current_user
+from app.core.permissions import require_admin_role
 from app.core.database import DatabaseService
 from app.core.exceptions import ValidationError, ForbiddenError, ProviderError
 from app.models.schemas import VoiceResponse, ResponseMeta
@@ -93,7 +94,7 @@ async def clone_to_elevenlabs(audio_files: List[bytes], voice_name: str) -> dict
 @router.post("")
 async def create_voice_clone(
     request_data: VoiceCloneRequest = Body(...),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """
@@ -129,8 +130,7 @@ async def create_voice_clone(
         client_id = current_user.get("client_id")
         user_id = current_user.get("user_id")
         
-        if current_user["role"] not in ["client_admin", "agency_admin"]:
-            raise ForbiddenError("Insufficient permissions")
+        # Permission check handled by require_admin_role dependency (applied via Depends)
         
         # Validation
         name = request_data.name.strip()

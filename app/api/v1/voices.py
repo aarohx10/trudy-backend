@@ -11,6 +11,7 @@ import logging
 import httpx
 
 from app.core.auth import get_current_user
+from app.core.permissions import require_admin_role
 from app.core.database import DatabaseService
 from app.core.exceptions import NotFoundError, ValidationError, ForbiddenError, ProviderError
 from app.models.schemas import VoiceResponse, ResponseMeta
@@ -40,7 +41,7 @@ async def log_both(source: str, level: str, category: str, message: str, **kwarg
 @router.post("")
 async def create_voice(
     request: Request,
-    current_user: dict = Depends(get_current_user),
+        current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
     # Voice import only - voice cloning has been removed
     name: Optional[str] = Form(None),
@@ -88,8 +89,7 @@ async def create_voice(
         ip_address = request.client.host if request.client else None
         user_agent = request.headers.get("user-agent")
         
-        if current_user["role"] not in ["client_admin", "agency_admin"]:
-            raise ForbiddenError("Insufficient permissions")
+        # Permission check handled by require_admin_role dependency (applied via Depends)
         
         # Determine if JSON or multipart - PRODUCTION APPROACH: Use FastAPI File/Form params
         content_type = request.headers.get("content-type", "")
@@ -609,7 +609,7 @@ async def create_voice(
 @router.get("")
 async def list_voices(
     request: Request,
-    current_user: dict = Depends(get_current_user),
+        current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
     source: Optional[str] = Query(None, description="Filter by source: 'ultravox' or 'custom'"),
 ):
@@ -725,7 +725,7 @@ async def list_voices(
 async def get_voice(
     voice_id: str,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+        current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Get single voice - from DB (filtered by org_id)"""
@@ -752,12 +752,11 @@ async def get_voice(
 async def update_voice(
     voice_id: str,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+        current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Update voice (name and description only)"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     # CRITICAL: Use clerk_org_id for organization-first approach
     clerk_org_id = current_user.get("clerk_org_id")
@@ -795,12 +794,11 @@ async def update_voice(
 @router.delete("/{voice_id}")
 async def delete_voice(
     voice_id: str,
-    current_user: dict = Depends(get_current_user),
+        current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Delete voice"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     # CRITICAL: Use clerk_org_id for organization-first approach
     clerk_org_id = current_user.get("clerk_org_id")
@@ -827,7 +825,7 @@ async def delete_voice(
 async def preview_voice(
     voice_id: str,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+        current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Preview voice - from Ultravox. ALWAYS uses ultravox_voice_id, never provider_voice_id or local voice_id."""

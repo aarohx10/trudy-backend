@@ -12,6 +12,7 @@ import logging
 import time
 
 from app.core.auth import get_current_user
+from app.core.permissions import require_admin_role
 from app.core.database import DatabaseService, DatabaseAdminService
 from app.core.config import settings
 from app.core.webhooks import verify_ultravox_signature, verify_timestamp, verify_telnyx_signature, deliver_webhook
@@ -404,12 +405,11 @@ async def telnyx_webhook(
 @router.post("")
 async def create_webhook_endpoint(
     webhook_data: WebhookEndpointCreate,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Create webhook endpoint"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     # CRITICAL: Use clerk_org_id for organization-first approach
     clerk_org_id = current_user.get("clerk_org_id")
@@ -457,7 +457,7 @@ async def create_webhook_endpoint(
 
 @router.get("")
 async def list_webhook_endpoints(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """List webhook endpoints"""
@@ -489,7 +489,7 @@ async def list_webhook_endpoints(
 @router.get("/{webhook_id}")
 async def get_webhook_endpoint(
     webhook_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Get single webhook endpoint"""
@@ -523,12 +523,11 @@ async def get_webhook_endpoint(
 async def update_webhook_endpoint(
     webhook_id: str,
     webhook_data: WebhookEndpointUpdate,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Update webhook endpoint"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     # CRITICAL: Use clerk_org_id for organization-first approach
     clerk_org_id = current_user.get("clerk_org_id")
@@ -577,12 +576,11 @@ async def update_webhook_endpoint(
 @router.delete("/{webhook_id}")
 async def delete_webhook_endpoint(
     webhook_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Delete webhook endpoint"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     # CRITICAL: Use clerk_org_id for organization-first approach
     clerk_org_id = current_user.get("clerk_org_id")

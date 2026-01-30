@@ -23,12 +23,11 @@ router = APIRouter()
 @router.delete("/delete-contact/{contact_id}")
 async def delete_contact(
     contact_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Delete contact"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     try:
         # CRITICAL: Use clerk_org_id for organization-first approach

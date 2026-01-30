@@ -30,7 +30,7 @@ router = APIRouter()
 
 @router.get("/me")
 async def get_me(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Get current user information, auto-create user/client/organization if doesn't exist"""
@@ -367,7 +367,7 @@ async def get_me(
 
 @router.get("/clients")
 async def get_clients(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Get clients (filtered by role)"""
@@ -390,7 +390,7 @@ async def get_clients(
 
 @router.get("/users")
 async def get_users(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Get users for the current client (team members)"""
@@ -421,12 +421,11 @@ async def get_users(
 
 @router.get("/api-keys")
 async def list_api_keys(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """List all API keys for the current client (without decrypted values)"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     db = DatabaseService(current_user["token"])
     db.set_auth(current_user["token"])
@@ -463,12 +462,11 @@ async def list_api_keys(
 @router.delete("/api-keys/{api_key_id}")
 async def delete_api_key(
     api_key_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Delete an API key"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     db = DatabaseService(current_user["token"])
     db.set_auth(current_user["token"])
@@ -503,7 +501,7 @@ async def delete_api_key(
 @router.post("/api-keys")
 async def create_api_key(
     api_key_data: ApiKeyCreate,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """
@@ -512,8 +510,7 @@ async def create_api_key(
     CRITICAL: API keys are generated per Organization, not per User.
     This ensures team members can share API keys within an organization.
     """
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     # CRITICAL: Use clerk_org_id for organization-first approach
     clerk_org_id = current_user.get("clerk_org_id")
@@ -587,12 +584,11 @@ async def create_api_key(
 @router.patch("/providers/tts")
 async def update_tts_provider(
     provider_data: TTSProviderUpdate,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Configure external TTS provider"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     db = DatabaseService(current_user["token"])
     db.set_auth(current_user["token"])

@@ -28,12 +28,11 @@ router = APIRouter()
 async def update_contact(
     contact_id: str,
     contact_data: ContactUpdate,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Update contact"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     try:
         # CRITICAL: Use clerk_org_id for organization-first approach

@@ -27,7 +27,7 @@ router = APIRouter()
 @router.post("/create-folder", response_model=dict)
 async def create_contact_folder(
     folder_data: ContactFolderCreate,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """
@@ -36,8 +36,7 @@ async def create_contact_folder(
     CRITICAL: Contact folders are shared across the organization.
     If User A uploads a CSV, User B must see that folder in the Contacts sidebar.
     """
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     try:
         # CRITICAL: Use clerk_org_id for organization-first approach

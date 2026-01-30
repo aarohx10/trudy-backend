@@ -15,6 +15,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from app.core.auth import get_current_user
+from app.core.permissions import require_admin_role
 from app.core.database import DatabaseService
 from app.core.exceptions import NotFoundError, ValidationError, ForbiddenError
 from app.models.schemas import ResponseMeta
@@ -67,7 +68,7 @@ class KnowledgeBaseCreateRequest(BaseModel):
 @router.post("")
 async def create_knowledge_base(
     request_data: KnowledgeBaseCreateRequest = Body(...),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """
@@ -93,87 +94,9 @@ async def create_knowledge_base(
             raise ValidationError("Missing organization ID in token")
         
         client_id = current_user.get("client_id")  # Legacy field
-        clerk_user_id = current_user.get("clerk_user_id") or current_user.get("user_id")
-        current_role = current_user.get("role", "client_user")
         
-        # CRITICAL: Auto-upgrade first user to admin if they're trying to create KB
-        # This handles edge cases where role upgrade didn't happen during auth
-        # LOGGING: Show exactly what we're checking
-        logger.info(f"[KB_CREATE] Permission check | user={clerk_user_id} | role={current_role} | client_id={client_id} | clerk_org_id={clerk_org_id}")
-        
-        if current_role not in ["client_admin", "agency_admin"]:
-            logger.warning(f"[KB_CREATE] User {clerk_user_id} has role {current_role}, attempting auto-upgrade...")
-            
-            try:
-                from app.core.database import get_supabase_admin_client
-                admin_db = get_supabase_admin_client()
-                
-                # Handle both cases: client_id exists OR personal workspace (clerk_org_id = user_id)
-                if client_id:
-                    # Standard case: user has client_id
-                    org_users = admin_db.table("users").select("id,role,clerk_user_id").eq("client_id", client_id).execute()
-                    logger.info(f"[KB_CREATE] Found {len(org_users.data) if org_users.data else 0} users in client_id={client_id}")
-                    
-                    if org_users.data:
-                        # Check if any other users are admins (excluding current user)
-                        other_admins = [
-                            u for u in org_users.data 
-                            if u.get("clerk_user_id") != clerk_user_id and u.get("role") == "client_admin"
-                        ]
-                        logger.info(f"[KB_CREATE] Found {len(other_admins)} other admins in client_id={client_id}")
-                        
-                        if not other_admins:
-                            # This user is the first admin - upgrade them immediately
-                            logger.info(f"[KB_CREATE] Auto-upgrading user {clerk_user_id} to client_admin (first/only user in client_id={client_id})")
-                            admin_db.table("users").update({"role": "client_admin"}).eq("clerk_user_id", clerk_user_id).execute()
-                            # Update current_user dict for this request
-                            current_user["role"] = "client_admin"
-                            logger.info(f"[KB_CREATE] User {clerk_user_id} successfully upgraded to client_admin")
-                        else:
-                            logger.warning(f"[KB_CREATE] Cannot upgrade user {clerk_user_id}: {len(other_admins)} other admins exist")
-                    else:
-                        logger.warning(f"[KB_CREATE] No users found in client_id={client_id}, cannot determine if user is first")
-                else:
-                    # Personal workspace case: client_id is None, use clerk_org_id to find users
-                    # In personal workspace, clerk_org_id = user_id, so check if this user is the only one
-                    logger.info(f"[KB_CREATE] client_id is None, checking personal workspace users by clerk_org_id={clerk_org_id}")
-                    
-                    # Find all users with this clerk_org_id (personal workspace)
-                    org_users = admin_db.table("users").select("id,role,clerk_user_id,clerk_org_id").eq("clerk_org_id", clerk_org_id).execute()
-                    logger.info(f"[KB_CREATE] Found {len(org_users.data) if org_users.data else 0} users with clerk_org_id={clerk_org_id}")
-                    
-                    if org_users.data:
-                        # Check if any other users are admins (excluding current user)
-                        other_admins = [
-                            u for u in org_users.data 
-                            if u.get("clerk_user_id") != clerk_user_id and u.get("role") == "client_admin"
-                        ]
-                        logger.info(f"[KB_CREATE] Found {len(other_admins)} other admins with clerk_org_id={clerk_org_id}")
-                        
-                        if not other_admins:
-                            # This user is the first admin in personal workspace - upgrade them immediately
-                            logger.info(f"[KB_CREATE] Auto-upgrading user {clerk_user_id} to client_admin (first/only user in personal workspace clerk_org_id={clerk_org_id})")
-                            admin_db.table("users").update({"role": "client_admin"}).eq("clerk_user_id", clerk_user_id).execute()
-                            # Update current_user dict for this request
-                            current_user["role"] = "client_admin"
-                            logger.info(f"[KB_CREATE] User {clerk_user_id} successfully upgraded to client_admin")
-                        else:
-                            logger.warning(f"[KB_CREATE] Cannot upgrade user {clerk_user_id}: {len(other_admins)} other admins exist")
-                    else:
-                        # No users found - this is a new user, upgrade them immediately
-                        logger.info(f"[KB_CREATE] No users found with clerk_org_id={clerk_org_id}, upgrading new user {clerk_user_id} to client_admin")
-                        admin_db.table("users").update({"role": "client_admin"}).eq("clerk_user_id", clerk_user_id).execute()
-                        current_user["role"] = "client_admin"
-                        logger.info(f"[KB_CREATE] User {clerk_user_id} successfully upgraded to client_admin (new user)")
-                        
-            except Exception as e:
-                logger.error(f"[KB_CREATE] Failed to auto-upgrade user role: {e}", exc_info=True)
-            
-            # Check again after potential upgrade
-            final_role = current_user.get("role", current_role)
-            if final_role not in ["client_admin", "agency_admin"]:
-                logger.error(f"[KB_CREATE] PERMISSION DENIED | user={clerk_user_id} | role={final_role} | client_id={client_id} | clerk_org_id={clerk_org_id}")
-                raise ForbiddenError(f"Insufficient permissions. Current role: {final_role}. User ID: {clerk_user_id}. Client ID: {client_id}. Organization ID: {clerk_org_id}")
+        # Permission check is handled by require_admin_role dependency
+        # Role assignment is handled in get_current_user() via ensure_admin_role_for_creator()
         
         # Validate input
         name = request_data.name.strip()

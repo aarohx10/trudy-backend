@@ -13,6 +13,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 from app.core.auth import get_current_user
+from app.core.permissions import require_admin_role
 from app.core.database import DatabaseService
 from app.core.exceptions import NotFoundError, ForbiddenError, ValidationError
 from app.core.idempotency import check_idempotency_key, store_idempotency_response
@@ -38,7 +39,7 @@ router = APIRouter()
 async def create_call(
     call_data: CallCreate,
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
     idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
@@ -199,7 +200,7 @@ async def create_call(
 
 @router.get("")
 async def list_calls(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
     agent_id: Optional[str] = None,
     status: Optional[str] = None,
@@ -256,7 +257,7 @@ async def list_calls(
 @router.get("/{call_id}")
 async def get_call(
     call_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
     refresh: bool = False,
 ):
@@ -323,7 +324,7 @@ async def get_call(
 @router.get("/{call_id}/transcript")
 async def get_call_transcript(
     call_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Get call transcript"""
@@ -384,7 +385,7 @@ async def get_call_transcript(
 @router.get("/{call_id}/recording")
 async def get_call_recording(
     call_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Get call recording URL"""
@@ -501,7 +502,7 @@ async def get_call_recording(
 async def update_call(
     call_id: str,
     call_data: CallUpdate,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Update call (context and settings only)"""
@@ -556,12 +557,11 @@ async def update_call(
 @router.post("/bulk")
 async def bulk_delete_calls(
     request_data: BulkDeleteRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Bulk delete calls"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     # CRITICAL: Use clerk_org_id for organization-first approach
     clerk_org_id = current_user.get("clerk_org_id")
@@ -624,12 +624,11 @@ async def bulk_delete_calls(
 @router.delete("/{call_id}")
 async def delete_call(
     call_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Delete call"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     # CRITICAL: Use clerk_org_id for organization-first approach
     clerk_org_id = current_user.get("clerk_org_id")

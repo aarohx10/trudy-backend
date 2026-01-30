@@ -29,12 +29,11 @@ router = APIRouter()
 
 @router.post("/init")
 async def init_telephony(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Initialize telephony configuration for the organization"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     # CRITICAL: Use clerk_org_id for organization-first approach
     clerk_org_id = current_user.get("clerk_org_id")
@@ -68,12 +67,11 @@ async def init_telephony(
 @router.post("/numbers/search")
 async def search_numbers(
     request: NumberSearchRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Search for available phone numbers"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     db = DatabaseService(current_user["token"])
     db.set_auth(current_user["token"])
@@ -113,12 +111,11 @@ async def search_numbers(
 @router.post("/numbers/purchase")
 async def purchase_number(
     request: NumberPurchaseRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Purchase a phone number from Telnyx"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     # CRITICAL: Use clerk_org_id for organization-first approach
     clerk_org_id = current_user.get("clerk_org_id")
@@ -156,12 +153,11 @@ async def purchase_number(
 @router.post("/numbers/import")
 async def import_number(
     request: NumberImportRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Import a BYO (Bring Your Own) phone number"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     # CRITICAL: Use clerk_org_id for organization-first approach
     clerk_org_id = current_user.get("clerk_org_id")
@@ -221,7 +217,7 @@ async def import_number(
 
 @router.get("/numbers")
 async def list_phone_numbers(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
@@ -289,12 +285,11 @@ async def list_phone_numbers(
 @router.post("/numbers/assign")
 async def assign_number_to_agent(
     request: NumberAssignmentRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Assign a phone number to an agent (inbound or outbound)"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     # CRITICAL: Use clerk_org_id for organization-first approach
     clerk_org_id = current_user.get("clerk_org_id")
@@ -339,12 +334,11 @@ async def assign_number_to_agent(
 @router.post("/numbers/unassign")
 async def unassign_number_from_agent(
     request: Dict[str, Any] = Body(...),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Unassign a phone number from an agent"""
-    if current_user["role"] not in ["client_admin", "agency_admin"]:
-        raise ForbiddenError("Insufficient permissions")
+    # Permission check handled by require_admin_role dependency
     
     # CRITICAL: Use clerk_org_id for organization-first approach
     clerk_org_id = current_user.get("clerk_org_id")
@@ -392,7 +386,7 @@ async def unassign_number_from_agent(
 
 @router.get("/credentials")
 async def list_telephony_credentials(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """List all telephony credentials for the organization"""
@@ -442,7 +436,7 @@ async def list_telephony_credentials(
 @router.get("/agents/{agent_id}/numbers")
 async def get_agent_numbers(
     agent_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Get all phone numbers assigned to an agent"""
@@ -510,7 +504,7 @@ async def get_agent_numbers(
 @router.get("/agents/{agent_id}/webhook-url")
 async def get_agent_webhook_url(
     agent_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Get Ultravox webhook URL for BYOC setup
@@ -567,7 +561,7 @@ async def get_agent_webhook_url(
 
 @router.get("/config")
 async def get_telephony_config(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin_role),
     x_client_id: Optional[str] = Header(None),
 ):
     """Get SIP/Telephony configuration (legacy endpoint for compatibility)"""
