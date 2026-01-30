@@ -190,9 +190,25 @@ async def create_knowledge_base(
         
         # Initialize database service with org_id context
         db = DatabaseService(org_id=clerk_org_id)
+        
+        # CRITICAL: Ensure client_id is a valid UUID or None
+        # client_id must be a UUID or NULL, never a Clerk ID string
+        if client_id:
+            # Validate it's a UUID format (UUIDs are 36 characters: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
+            try:
+                import uuid as uuid_module
+                # Try to parse as UUID - this will raise ValueError if invalid
+                uuid_module.UUID(str(client_id))
+                # If we get here, it's a valid UUID format
+                logger.debug(f"[KB_CREATE] client_id is valid UUID: {client_id}")
+            except (ValueError, AttributeError, TypeError) as e:
+                # Not a valid UUID, set to None
+                logger.warning(f"[KB_CREATE] [FIX] client_id '{client_id}' is not a valid UUID (error: {e}), setting to None")
+                client_id = None
+        
         kb_record = {
             "id": kb_id,
-            "client_id": client_id,  # Legacy field
+            "client_id": client_id,  # Legacy field - can be NULL for development
             "clerk_org_id": clerk_org_id,  # CRITICAL: Organization ID for data partitioning
             "name": name,
             "description": request_data.description,
@@ -204,6 +220,13 @@ async def create_knowledge_base(
             "created_at": now.isoformat(),
             "updated_at": now.isoformat(),
         }
+        
+        logger.info(
+            f"[KB_CREATE] [DEBUG] KB record prepared | "
+            f"kb_id={kb_id} | "
+            f"client_id={client_id} (type: {type(client_id).__name__}) | "
+            f"clerk_org_id={clerk_org_id}"
+        )
         
         logger.info(
             f"[KB_CREATE] [DEBUG] Creating knowledge base record | "
