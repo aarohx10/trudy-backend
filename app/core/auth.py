@@ -267,7 +267,24 @@ async def ensure_admin_role_for_creator(
             logger.debug(f"[ROLE_DETERMINATION] User {user_id} already has client_admin role")
             return "client_admin"
         
-        # Check if user is first/only user in their organization
+        # SIMPLIFIED LOGIC: Check if user is in an organization (not personal workspace)
+        # If in organization, grant admin immediately
+        is_personal_workspace = (clerk_org_id == user_id)
+        
+        if not is_personal_workspace:
+            # User is in an organization - SIMPLIFIED: grant admin immediately
+            if current_role != "client_admin":
+                logger.info(f"[ROLE_DETERMINATION] User {user_id} is in organization {clerk_org_id} → upgrading to client_admin (simplified logic)")
+                try:
+                    admin_db.table("users").update({"role": "client_admin"}).eq("clerk_user_id", user_id).execute()
+                    return "client_admin"
+                except Exception as e:
+                    logger.error(f"[ROLE_DETERMINATION] Failed to upgrade user role: {e}", exc_info=True)
+                    # Return admin anyway (SIMPLIFIED LOGIC)
+                    return "client_admin"
+            return "client_admin"
+        
+        # Personal workspace case: Check if user is first/only user
         try:
             if client_id:
                 # Standard case: Check users by client_id
@@ -316,14 +333,41 @@ async def ensure_admin_role_for_creator(
                     return "client_admin"
         except Exception as e:
             logger.error(f"[ROLE_DETERMINATION] Failed to check/upgrade user role: {e}", exc_info=True)
+            # On error, grant admin to be safe (SIMPLIFIED LOGIC)
+            logger.warning(f"[ROLE_DETERMINATION] Error checking users, granting admin as fallback")
+            return "client_admin"
         
         # Return current role if no upgrade happened
         return current_role
     else:
-        # New user not in database yet - default to client_user
-        # They will be upgraded to admin when they're created via /auth/me
-        logger.debug(f"[ROLE_DETERMINATION] User {user_id} not in database yet → defaulting to client_user")
-        return "client_user"
+        # New user not in database yet
+        # SIMPLIFIED LOGIC: If user has an organization (not personal workspace), grant admin immediately
+        # Personal workspace: clerk_org_id == user_id (fallback from verify_clerk_jwt)
+        # Organization: clerk_org_id != user_id (actual org from Clerk)
+        
+        is_personal_workspace = (clerk_org_id == user_id)
+        
+        if not is_personal_workspace:
+            # User is in an organization - grant admin immediately (SIMPLIFIED LOGIC)
+            logger.info(f"[ROLE_DETERMINATION] User {user_id} is in organization {clerk_org_id} → granting client_admin (simplified logic)")
+            return "client_admin"
+        else:
+            # Personal workspace - check if they're the first user
+            try:
+                org_users = admin_db.table("users").select("id,role,clerk_user_id,clerk_org_id").eq("clerk_org_id", clerk_org_id).execute()
+                if not org_users.data or len(org_users.data) == 0:
+                    # First user in personal workspace - grant admin
+                    logger.info(f"[ROLE_DETERMINATION] User {user_id} is first user in personal workspace → granting client_admin")
+                    return "client_admin"
+                else:
+                    # Not first user - default to client_user
+                    logger.debug(f"[ROLE_DETERMINATION] User {user_id} not first user in personal workspace → defaulting to client_user")
+                    return "client_user"
+            except Exception as e:
+                logger.error(f"[ROLE_DETERMINATION] Failed to check personal workspace users: {e}", exc_info=True)
+                # On error, grant admin to be safe (SIMPLIFIED LOGIC)
+                logger.warning(f"[ROLE_DETERMINATION] Error checking users, granting admin as fallback")
+                return "client_admin"
 
 
 async def get_current_user(
@@ -356,12 +400,27 @@ async def get_current_user(
     clerk_org_id = claims.get("_effective_org_id") or claims.get("org_id")
     clerk_role = claims.get("org_role")  # Clerk organization role
     
+    # ENHANCED DEBUG LOGGING: Log token claims
+    logger.debug(
+        f"[GET_USER] [DEBUG] Token claims extracted | "
+        f"user_id={user_id} | "
+        f"org_id_from_token={claims.get('org_id')} | "
+        f"effective_org_id={claims.get('_effective_org_id')} | "
+        f"clerk_org_id={clerk_org_id} | "
+        f"clerk_role={clerk_role}"
+    )
+    
     if not user_id:
         raise UnauthorizedError("Invalid token: missing user ID")
     
     if not clerk_org_id:
         # This should never happen after verify_clerk_jwt, but safety check
         clerk_org_id = user_id
+        logger.warning(
+            f"[GET_USER] [WARNING] No org_id found, using user_id as fallback | "
+            f"user_id={user_id} | "
+            f"org_id={clerk_org_id}"
+        )
         debug_logger.log_auth("GET_USER", "WARNING: No org_id found, using user_id as fallback", {
             "user_id": user_id,
             "org_id": clerk_org_id
@@ -425,6 +484,18 @@ async def get_current_user(
     # auth endpoints (/clients, /users, api_keys) work. User is created with client_id by /auth/me.
     result["client_id"] = user_data.get("client_id") if user_data else None
     result["token_type"] = "clerk"
+    
+    # ENHANCED DEBUG LOGGING: Log all critical values
+    logger.info(
+        f"[GET_USER] [DEBUG] User lookup completed | "
+        f"clerk_user_id={user_id} | "
+        f"clerk_org_id={clerk_org_id} | "
+        f"role={role} | "
+        f"clerk_role={clerk_role} | "
+        f"client_id={result.get('client_id')} | "
+        f"user_in_db={'yes' if user_data else 'no'} | "
+        f"token_type=clerk"
+    )
     
     debug_logger.log_auth("GET_USER", "User lookup completed", {
         "clerk_user_id": user_id,

@@ -88,12 +88,26 @@ async def create_knowledge_base(
     Validates file, extracts text, stores in database, and creates Ultravox tool.
     """
     try:
-        # CRITICAL: Use clerk_org_id for organization-first approach
+        # =================================================================
+        # DEBUG LOGGING: Track organization ID and user context
+        # =================================================================
+        clerk_user_id = current_user.get("clerk_user_id") or current_user.get("user_id")
         clerk_org_id = current_user.get("clerk_org_id")
-        if not clerk_org_id:
-            raise ValidationError("Missing organization ID in token")
+        user_role = current_user.get("role", "unknown")
+        client_id = current_user.get("client_id")
         
-        client_id = current_user.get("client_id")  # Legacy field
+        logger.info(
+            f"[KB_CREATE] [DEBUG] Knowledge base creation attempt | "
+            f"clerk_user_id={clerk_user_id} | "
+            f"clerk_org_id={clerk_org_id} | "
+            f"role={user_role} | "
+            f"client_id={client_id}"
+        )
+        
+        # CRITICAL: Use clerk_org_id for organization-first approach
+        if not clerk_org_id:
+            logger.error(f"[KB_CREATE] [ERROR] Missing organization ID in token | clerk_user_id={clerk_user_id}")
+            raise ValidationError("Missing organization ID in token")
         
         # Permission check is handled by require_admin_role dependency
         # Role assignment is handled in get_current_user() via ensure_admin_role_for_creator()
@@ -161,7 +175,22 @@ async def create_knowledge_base(
             "updated_at": now.isoformat(),
         }
         
+        logger.info(
+            f"[KB_CREATE] [DEBUG] Creating knowledge base record | "
+            f"kb_id={kb_id} | "
+            f"clerk_user_id={clerk_user_id} | "
+            f"clerk_org_id={clerk_org_id} | "
+            f"client_id={client_id} | "
+            f"name={name}"
+        )
+        
         db.insert("knowledge_bases", kb_record)
+        
+        logger.info(
+            f"[KB_CREATE] [DEBUG] Knowledge base record created successfully | "
+            f"kb_id={kb_id} | "
+            f"clerk_org_id={clerk_org_id}"
+        )
         
         # Save file temporarily for text extraction
         temp_file_path = None

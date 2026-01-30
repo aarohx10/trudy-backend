@@ -31,7 +31,7 @@ router = APIRouter()
 
 @router.get("/me")
 async def get_me(
-    current_user: dict = Depends(require_admin_role),
+    current_user: dict = Depends(get_current_user),  # CRITICAL: Don't require admin - users need to create themselves first!
     x_client_id: Optional[str] = Header(None),
 ):
     """Get current user information, auto-create user/client/organization if doesn't exist"""
@@ -323,13 +323,23 @@ async def get_me(
             "email": email,
             "role": "client_admin",  # First user is admin
             "clerk_user_id": user_id,  # Clerk ONLY
+            "clerk_org_id": clerk_org_id,  # CRITICAL: Organization ID for data partitioning
             "auth0_sub": "",  # Legacy field - empty string for Clerk-only users (database requires NOT NULL)
         }
         
-        debug_logger.log_db("INSERT", "users", {"user_id": user_id_uuid, "client_id": client_id, "token_type": "clerk"})
+        logger.info(
+            f"[AUTH_ME] [DEBUG] Creating new user | "
+            f"user_id={user_id_uuid} | "
+            f"clerk_user_id={user_id} | "
+            f"clerk_org_id={clerk_org_id} | "
+            f"client_id={client_id} | "
+            f"role=client_admin"
+        )
+        
+        debug_logger.log_db("INSERT", "users", {"user_id": user_id_uuid, "client_id": client_id, "clerk_org_id": clerk_org_id, "token_type": "clerk"})
         admin_db.table("users").insert(user_data_dict).execute()
-        logger.info(f"Created new user: {user_id_uuid}, client: {client_id}")
-        debug_logger.log_step("AUTH_ME", "Created new user", {"user_id": user_id_uuid, "client_id": client_id})
+        logger.info(f"Created new user: {user_id_uuid}, client: {client_id}, org: {clerk_org_id}")
+        debug_logger.log_step("AUTH_ME", "Created new user", {"user_id": user_id_uuid, "client_id": client_id, "clerk_org_id": clerk_org_id})
         
         # Refresh user_data
         user = admin_db.table("users").select("*").eq("clerk_user_id", user_id).execute()
