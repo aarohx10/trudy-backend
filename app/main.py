@@ -118,11 +118,11 @@ logger.info(f"✅ CORS Wildcard Patterns ({len(settings.CORS_WILDCARD_PATTERNS)}
 # Execution order for requests: CORS -> RateLimit -> Logging -> RequestID -> app
 # Execution order for responses: app -> RequestID -> Logging -> RateLimit -> CORS
 
-    # Add Middleware (order: last added = outermost; CORS MUST be last to wrap all responses)
-    app.add_middleware(RequestIDMiddleware)
-    app.add_middleware(LoggingMiddleware)
-    app.add_middleware(RateLimitMiddleware)
-    # app.add_middleware(UnifiedCORSMiddleware)  # DISABLED: Handled by Nginx for production simplicity and safety
+# Add Middleware (order: last added = outermost; CORS handled by Nginx)
+app.add_middleware(RequestIDMiddleware)
+app.add_middleware(LoggingMiddleware)
+app.add_middleware(RateLimitMiddleware)
+# app.add_middleware(UnifiedCORSMiddleware)  # DISABLED: Handled by Nginx for production simplicity and safety
 
 logger.info("✅ Middlewares configured (CORS handled by Nginx)")
 
