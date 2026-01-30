@@ -147,16 +147,66 @@ async def verify_clerk_jwt(token: str) -> Dict[str, Any]:
         )
         
         # CRITICAL LOGIC: Extract org_id and user_id, with fallback
+        # NOTE: Clerk JWT tokens don't include org_id by default unless configured as custom claim
+        # If org_id is missing, we fetch it from Clerk API to get the actual organization ID
         user_id = claims.get("sub")
         org_id = claims.get("org_id")
         
-        # If org_id is null (user is in their personal workspace), use user_id as org_id
+        # If org_id is missing from token, fetch it from Clerk API
         if not org_id and user_id:
-            org_id = user_id
-            debug_logger.log_auth("TOKEN_VERIFY", "org_id is null, using user_id as org_id for personal workspace", {
-                "user_id": user_id,
-                "org_id": org_id
-            })
+            logger.debug(f"[TOKEN_VERIFY] org_id not in token, fetching from Clerk API | user_id={user_id}")
+            try:
+                clerk_secret_key = getattr(settings, 'CLERK_SECRET_KEY', '')
+                if clerk_secret_key:
+                    # Fetch user's organization memberships from Clerk API
+                    async with httpx.AsyncClient() as client:
+                        response = await client.get(
+                            f"https://api.clerk.dev/v1/users/{user_id}/organization_memberships",
+                            headers={
+                                "Authorization": f"Bearer {clerk_secret_key}",
+                                "Content-Type": "application/json",
+                            },
+                            timeout=5.0,
+                        )
+                        if response.status_code == 200:
+                            response_data = response.json()
+                            # Clerk API returns paginated response with 'data' array
+                            memberships = response_data.get("data", [])
+                            # Get the first organization (or primary organization)
+                            if memberships and len(memberships) > 0:
+                                # Find primary org (admin role) or first one
+                                primary_org = next(
+                                    (m for m in memberships if m.get("role") == "org:admin"),
+                                    memberships[0]
+                                )
+                                # Extract org_id from membership object
+                                # OrganizationMembership has organization.id property
+                                organization_obj = primary_org.get("organization", {})
+                                fetched_org_id = organization_obj.get("id")
+                                if fetched_org_id:
+                                    org_id = fetched_org_id
+                                    logger.info(f"[TOKEN_VERIFY] ✅ Fetched org_id from Clerk API | user_id={user_id} | org_id={org_id}")
+                                    debug_logger.log_auth("TOKEN_VERIFY", "Fetched org_id from Clerk API", {
+                                        "user_id": user_id,
+                                        "org_id": org_id
+                                    })
+                                else:
+                                    logger.warning(f"[TOKEN_VERIFY] Organization object missing 'id' in membership | membership={primary_org}")
+                            else:
+                                logger.debug(f"[TOKEN_VERIFY] No organization memberships found for user | user_id={user_id}")
+                        else:
+                            logger.warning(f"[TOKEN_VERIFY] Clerk API returned non-200 status | status={response.status_code} | response={response.text}")
+            except Exception as e:
+                logger.warning(f"[TOKEN_VERIFY] Failed to fetch org_id from Clerk API: {e}", exc_info=True)
+            
+            # Only fallback to user_id if we still don't have an org_id (personal workspace)
+            if not org_id:
+                org_id = user_id
+                logger.warning(f"[TOKEN_VERIFY] ⚠️ No org_id found, using user_id as fallback (personal workspace) | user_id={user_id}")
+                debug_logger.log_auth("TOKEN_VERIFY", "org_id is null, using user_id as org_id for personal workspace", {
+                    "user_id": user_id,
+                    "org_id": org_id
+                })
         
         # Store the effective org_id in claims for downstream use
         claims["_effective_org_id"] = org_id
