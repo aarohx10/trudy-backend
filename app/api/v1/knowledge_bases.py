@@ -109,6 +109,36 @@ async def create_knowledge_base(
             logger.error(f"[KB_CREATE] [ERROR] Missing organization ID in token | clerk_user_id={clerk_user_id}")
             raise ValidationError("Missing organization ID in token")
         
+        # FIX: If client_id is missing, fetch it from database
+        # NOTE: client_id must be a UUID, not clerk_org_id (which is TEXT)
+        if not client_id:
+            logger.warning(f"[KB_CREATE] [WARNING] client_id is null, attempting to fetch from database | clerk_user_id={clerk_user_id} | clerk_org_id={clerk_org_id}")
+            from app.core.database import get_supabase_admin_client
+            admin_db = get_supabase_admin_client()
+            
+            # Try to get user's client_id from database
+            try:
+                user_record = admin_db.table("users").select("client_id").eq("clerk_user_id", clerk_user_id).execute()
+                if user_record.data and user_record.data[0].get("client_id"):
+                    client_id = user_record.data[0]["client_id"]
+                    logger.info(f"[KB_CREATE] [FIX] Fetched client_id from database | client_id={client_id}")
+                else:
+                    # Try to get client_id from clients table by clerk_organization_id
+                    client_record = admin_db.table("clients").select("id").eq("clerk_organization_id", clerk_org_id).execute()
+                    if client_record.data and client_record.data[0].get("id"):
+                        client_id = client_record.data[0]["id"]
+                        logger.info(f"[KB_CREATE] [FIX] Fetched client_id from clients table | client_id={client_id}")
+                    else:
+                        # If no client_id found, set to None (will be NULL in database)
+                        # Database column should be nullable for development
+                        client_id = None
+                        logger.warning(f"[KB_CREATE] [FIX] No client_id found, setting to None (requires nullable column) | clerk_org_id={clerk_org_id}")
+            except Exception as e:
+                logger.error(f"[KB_CREATE] [ERROR] Failed to fetch client_id: {e}", exc_info=True)
+                # Set to None if fetch fails (requires nullable column)
+                client_id = None
+                logger.warning(f"[KB_CREATE] [FIX] Setting client_id to None after fetch error | clerk_org_id={clerk_org_id}")
+        
         # Permission check is handled by require_admin_role dependency
         # Role assignment is handled in get_current_user() via ensure_admin_role_for_creator()
         
