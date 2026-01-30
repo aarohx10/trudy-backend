@@ -297,11 +297,11 @@ async def get_current_user(
     elif user_data:
         # User exists, get role from database
         role = user_data.get("role", "client_user")
-        # CRITICAL: If user is the first/only user in their organization, grant admin role
-        if role == "client_user" and clerk_org_id:
+        # CRITICAL: If user is the first/only user in their organization/client, grant admin role
+        # This works for both organization users AND personal workspace users
+        if role == "client_user":
             try:
-                # Check if this user is the only user in their organization
-                # Use client_id to find all users in the same organization
+                # Check if this user is the only user in their client_id (works for both org and personal)
                 client_id = user_data.get("client_id")
                 if client_id:
                     org_users = admin_db.table("users").select("id,role").eq("client_id", client_id).execute()
@@ -310,7 +310,7 @@ async def get_current_user(
                         other_admins = [u for u in org_users.data if u.get("id") != user_data.get("id") and u.get("role") == "client_admin"]
                         if not other_admins:
                             # This user is effectively the first admin - upgrade them
-                            logger.info(f"Upgrading user {user_id} to client_admin (first user in organization)")
+                            logger.info(f"Upgrading user {user_id} to client_admin (first user in client/organization)")
                             role = "client_admin"
                             admin_db.table("users").update({"role": "client_admin"}).eq("clerk_user_id", user_id).execute()
                             # Refresh user_data
