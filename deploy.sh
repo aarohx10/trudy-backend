@@ -92,12 +92,31 @@ if [ -f "nginx-trudy-sendorahq.conf" ]; then
     
     # Test and reload Nginx
     echo -e "${GREEN}Testing Nginx config...${NC}"
-    if sudo nginx -t; then
+    NGINX_TEST_OUTPUT=$(sudo nginx -t 2>&1)
+    NGINX_TEST_EXIT=$?
+    
+    if [ $NGINX_TEST_EXIT -eq 0 ]; then
+        # Check for warnings about conflicting server names
+        if echo "$NGINX_TEST_OUTPUT" | grep -q "conflicting server name"; then
+            echo -e "${YELLOW}⚠️  Warning: Conflicting server names detected${NC}"
+            echo -e "${YELLOW}This usually means duplicate server blocks exist.${NC}"
+            echo -e "${YELLOW}Checking for duplicate configs...${NC}"
+            
+            # List all enabled configs
+            echo -e "${YELLOW}Enabled Nginx configs:${NC}"
+            ls -la /etc/nginx/sites-enabled/ || true
+            
+            # Check if there are multiple configs with same server_name
+            echo -e "${YELLOW}Checking for duplicate server_name definitions...${NC}"
+            grep -r "server_name.*truedy.sendorahq.com" /etc/nginx/sites-enabled/ 2>/dev/null || true
+        fi
+        
         echo -e "${GREEN}Reloading Nginx...${NC}"
         sudo systemctl reload nginx
         echo -e "${GREEN}Nginx updated and reloaded${NC}"
     else
         echo -e "${RED}ERROR: Nginx config test failed!${NC}"
+        echo "$NGINX_TEST_OUTPUT"
         # Don't exit, try to continue deployment of backend code at least
     fi
 else
