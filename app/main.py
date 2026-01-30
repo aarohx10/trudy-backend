@@ -14,7 +14,7 @@ from starlette.responses import Response
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.core.rate_limiting import RateLimitMiddleware
-from app.core.middleware import RequestIDMiddleware, LoggingMiddleware, UnifiedCORSMiddleware
+from app.core.middleware import RequestIDMiddleware, LoggingMiddleware
 from app.core.cors import is_origin_allowed
 from app.core.debug_logging import debug_logger
 from app.core.db_logging import log_error
@@ -118,22 +118,22 @@ logger.info(f"✅ CORS Wildcard Patterns ({len(settings.CORS_WILDCARD_PATTERNS)}
 # Execution order for requests: CORS -> RateLimit -> Logging -> RequestID -> app
 # Execution order for responses: app -> RequestID -> Logging -> RateLimit -> CORS
 
-# Add Middleware (order: last added = outermost; CORS MUST be last to wrap all responses)
-app.add_middleware(RequestIDMiddleware)
-app.add_middleware(LoggingMiddleware)
-app.add_middleware(RateLimitMiddleware)
-app.add_middleware(UnifiedCORSMiddleware)  # MUST BE LAST - wraps 429, 500, and all errors with CORS headers
+    # Add Middleware (order: last added = outermost; CORS MUST be last to wrap all responses)
+    app.add_middleware(RequestIDMiddleware)
+    app.add_middleware(LoggingMiddleware)
+    app.add_middleware(RateLimitMiddleware)
+    # app.add_middleware(UnifiedCORSMiddleware)  # DISABLED: Handled by Nginx for production simplicity and safety
 
-logger.info("✅ Middlewares configured (CORS is outermost)")
+logger.info("✅ Middlewares configured (CORS handled by Nginx)")
 
 
 # ============================================================
-# Exception Handlers (CORS headers added by UnifiedCORSMiddleware)
+# Exception Handlers (CORS headers added by Nginx)
 # ============================================================
 
 @app.exception_handler(TrudyException)
 async def trudy_exception_handler(request: Request, exc: TrudyException):
-    """Handle Trudy-specific exceptions - CORS headers added by UnifiedCORSMiddleware"""
+    """Handle Trudy-specific exceptions - CORS headers added by Nginx"""
     # Log RAW error to console with full details
     import traceback
     import json
@@ -178,13 +178,13 @@ async def trudy_exception_handler(request: Request, exc: TrudyException):
         },
     )
     
-    # CORS headers will be added by UnifiedCORSMiddleware
+    # CORS headers will be added by Nginx
     return response
 
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
-    """Handle general exceptions with CORS headers"""
+    """Handle general exceptions - CORS headers added by Nginx"""
     import traceback
     import json
     
@@ -240,7 +240,7 @@ async def general_exception_handler(request: Request, exc: Exception):
         },
     )
     
-    # CORS headers will be added by UnifiedCORSMiddleware
+    # CORS headers will be added by Nginx
     return response
 
 
@@ -302,13 +302,13 @@ async def cors_health(request: Request):
     
     response = JSONResponse(content=response_data)
     
-    # CORS headers will be added by UnifiedCORSMiddleware
+    # CORS headers will be added by Nginx
     return response
 
 
 # Explicit OPTIONS handler for all routes (backup for CORS preflight)
-# REMOVED: Handled by UnifiedCORSMiddleware in app/core/middleware.py
-# This was dead code that could cause confusion.
+# REMOVED: Handled by Nginx for production-grade reliability
+# Nginx handles all OPTIONS requests before they reach the backend
 # @app.options("/{full_path:path}")
 # async def options_handler(request: Request, full_path: str):
 #    ...

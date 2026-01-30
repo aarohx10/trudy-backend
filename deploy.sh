@@ -80,9 +80,9 @@ fi
 
 # Nginx Configuration
 echo -e "${GREEN}Updating Nginx configuration...${NC}"
-if [ -f "nginx-trudy-backend.conf" ]; then
+if [ -f "nginx-trudy-sendorahq.conf" ]; then
     echo -e "${GREEN}Copying Nginx config...${NC}"
-    sudo cp nginx-trudy-backend.conf /etc/nginx/sites-available/trudy-backend
+    sudo cp nginx-trudy-sendorahq.conf /etc/nginx/sites-available/trudy-backend
     
     # Ensure symlink exists
     if [ ! -L "/etc/nginx/sites-enabled/trudy-backend" ]; then
@@ -101,7 +101,7 @@ if [ -f "nginx-trudy-backend.conf" ]; then
         # Don't exit, try to continue deployment of backend code at least
     fi
 else
-    echo -e "${YELLOW}nginx-trudy-backend.conf not found, skipping Nginx update...${NC}"
+    echo -e "${YELLOW}nginx-trudy-sendorahq.conf not found, skipping Nginx update...${NC}"
 fi
 
 # Restart service (adjust based on your service manager)
