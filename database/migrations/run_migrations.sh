@@ -36,6 +36,8 @@ echo -e "${YELLOW}Note: This script assumes you're using Supabase SQL Editor${NC
 echo -e "${YELLOW}For direct psql, uncomment and configure the psql command below${NC}"
 
 # Option 1: Using Supabase SQL Editor (recommended)
+# Run from migrations directory so *.sql matches
+cd "$SCRIPT_DIR"
 echo -e "${GREEN}Migration files to run:${NC}"
 ls -1 *.sql | while read file; do
     echo "  - $file"
