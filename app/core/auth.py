@@ -280,15 +280,47 @@ async def get_current_user(
             })
     
     # Determine role from database or Clerk org role
-    if user_data:
+    # CRITICAL: Clerk org_role takes precedence - if user is org admin in Clerk, they're admin here too
+    if clerk_role == "org:admin":
+        # User is org admin in Clerk - always grant admin role regardless of database
+        role = "client_admin"
+        # Also update database if it doesn't match (for consistency)
+        if user_data and user_data.get("role") != "client_admin":
+            logger.info(f"Updating user {user_id} role to client_admin (Clerk org admin)")
+            try:
+                admin_db.table("users").update({"role": "client_admin"}).eq("clerk_user_id", user_id).execute()
+                # Refresh user_data
+                user = admin_db.table("users").select("*").eq("clerk_user_id", user_id).execute()
+                user_data = user.data[0] if user.data else None
+            except Exception as e:
+                logger.warning(f"Failed to update user role in database: {e}")
+    elif user_data:
         # User exists, get role from database
         role = user_data.get("role", "client_user")
-    elif clerk_role:
-        # Map Clerk role to our role system
-        if clerk_role == "org:admin":
-            role = "client_admin"
-        else:
-            role = "client_user"
+        # CRITICAL: If user is the first/only user in their organization, grant admin role
+        if role == "client_user" and clerk_org_id:
+            try:
+                # Check if this user is the only user in their organization
+                # Use client_id to find all users in the same organization
+                client_id = user_data.get("client_id")
+                if client_id:
+                    org_users = admin_db.table("users").select("id,role").eq("client_id", client_id).execute()
+                    if org_users.data:
+                        # Check if all other users are also client_user (meaning no admin exists)
+                        other_admins = [u for u in org_users.data if u.get("id") != user_data.get("id") and u.get("role") == "client_admin"]
+                        if not other_admins:
+                            # This user is effectively the first admin - upgrade them
+                            logger.info(f"Upgrading user {user_id} to client_admin (first user in organization)")
+                            role = "client_admin"
+                            admin_db.table("users").update({"role": "client_admin"}).eq("clerk_user_id", user_id).execute()
+                            # Refresh user_data
+                            user = admin_db.table("users").select("*").eq("clerk_user_id", user_id).execute()
+                            user_data = user.data[0] if user.data else None
+            except Exception as e:
+                logger.warning(f"Failed to check/upgrade user role: {e}")
+    else:
+        # New user, default to client_user (will be upgraded to admin on first /auth/me call)
+        role = "client_user"
     
     # Create UserContext object
     user_context = UserContext(
