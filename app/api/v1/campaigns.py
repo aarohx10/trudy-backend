@@ -53,8 +53,21 @@ async def create_campaign(
     
     # CRITICAL: Use clerk_org_id for organization-first approach
     clerk_org_id = current_user.get("clerk_org_id")
+    
+    # STEP 1: Explicit validation BEFORE creating campaign_record
+    logger.info(f"[CAMPAIGNS] [CREATE] [STEP 1] Extracting clerk_org_id from current_user | clerk_org_id={clerk_org_id}")
+    
     if not clerk_org_id:
+        logger.error(f"[CAMPAIGNS] [CREATE] [ERROR] Missing clerk_org_id in current_user | current_user_keys={list(current_user.keys())}")
         raise ValidationError("Missing organization ID in token")
+    
+    # Strip whitespace and validate it's not empty
+    clerk_org_id = str(clerk_org_id).strip()
+    if not clerk_org_id:
+        logger.error(f"[CAMPAIGNS] [CREATE] [ERROR] clerk_org_id is empty after stripping | original_value={current_user.get('clerk_org_id')}")
+        raise ValidationError("Organization ID cannot be empty")
+    
+    logger.info(f"[CAMPAIGNS] [CREATE] [STEP 2] ✅ clerk_org_id validated | clerk_org_id={clerk_org_id}")
     
     # Check idempotency key
     body_dict = campaign_data.dict() if hasattr(campaign_data, 'dict') else json.loads(json.dumps(campaign_data, default=str))
@@ -91,7 +104,33 @@ async def create_campaign(
         "stats": {"pending": 0, "calling": 0, "completed": 0, "failed": 0},
     }
     
-    db.insert("campaigns", campaign_record)
+    # STEP 4: Explicit validation AFTER setting clerk_org_id in campaign_record
+    logger.info(f"[CAMPAIGNS] [CREATE] [STEP 4] Validating campaign_record.clerk_org_id | value={campaign_record.get('clerk_org_id')}")
+    
+    if "clerk_org_id" not in campaign_record:
+        logger.error(f"[CAMPAIGNS] [CREATE] [ERROR] clerk_org_id key missing from campaign_record | keys={list(campaign_record.keys())}")
+        raise ValidationError("clerk_org_id is missing from campaign_record")
+    
+    if not campaign_record["clerk_org_id"] or not str(campaign_record["clerk_org_id"]).strip():
+        logger.error(f"[CAMPAIGNS] [CREATE] [ERROR] clerk_org_id is empty in campaign_record | campaign_record={campaign_record}")
+        raise ValidationError(f"clerk_org_id cannot be empty in campaign_record: '{campaign_record.get('clerk_org_id')}'")
+    
+    logger.info(f"[CAMPAIGNS] [CREATE] [STEP 4] ✅ campaign_record.clerk_org_id validated | value={campaign_record.get('clerk_org_id')}")
+    
+    # STEP 5: Log complete campaign_record before insert
+    logger.info(f"[CAMPAIGNS] [CREATE] [STEP 5] Complete campaign_record before insert | campaign_id={campaign_id} | clerk_org_id={campaign_record.get('clerk_org_id')}")
+    
+    created_campaign = db.insert("campaigns", campaign_record)
+    
+    # STEP 6: Verify clerk_org_id was saved correctly
+    saved_clerk_org_id = created_campaign.get('clerk_org_id') if created_campaign else None
+    logger.info(f"[CAMPAIGNS] [CREATE] [STEP 6] Campaign inserted | campaign_id={campaign_id} | saved_clerk_org_id={saved_clerk_org_id}")
+    
+    if not saved_clerk_org_id or not str(saved_clerk_org_id).strip():
+        logger.error(f"[CAMPAIGNS] [CREATE] [ERROR] clerk_org_id is empty after insert! | campaign_id={campaign_id} | created_campaign={created_campaign}")
+        raise ValidationError(f"clerk_org_id was not saved correctly: '{saved_clerk_org_id}'")
+    
+    logger.info(f"[CAMPAIGNS] [CREATE] [STEP 6] ✅ Campaign created successfully | campaign_id={campaign_id} | clerk_org_id={saved_clerk_org_id}")
     
     # Emit event
     await emit_campaign_created(
@@ -378,8 +417,7 @@ async def schedule_campaign(
         # Emit event
         await emit_campaign_scheduled(
             campaign_id=campaign_id,
-            client_id=client_id,  # Legacy field
-            org_id=clerk_org_id,  # CRITICAL: Organization ID
+            org_id=clerk_org_id,  # CRITICAL: Organization ID (organization-first approach)
             scheduled_at=campaign.get("scheduled_at"),
             contact_count=len(pending_contacts),
             batch_ids=batch_ids,

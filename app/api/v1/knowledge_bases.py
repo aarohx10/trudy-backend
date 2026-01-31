@@ -476,9 +476,25 @@ async def fetch_knowledge_base_content(
         if request_data.kb_id != kb_id:
             raise HTTPException(status_code=400, detail="kb_id in body must match path parameter")
         
-        # Fetch content (no client_id validation - API key is sufficient)
-        # Note: We skip client_id validation for Ultravox tool calls
-        content = await get_knowledge_base_content(kb_id, client_id=None)
+        # CRITICAL: Even though API key auth is used, we must still scope to the KB's clerk_org_id
+        # This ensures data isolation even for internal Ultravox tool calls
+        from app.core.database import DatabaseAdminService
+        admin_db = DatabaseAdminService()
+        
+        # Get KB record to extract clerk_org_id
+        kb_record = admin_db.select_one("knowledge_bases", {"id": kb_id})
+        if not kb_record:
+            raise HTTPException(status_code=404, detail="Knowledge base not found")
+        
+        # Extract clerk_org_id from KB record
+        kb_clerk_org_id = kb_record.get("clerk_org_id")
+        if not kb_clerk_org_id:
+            logger.warning(f"[KB] [FETCH] KB {kb_id} has no clerk_org_id - this should not happen")
+            raise HTTPException(status_code=500, detail="Knowledge base organization ID is missing")
+        
+        # Fetch content - pass org_id for scoping (organization-first approach)
+        # Note: client_id parameter is deprecated but kept for backward compatibility
+        content = await get_knowledge_base_content(kb_id, org_id=kb_clerk_org_id, client_id=None)
         
         # Return plain text
         return PlainTextResponse(content, media_type="text/plain")

@@ -59,11 +59,21 @@ async def create_agent(
     try:
         # CRITICAL: Use clerk_org_id for organization-first approach
         clerk_org_id = current_user.get("clerk_org_id")
+        
+        # STEP 1: Explicit validation BEFORE creating agent_record
+        logger.info(f"[AGENTS] [CREATE] [STEP 1] Extracting clerk_org_id from current_user | clerk_org_id={clerk_org_id}")
+        
         if not clerk_org_id:
+            logger.error(f"[AGENTS] [CREATE] [ERROR] Missing clerk_org_id in current_user | current_user_keys={list(current_user.keys())}")
             raise ValidationError("Missing organization ID in token")
         
-        # CRITICAL: Log the clerk_org_id to debug empty values
-        logger.info(f"[AGENTS] [CREATE] Creating agent with clerk_org_id: {clerk_org_id}")
+        # Strip whitespace and validate it's not empty
+        clerk_org_id = str(clerk_org_id).strip()
+        if not clerk_org_id:
+            logger.error(f"[AGENTS] [CREATE] [ERROR] clerk_org_id is empty after stripping | original_value={current_user.get('clerk_org_id')}")
+            raise ValidationError("Organization ID cannot be empty")
+        
+        logger.info(f"[AGENTS] [CREATE] [STEP 2] ✅ clerk_org_id validated | clerk_org_id={clerk_org_id}")
         
         # Initialize database service with org_id context
         db = DatabaseService(org_id=clerk_org_id)
@@ -72,9 +82,12 @@ async def create_agent(
         # Convert Pydantic model to dict
         agent_dict = agent_data.dict(exclude_none=True)
         
-        # Build database record - use clerk_org_id only (organization-first approach)
-        # CRITICAL: Ensure clerk_org_id is never empty
-        if not clerk_org_id or clerk_org_id.strip() == "":
+        # STEP 3: Build database record - use clerk_org_id only (organization-first approach)
+        # CRITICAL: Ensure clerk_org_id is never empty (double-check before setting)
+        logger.info(f"[AGENTS] [CREATE] [STEP 3] Building agent_record | clerk_org_id={clerk_org_id}")
+        
+        if not clerk_org_id or not clerk_org_id.strip():
+            logger.error(f"[AGENTS] [CREATE] [ERROR] Invalid clerk_org_id before creating agent_record | clerk_org_id={clerk_org_id}")
             raise ValidationError(f"Invalid clerk_org_id: '{clerk_org_id}' - cannot be empty")
         
         agent_id = str(uuid.uuid4())
@@ -129,6 +142,28 @@ async def create_agent(
         if agent_dict.get("crm_webhook_secret"):
             agent_record["crm_webhook_secret"] = agent_dict["crm_webhook_secret"]
         
+        # STEP 4: Explicit validation AFTER setting clerk_org_id in agent_record
+        logger.info(f"[AGENTS] [CREATE] [STEP 4] Validating agent_record.clerk_org_id | value={agent_record.get('clerk_org_id')}")
+        
+        if "clerk_org_id" not in agent_record:
+            logger.error(f"[AGENTS] [CREATE] [ERROR] clerk_org_id key missing from agent_record | keys={list(agent_record.keys())}")
+            raise ValidationError("clerk_org_id is missing from agent_record")
+        
+        if not agent_record["clerk_org_id"] or not str(agent_record["clerk_org_id"]).strip():
+            logger.error(f"[AGENTS] [CREATE] [ERROR] clerk_org_id is empty in agent_record | agent_record={agent_record}")
+            raise ValidationError(f"clerk_org_id cannot be empty in agent_record: '{agent_record.get('clerk_org_id')}'")
+        
+        logger.info(f"[AGENTS] [CREATE] [STEP 4] ✅ agent_record.clerk_org_id validated | value={agent_record.get('clerk_org_id')}")
+        
+        # STEP 5: Log complete agent_record before insert (for debugging)
+        logger.info(f"[AGENTS] [CREATE] [STEP 5] Complete agent_record before insert | agent_id={agent_id} | clerk_org_id={agent_record.get('clerk_org_id')} | keys={list(agent_record.keys())}")
+        
+        # CRITICAL: Final validation immediately before db.insert - raise ValidationError if clerk_org_id is empty
+        final_clerk_org_id = agent_record.get("clerk_org_id")
+        if not final_clerk_org_id or not str(final_clerk_org_id).strip():
+            logger.error(f"[AGENTS] [CREATE] [ERROR] clerk_org_id is empty immediately before db.insert | agent_id={agent_id} | agent_record={agent_record}")
+            raise ValidationError("clerk_org_id cannot be empty. Organization ID is required to create an agent.")
+        
         # Validate agent can be created in Ultravox
         validation_result = await validate_agent_for_ultravox_sync(agent_record, clerk_org_id)
         
@@ -177,7 +212,20 @@ async def create_agent(
             )
         
         # Fetch the created agent - filter by org_id to enforce org scoping
+        # STEP 8: Fetch and verify the created agent
+        logger.info(f"[AGENTS] [CREATE] [STEP 8] Fetching created agent | agent_id={agent_id} | clerk_org_id={clerk_org_id}")
         created_agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
+        
+        if created_agent:
+            fetched_clerk_org_id = created_agent.get('clerk_org_id')
+            logger.info(f"[AGENTS] [CREATE] [STEP 8] ✅ Agent fetched | agent_id={agent_id} | fetched_clerk_org_id={fetched_clerk_org_id}")
+            
+            if not fetched_clerk_org_id or not str(fetched_clerk_org_id).strip():
+                logger.error(f"[AGENTS] [CREATE] [ERROR] clerk_org_id is empty in fetched agent! | agent_id={agent_id} | created_agent={created_agent}")
+                raise ValidationError(f"clerk_org_id is empty in fetched agent: '{fetched_clerk_org_id}'")
+        else:
+            logger.error(f"[AGENTS] [CREATE] [ERROR] Failed to fetch created agent | agent_id={agent_id} | clerk_org_id={clerk_org_id}")
+            raise ValidationError(f"Failed to fetch created agent: {agent_id}")
         
         response_data = {
             "data": created_agent,

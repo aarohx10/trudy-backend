@@ -152,9 +152,24 @@ async def verify_clerk_jwt(token: str) -> Dict[str, Any]:
         user_id = claims.get("sub")
         org_id = claims.get("org_id")
         
+        logger.debug(f"[TOKEN_VERIFY] [STEP 1] Initial extraction | user_id={user_id} | org_id_from_token={org_id}")
+        debug_logger.log_auth("TOKEN_VERIFY", "Initial org_id extraction", {
+            "user_id": user_id,
+            "org_id_from_token": org_id
+        })
+        
+        # Validate user_id exists
+        if not user_id:
+            logger.error("[TOKEN_VERIFY] [ERROR] user_id (sub) is missing from token claims")
+            raise UnauthorizedError("Invalid token: missing user ID")
+        
         # If org_id is missing from token, fetch it from Clerk API
         if not org_id and user_id:
-            logger.debug(f"[TOKEN_VERIFY] org_id not in token, fetching from Clerk API | user_id={user_id}")
+            logger.debug(f"[TOKEN_VERIFY] [STEP 2] org_id not in token, fetching from Clerk API | user_id={user_id}")
+            debug_logger.log_auth("TOKEN_VERIFY", "Fetching org_id from Clerk API", {
+                "user_id": user_id,
+                "reason": "org_id missing from token"
+            })
             try:
                 clerk_secret_key = getattr(settings, 'CLERK_SECRET_KEY', '')
                 if clerk_secret_key:
@@ -172,6 +187,8 @@ async def verify_clerk_jwt(token: str) -> Dict[str, Any]:
                             response_data = response.json()
                             # Clerk API returns paginated response with 'data' array
                             memberships = response_data.get("data", [])
+                            logger.debug(f"[TOKEN_VERIFY] [STEP 2a] Clerk API response | memberships_count={len(memberships)}")
+                            
                             # Get the first organization (or primary organization)
                             if memberships and len(memberships) > 0:
                                 # Find primary org (admin role) or first one
@@ -185,28 +202,71 @@ async def verify_clerk_jwt(token: str) -> Dict[str, Any]:
                                 fetched_org_id = organization_obj.get("id")
                                 if fetched_org_id:
                                     org_id = fetched_org_id
-                                    logger.info(f"[TOKEN_VERIFY] ✅ Fetched org_id from Clerk API | user_id={user_id} | org_id={org_id}")
+                                    logger.info(f"[TOKEN_VERIFY] [STEP 2b] ✅ Fetched org_id from Clerk API | user_id={user_id} | org_id={org_id}")
                                     debug_logger.log_auth("TOKEN_VERIFY", "Fetched org_id from Clerk API", {
                                         "user_id": user_id,
-                                        "org_id": org_id
+                                        "org_id": org_id,
+                                        "membership_role": primary_org.get("role")
                                     })
                                 else:
-                                    logger.warning(f"[TOKEN_VERIFY] Organization object missing 'id' in membership | membership={primary_org}")
+                                    logger.warning(f"[TOKEN_VERIFY] [STEP 2b] Organization object missing 'id' in membership | membership={primary_org}")
+                                    debug_logger.log_auth("TOKEN_VERIFY", "Organization object missing id", {
+                                        "user_id": user_id,
+                                        "membership": primary_org
+                                    })
                             else:
-                                logger.debug(f"[TOKEN_VERIFY] No organization memberships found for user | user_id={user_id}")
+                                logger.debug(f"[TOKEN_VERIFY] [STEP 2b] No organization memberships found for user | user_id={user_id}")
+                                debug_logger.log_auth("TOKEN_VERIFY", "No organization memberships found", {
+                                    "user_id": user_id
+                                })
                         else:
-                            logger.warning(f"[TOKEN_VERIFY] Clerk API returned non-200 status | status={response.status_code} | response={response.text}")
+                            logger.warning(f"[TOKEN_VERIFY] [STEP 2a] Clerk API returned non-200 status | status={response.status_code} | response={response.text}")
+                            debug_logger.log_auth("TOKEN_VERIFY", "Clerk API error", {
+                                "user_id": user_id,
+                                "status_code": response.status_code,
+                                "response": response.text[:200]  # Truncate for logging
+                            })
             except Exception as e:
-                logger.warning(f"[TOKEN_VERIFY] Failed to fetch org_id from Clerk API: {e}", exc_info=True)
+                logger.warning(f"[TOKEN_VERIFY] [STEP 2] Failed to fetch org_id from Clerk API: {e}", exc_info=True)
+                debug_logger.log_error("TOKEN_VERIFY", e, {
+                    "user_id": user_id,
+                    "step": "fetch_org_id_from_api"
+                })
             
             # Only fallback to user_id if we still don't have an org_id (personal workspace)
             if not org_id:
                 org_id = user_id
-                logger.warning(f"[TOKEN_VERIFY] ⚠️ No org_id found, using user_id as fallback (personal workspace) | user_id={user_id}")
+                logger.warning(f"[TOKEN_VERIFY] [STEP 3] ⚠️ No org_id found, using user_id as fallback (personal workspace) | user_id={user_id} | org_id={org_id}")
                 debug_logger.log_auth("TOKEN_VERIFY", "org_id is null, using user_id as org_id for personal workspace", {
                     "user_id": user_id,
                     "org_id": org_id
                 })
+        
+        # CRITICAL VALIDATION: Ensure org_id is NEVER None or empty
+        # This is the final safety check before storing in claims
+        if not org_id:
+            logger.error(f"[TOKEN_VERIFY] [ERROR] org_id is still None/empty after all fallback logic | user_id={user_id}")
+            debug_logger.log_error("TOKEN_VERIFY", Exception("org_id cannot be determined"), {
+                "user_id": user_id,
+                "step": "final_validation"
+            })
+            raise UnauthorizedError("Cannot determine organization ID from token")
+        
+        # Strip whitespace and validate it's not empty after stripping
+        org_id = str(org_id).strip()
+        if not org_id:
+            logger.error(f"[TOKEN_VERIFY] [ERROR] org_id is empty string after stripping whitespace | user_id={user_id}")
+            debug_logger.log_error("TOKEN_VERIFY", Exception("org_id is empty after stripping"), {
+                "user_id": user_id,
+                "step": "final_validation"
+            })
+            raise UnauthorizedError("Organization ID cannot be empty")
+        
+        logger.info(f"[TOKEN_VERIFY] [STEP 4] ✅ Final org_id validation passed | user_id={user_id} | org_id={org_id}")
+        debug_logger.log_auth("TOKEN_VERIFY", "Final org_id validation passed", {
+            "user_id": user_id,
+            "org_id": org_id
+        })
         
         # Store the effective org_id in claims for downstream use
         claims["_effective_org_id"] = org_id
@@ -433,29 +493,62 @@ async def get_current_user(
     
     # ENHANCED DEBUG LOGGING: Log token claims
     logger.debug(
-        f"[GET_USER] [DEBUG] Token claims extracted | "
+        f"[GET_USER] [STEP 1] Token claims extracted | "
         f"user_id={user_id} | "
         f"org_id_from_token={claims.get('org_id')} | "
         f"effective_org_id={claims.get('_effective_org_id')} | "
         f"clerk_org_id={clerk_org_id} | "
         f"clerk_role={clerk_role}"
     )
+    debug_logger.log_auth("GET_USER", "Token claims extracted", {
+        "user_id": user_id,
+        "org_id_from_token": claims.get('org_id'),
+        "effective_org_id": claims.get('_effective_org_id'),
+        "clerk_org_id": clerk_org_id,
+        "clerk_role": clerk_role
+    })
     
     if not user_id:
+        logger.error("[GET_USER] [ERROR] user_id is missing from token claims")
         raise UnauthorizedError("Invalid token: missing user ID")
     
+    # CRITICAL VALIDATION: Ensure clerk_org_id is NEVER None or empty
+    # This should never happen after verify_clerk_jwt enhancements, but this is a safety check
     if not clerk_org_id:
-        # This should never happen after verify_clerk_jwt, but safety check
-        clerk_org_id = user_id
-        logger.warning(
-            f"[GET_USER] [WARNING] No org_id found, using user_id as fallback | "
+        logger.error(
+            f"[GET_USER] [ERROR] clerk_org_id is None/empty after verify_clerk_jwt | "
             f"user_id={user_id} | "
-            f"org_id={clerk_org_id}"
+            f"effective_org_id={claims.get('_effective_org_id')} | "
+            f"org_id_from_token={claims.get('org_id')}"
         )
-        debug_logger.log_auth("GET_USER", "WARNING: No org_id found, using user_id as fallback", {
+        debug_logger.log_error("GET_USER", Exception("clerk_org_id cannot be determined"), {
             "user_id": user_id,
-            "org_id": clerk_org_id
+            "effective_org_id": claims.get('_effective_org_id'),
+            "org_id_from_token": claims.get('org_id')
         })
+        raise UnauthorizedError("Cannot determine organization ID from token")
+    
+    # Strip whitespace and validate it's not empty after stripping
+    clerk_org_id = str(clerk_org_id).strip()
+    if not clerk_org_id:
+        logger.error(
+            f"[GET_USER] [ERROR] clerk_org_id is empty string after stripping | "
+            f"user_id={user_id}"
+        )
+        debug_logger.log_error("GET_USER", Exception("clerk_org_id is empty after stripping"), {
+            "user_id": user_id
+        })
+        raise UnauthorizedError("Organization ID cannot be empty")
+    
+    logger.info(
+        f"[GET_USER] [STEP 2] ✅ clerk_org_id validation passed | "
+        f"user_id={user_id} | "
+        f"clerk_org_id={clerk_org_id}"
+    )
+    debug_logger.log_auth("GET_USER", "clerk_org_id validation passed", {
+        "user_id": user_id,
+        "clerk_org_id": clerk_org_id
+    })
     
     # Try to get user from database
     # Use admin client to bypass RLS for this lookup

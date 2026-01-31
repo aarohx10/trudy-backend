@@ -66,18 +66,37 @@ async def create_call(
     
     # CRITICAL: Use clerk_org_id for organization-first approach
     clerk_org_id = current_user.get("clerk_org_id")
+    
+    # STEP 1: Explicit validation BEFORE creating call_record
+    logger.info(f"[CALLS] [CREATE] [STEP 1] Extracting clerk_org_id from current_user | clerk_org_id={clerk_org_id}")
+    
     if not clerk_org_id:
+        logger.error(f"[CALLS] [CREATE] [ERROR] Missing clerk_org_id in current_user | current_user_keys={list(current_user.keys())}")
         raise ValidationError("Missing organization ID in token")
+    
+    # Strip whitespace and validate it's not empty
+    clerk_org_id = str(clerk_org_id).strip()
+    if not clerk_org_id:
+        logger.error(f"[CALLS] [CREATE] [ERROR] clerk_org_id is empty after stripping | original_value={current_user.get('clerk_org_id')}")
+        raise ValidationError("Organization ID cannot be empty")
+    
+    logger.info(f"[CALLS] [CREATE] [STEP 2] ✅ clerk_org_id validated | clerk_org_id={clerk_org_id}")
     
     # Initialize database service with org_id context
     db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
-    # Create call record - use clerk_org_id only (organization-first approach)
+    # STEP 3: Build call record - use clerk_org_id only (organization-first approach)
+    logger.info(f"[CALLS] [CREATE] [STEP 3] Building call_record | clerk_org_id={clerk_org_id}")
+    
+    if not clerk_org_id or not clerk_org_id.strip():
+        logger.error(f"[CALLS] [CREATE] [ERROR] Invalid clerk_org_id before creating call_record | clerk_org_id={clerk_org_id}")
+        raise ValidationError(f"Invalid clerk_org_id: '{clerk_org_id}' - cannot be empty")
+    
     call_id = str(uuid.uuid4())
     call_record = {
         "id": call_id,
-        "clerk_org_id": clerk_org_id,  # CRITICAL: Organization ID for data partitioning
+        "clerk_org_id": clerk_org_id.strip(),  # CRITICAL: Organization ID for data partitioning - ensure no whitespace
         "created_by_user_id": current_user.get("clerk_user_id"),  # Track which user created the call
         "agent_id": call_data.agent_id if call_data.agent_id else None,
         "phone_number": call_data.phone_number,
@@ -87,7 +106,33 @@ async def create_call(
         "call_settings": call_data.call_settings.dict() if call_data.call_settings else {},
     }
     
-    db.insert("calls", call_record)
+    # STEP 4: Explicit validation AFTER setting clerk_org_id in call_record
+    logger.info(f"[CALLS] [CREATE] [STEP 4] Validating call_record.clerk_org_id | value={call_record.get('clerk_org_id')}")
+    
+    if "clerk_org_id" not in call_record:
+        logger.error(f"[CALLS] [CREATE] [ERROR] clerk_org_id key missing from call_record | keys={list(call_record.keys())}")
+        raise ValidationError("clerk_org_id is missing from call_record")
+    
+    if not call_record["clerk_org_id"] or not str(call_record["clerk_org_id"]).strip():
+        logger.error(f"[CALLS] [CREATE] [ERROR] clerk_org_id is empty in call_record | call_record={call_record}")
+        raise ValidationError(f"clerk_org_id cannot be empty in call_record: '{call_record.get('clerk_org_id')}'")
+    
+    logger.info(f"[CALLS] [CREATE] [STEP 4] ✅ call_record.clerk_org_id validated | value={call_record.get('clerk_org_id')}")
+    
+    # STEP 5: Log complete call_record before insert
+    logger.info(f"[CALLS] [CREATE] [STEP 5] Complete call_record before insert | call_id={call_id} | clerk_org_id={call_record.get('clerk_org_id')}")
+    
+    created_call = db.insert("calls", call_record)
+    
+    # STEP 6: Verify clerk_org_id was saved correctly
+    saved_clerk_org_id = created_call.get('clerk_org_id') if created_call else None
+    logger.info(f"[CALLS] [CREATE] [STEP 6] Call inserted | call_id={call_id} | saved_clerk_org_id={saved_clerk_org_id}")
+    
+    if not saved_clerk_org_id or not str(saved_clerk_org_id).strip():
+        logger.error(f"[CALLS] [CREATE] [ERROR] clerk_org_id is empty after insert! | call_id={call_id} | created_call={created_call}")
+        raise ValidationError(f"clerk_org_id was not saved correctly: '{saved_clerk_org_id}'")
+    
+    logger.info(f"[CALLS] [CREATE] [STEP 6] ✅ Call created successfully | call_id={call_id} | clerk_org_id={saved_clerk_org_id}")
     
     # Get agent's outbound number if this is an outbound call
     caller_id = None

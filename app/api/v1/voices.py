@@ -84,8 +84,21 @@ async def create_voice(
     try:
         # CRITICAL: Use clerk_org_id for organization-first approach
         clerk_org_id = current_user.get("clerk_org_id")
+        
+        # STEP 1: Explicit validation BEFORE creating voice_record
+        logger.info(f"[VOICES] [CREATE] [STEP 1] Extracting clerk_org_id from current_user | clerk_org_id={clerk_org_id}")
+        
         if not clerk_org_id:
+            logger.error(f"[VOICES] [CREATE] [ERROR] Missing clerk_org_id in current_user | current_user_keys={list(current_user.keys())}")
             raise ValidationError("Missing organization ID in token")
+        
+        # Strip whitespace and validate it's not empty
+        clerk_org_id = str(clerk_org_id).strip()
+        if not clerk_org_id:
+            logger.error(f"[VOICES] [CREATE] [ERROR] clerk_org_id is empty after stripping | original_value={current_user.get('clerk_org_id')}")
+            raise ValidationError("Organization ID cannot be empty")
+        
+        logger.info(f"[VOICES] [CREATE] [STEP 2] ✅ clerk_org_id validated | clerk_org_id={clerk_org_id}")
         
         user_id = current_user.get("user_id")
         request_id = getattr(request.state, "request_id", None)
@@ -498,8 +511,34 @@ async def create_voice(
                 "updated_at": now.isoformat(),
             }
             
+            # STEP 4: Explicit validation AFTER setting clerk_org_id in voice_record
+            logger.info(f"[VOICES] [CREATE] [STEP 4] Validating voice_record.clerk_org_id | value={voice_record.get('clerk_org_id')}")
+            
+            if "clerk_org_id" not in voice_record:
+                logger.error(f"[VOICES] [CREATE] [ERROR] clerk_org_id key missing from voice_record | keys={list(voice_record.keys())}")
+                raise ValidationError("clerk_org_id is missing from voice_record")
+            
+            if not voice_record["clerk_org_id"] or not str(voice_record["clerk_org_id"]).strip():
+                logger.error(f"[VOICES] [CREATE] [ERROR] clerk_org_id is empty in voice_record | voice_record={voice_record}")
+                raise ValidationError(f"clerk_org_id cannot be empty in voice_record: '{voice_record.get('clerk_org_id')}'")
+            
+            logger.info(f"[VOICES] [CREATE] [STEP 4] ✅ voice_record.clerk_org_id validated | value={voice_record.get('clerk_org_id')}")
+            
+            # STEP 5: Log complete voice_record before insert
+            logger.info(f"[VOICES] [CREATE] [STEP 5] Complete voice_record before insert | voice_id={voice_id} | clerk_org_id={voice_record.get('clerk_org_id')}")
+            
             logger.info(f"[VOICES] Saving voice to DB | voice_id={voice_id}")
-            db.insert("voices", voice_record)
+            created_voice = db.insert("voices", voice_record)
+            
+            # STEP 6: Verify clerk_org_id was saved correctly
+            saved_clerk_org_id = created_voice.get('clerk_org_id') if created_voice else None
+            logger.info(f"[VOICES] [CREATE] [STEP 6] Voice inserted | voice_id={voice_id} | saved_clerk_org_id={saved_clerk_org_id}")
+            
+            if not saved_clerk_org_id or not str(saved_clerk_org_id).strip():
+                logger.error(f"[VOICES] [CREATE] [ERROR] clerk_org_id is empty after insert! | voice_id={voice_id} | created_voice={created_voice}")
+                raise ValidationError(f"clerk_org_id was not saved correctly: '{saved_clerk_org_id}'")
+            
+            logger.info(f"[VOICES] [CREATE] [STEP 6] ✅ Voice created successfully | voice_id={voice_id} | clerk_org_id={saved_clerk_org_id}")
             
             logger.info(f"[VOICES] Voice imported successfully | voice_id={voice_id}")
             
