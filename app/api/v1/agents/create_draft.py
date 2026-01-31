@@ -232,6 +232,8 @@ async def create_draft_agent(
                 raise ValidationError(f"Failed to create agent in Ultravox: {str(uv_error)}")
         
         # MATCH KNOWLEDGE BASES PATTERN: Re-fetch at the end (after all operations)
+        # CRITICAL: Use db.org_id for re-fetch to ensure exact match with what was used during insert
+        # db.org_id is normalized and matches what DatabaseService used during insert
         logger.info(
             f"[AGENTS] [DRAFT] [FETCH] Fetching agent from database | "
             f"agent_id={agent_id} | "
@@ -239,7 +241,8 @@ async def create_draft_agent(
             f"db.org_id={db.org_id}"
         )
         try:
-            created_agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
+            # Use db.org_id instead of clerk_org_id to ensure exact match (db.org_id is normalized)
+            created_agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": db.org_id})
             
             if not created_agent:
                 # Try to fetch without org filter to see if record exists (for debugging)
@@ -247,17 +250,22 @@ async def create_draft_agent(
                     f"[AGENTS] [DRAFT] [FETCH] [ERROR] Agent not found after insert! | "
                     f"agent_id={agent_id} | "
                     f"clerk_org_id={clerk_org_id} | "
-                    f"db.org_id={db.org_id}"
+                    f"db.org_id={db.org_id} | "
+                    f"filter_used_clerk_org_id={db.org_id}"
                 )
                 # Debug: Try fetching by ID only to see if record exists
                 try:
-                    debug_agent = db.select_one("agents", {"id": agent_id})
+                    # Use admin client to bypass RLS for debugging
+                    from app.core.database import DatabaseAdminService
+                    admin_db = DatabaseAdminService()
+                    debug_agent = admin_db.select_one("agents", {"id": agent_id})
                     if debug_agent:
                         logger.error(
-                            f"[AGENTS] [DRAFT] [FETCH] [DEBUG] Agent found without org filter! | "
+                            f"[AGENTS] [DRAFT] [FETCH] [DEBUG] Agent found without org filter (via admin)! | "
                             f"agent_id={agent_id} | "
                             f"found_clerk_org_id={debug_agent.get('clerk_org_id')} | "
-                            f"expected_clerk_org_id={clerk_org_id}"
+                            f"expected_clerk_org_id={clerk_org_id} | "
+                            f"db.org_id={db.org_id}"
                         )
                     else:
                         logger.error(f"[AGENTS] [DRAFT] [FETCH] [DEBUG] Agent not found even without org filter! | agent_id={agent_id}")
@@ -271,17 +279,9 @@ async def create_draft_agent(
                 f"[AGENTS] [DRAFT] [FETCH] ✅ Agent fetched successfully | "
                 f"agent_id={agent_id} | "
                 f"clerk_org_id={fetched_clerk_org_id} | "
-                f"expected_clerk_org_id={clerk_org_id}"
+                f"expected_clerk_org_id={clerk_org_id} | "
+                f"db.org_id={db.org_id}"
             )
-            
-            # Verify fetched record has correct clerk_org_id (after normalization)
-            if fetched_clerk_org_id and str(fetched_clerk_org_id).strip() != str(clerk_org_id).strip():
-                logger.warning(
-                    f"[AGENTS] [DRAFT] [FETCH] [WARNING] Fetched record clerk_org_id differs (after normalization)! | "
-                    f"actual={fetched_clerk_org_id} | expected={clerk_org_id} | "
-                    f"Both normalized: actual={str(fetched_clerk_org_id).strip()} | expected={str(clerk_org_id).strip()}"
-                )
-                # Don't fail - might be normalization difference, but log for debugging
             
         except ValidationError:
             raise
