@@ -232,11 +232,17 @@ if [ -d "venv" ]; then
     source venv/bin/activate
     
     # Check critical packages
-    CRITICAL_PACKAGES=("fastapi" "uvicorn" "supabase" "clerk-sdk-python")
+    # Note: clerk-sdk-python is NOT required - we use PyJWT directly with Clerk's public keys
+    CRITICAL_PACKAGES=("fastapi" "uvicorn" "supabase" "jwt")
     MISSING_PACKAGES=()
     
     for package in "${CRITICAL_PACKAGES[@]}"; do
-        if ! python3 -c "import ${package//-/_}" 2>/dev/null; then
+        # Handle package name mapping (jwt -> PyJWT)
+        import_name="${package//-/_}"
+        if [ "$package" = "jwt" ]; then
+            import_name="jwt"
+        fi
+        if ! python3 -c "import $import_name" 2>/dev/null; then
             MISSING_PACKAGES+=("$package")
         fi
     done
