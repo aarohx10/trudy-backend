@@ -2,24 +2,21 @@
 Voice Cloning Endpoint - SIMPLE & SEPARATE
 Based on test_voice_clone.py - keeps it lightweight and basic
 """
-from fastapi import APIRouter, Depends, File, Form, UploadFile, Header, Request, Body
-from fastapi.responses import Response
-from typing import Optional, List, Dict, Any
+from fastapi import APIRouter, Depends, Body
+from typing import List
 from datetime import datetime
 import uuid
 import logging
-import httpx
 import base64
+import httpx
 from pydantic import BaseModel
 
-from app.core.auth import get_current_user
 from app.core.permissions import require_admin_role
 from app.core.database import DatabaseService
 from app.core.exceptions import ValidationError, ForbiddenError, ProviderError
 from app.models.schemas import VoiceResponse, ResponseMeta
 from app.core.config import settings
 from app.services.ultravox import ultravox_client
-from app.core.db_logging import log_to_database
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -116,129 +113,74 @@ async def create_voice_clone(
         ]
     }
     """
-    logger.info("=" * 80)
-    logger.info(f"[VOICE_CLONE] 🔥 CREATE VOICE CLONE ENDPOINT HIT!")
-    logger.info(f"[VOICE_CLONE] Name: {request_data.name} | Files: {len(request_data.files)}")
-    logger.info("=" * 80)
-    
-    try:
-        # CRITICAL: Use clerk_org_id for organization-first approach
-        clerk_org_id = current_user.get("clerk_org_id")
-        if not clerk_org_id:
-            raise ValidationError("Missing organization ID in token")
-        client_id = current_user.get("client_id")
-        user_id = current_user.get("user_id")
-        
-        # Permission check handled by require_admin_role dependency (applied via Depends)
-        
-        # Validation
-        name = request_data.name.strip()
-        if not name:
-            raise ValidationError("Voice name is required")
-        
-        if not request_data.files or len(request_data.files) == 0:
-            raise ValidationError("At least one audio file is required")
-        
-        # Decode base64 files to bytes (exactly like test script)
-        logger.info(f"[VOICE_CLONE] Decoding {len(request_data.files)} base64 file(s)...")
-        audio_files_bytes = []
-        for i, file_data in enumerate(request_data.files):
-            try:
-                # Decode base64 to bytes
-                audio_bytes = base64.b64decode(file_data.data)
-                audio_files_bytes.append(audio_bytes)
-                filename = file_data.filename or f"sample_{i}.mp3"
-                logger.info(f"[VOICE_CLONE] File {i+1}: {filename} | size={len(audio_bytes)} bytes")
-            except Exception as decode_error:
-                logger.error(f"[VOICE_CLONE] Failed to decode file {i+1}: {str(decode_error)}")
-                raise ValidationError(f"Invalid base64 data for file {i+1}: {str(decode_error)}")
-        
-        # Step 1: Clone to ElevenLabs (exactly like test script)
-        logger.info(f"[VOICE_CLONE] Step 1: Cloning to ElevenLabs...")
-        elevenlabs_result = await clone_to_elevenlabs(audio_files_bytes, name)
-        elevenlabs_voice_id = elevenlabs_result["voice_id"]
-        
-        # Step 2: Import to Ultravox (exactly like test script)
-        logger.info(f"[VOICE_CLONE] Step 2: Importing to Ultravox...")
-        ultravox_result = await ultravox_client.import_voice_from_provider(
-            name=name,
-            provider="elevenlabs",
-            provider_voice_id=elevenlabs_voice_id,
-            description=f"Cloned voice: {name}",
-        )
-        
-        # Extract Ultravox voice ID
-        ultravox_voice_id = (
-            ultravox_result.get("voiceId") or
-            ultravox_result.get("id") or
-            ultravox_result.get("voice_id") or
-            (ultravox_result.get("data", {}) if isinstance(ultravox_result.get("data"), dict) else {}).get("voiceId") or
-            (ultravox_result.get("data", {}) if isinstance(ultravox_result.get("data"), dict) else {}).get("id")
-        )
-        
-        if not ultravox_voice_id:
-            logger.error(f"[VOICE_CLONE] Ultravox response missing voiceId | response={ultravox_result}")
-            raise ProviderError(
-                provider="ultravox",
-                message="Ultravox response missing voiceId",
-                http_status=500,
-            )
-        
-        logger.info(f"[VOICE_CLONE] ✅ Ultravox import successful! | ultravox_voice_id={ultravox_voice_id}")
-        
-        # Step 3: Save to database
-        voice_id = str(uuid.uuid4())
-        now = datetime.utcnow()
-        
-        db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
-        db.set_auth(current_user["token"])
-        
-        voice_record = {
-            "id": voice_id,
-            "clerk_org_id": clerk_org_id,
-            "user_id": user_id,
-            "name": name,
-            "provider": "elevenlabs",
-            "type": "custom",  # Cloned voices are "custom"
-            "language": "en-US",
-            "status": "active",
-            "provider_voice_id": elevenlabs_voice_id,
-            "ultravox_voice_id": ultravox_voice_id,
-            "created_at": now.isoformat(),
-            "updated_at": now.isoformat(),
-        }
-        
-        logger.info(f"[VOICE_CLONE] Saving to database...")
-        db.insert("voices", voice_record)
-        
-        logger.info(f"[VOICE_CLONE] ✅ Voice clone created successfully!")
-        logger.info(f"[VOICE_CLONE] Summary: ElevenLabs ID={elevenlabs_voice_id} | Ultravox ID={ultravox_voice_id}")
-        
-        # Log to database
+    clerk_org_id = current_user.get("clerk_org_id")
+    if not clerk_org_id:
+        raise ValidationError("Missing organization ID in token")
+    user_id = current_user.get("user_id")
+
+    name = request_data.name.strip()
+    if not name:
+        raise ValidationError("Voice name is required")
+    if not request_data.files or len(request_data.files) == 0:
+        raise ValidationError("At least one audio file is required")
+
+    audio_files_bytes = []
+    for i, file_data in enumerate(request_data.files):
         try:
-            await log_to_database(
-                source="backend",
-                level="INFO",
-                category="voice_clone",
-                message=f"Voice clone created successfully | name={name} | elevenlabs_id={elevenlabs_voice_id} | ultravox_id={ultravox_voice_id}",
-                client_id=client_id,
-                user_id=user_id,
-            )
-        except Exception as log_error:
-            logger.warning(f"Database logging failed: {log_error}")
-        
-        return {
-            "data": VoiceResponse(**voice_record),
-            "meta": ResponseMeta(request_id=str(uuid.uuid4()), ts=now),
-        }
-        
-    except (ValidationError, ForbiddenError, ProviderError) as e:
-        logger.error(f"[VOICE_CLONE] Error: {type(e).__name__} - {str(e)}")
-        raise
-    except Exception as e:
-        logger.error(f"[VOICE_CLONE] Unexpected error: {str(e)}", exc_info=True)
+            audio_bytes = base64.b64decode(file_data.data)
+            audio_files_bytes.append(audio_bytes)
+        except Exception as decode_error:
+            raise ValidationError(f"Invalid base64 data for file {i+1}: {str(decode_error)}")
+
+    elevenlabs_result = await clone_to_elevenlabs(audio_files_bytes, name)
+    elevenlabs_voice_id = elevenlabs_result["voice_id"]
+
+    ultravox_result = await ultravox_client.import_voice_from_provider(
+        name=name,
+        provider="elevenlabs",
+        provider_voice_id=elevenlabs_voice_id,
+        description=f"Cloned voice: {name}",
+    )
+    ultravox_voice_id = (
+        ultravox_result.get("voiceId")
+        or ultravox_result.get("id")
+        or ultravox_result.get("voice_id")
+        or (ultravox_result.get("data") or {}).get("voiceId")
+        or (ultravox_result.get("data") or {}).get("id")
+    )
+    if not ultravox_voice_id:
         raise ProviderError(
-            provider="system",
-            message=f"Voice cloning failed: {str(e)}",
+            provider="ultravox",
+            message="Ultravox response missing voiceId",
             http_status=500,
         )
+
+    voice_id = str(uuid.uuid4())
+    now = datetime.utcnow()
+    db = DatabaseService(org_id=clerk_org_id)
+    voice_record = {
+        "id": voice_id,
+        "clerk_org_id": clerk_org_id,
+        "user_id": user_id,
+        "name": name,
+        "provider": "elevenlabs",
+        "type": "custom",
+        "language": "en-US",
+        "status": "active",
+        "provider_voice_id": elevenlabs_voice_id,
+        "ultravox_voice_id": ultravox_voice_id,
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+    }
+    db.insert("voices", voice_record)
+    out = dict(voice_record)
+    out["client_id"] = clerk_org_id
+    if out.get("id"):
+        out["id"] = str(out["id"])
+    for key in ("name", "provider", "type", "language", "status"):
+        if out.get(key) is None:
+            out[key] = ""
+    return {
+        "data": VoiceResponse(**out),
+        "meta": ResponseMeta(request_id=str(uuid.uuid4()), ts=now),
+    }
