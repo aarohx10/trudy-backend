@@ -108,11 +108,12 @@ class DatabaseService:
             org_id: Organization ID to set as context (organization-first approach)
         """
         self.client = get_supabase_client()
-        self.org_id = org_id
+        # CRITICAL: Normalize org_id (strip whitespace, convert to string) to ensure consistent comparisons
+        self.org_id = str(org_id).strip() if org_id else None
         
         # Set org_id context if provided
-        if org_id:
-            self.set_org_context(org_id)
+        if self.org_id:
+            self.set_org_context(self.org_id)
         
         if token:
             self.set_auth(token)
@@ -312,13 +313,20 @@ class DatabaseService:
             
             # CRITICAL: Ensure data clerk_org_id matches self.org_id (self.org_id is source of truth)
             # This prevents any possibility of mismatch between what's inserted and what's queried
-            if data.get("clerk_org_id") != self.org_id:
+            # Use normalized comparison (both stripped) to avoid false mismatches
+            data_clerk_org_id_normalized = str(data.get("clerk_org_id", "")).strip()
+            self_org_id_normalized = str(self.org_id).strip() if self.org_id else ""
+            
+            # Only override if there's an actual mismatch (not just whitespace/type differences)
+            # This allows the exact value from current_user to be used if it matches after normalization
+            if data_clerk_org_id_normalized != self_org_id_normalized:
                 logger.warning(
-                    f"[DATABASE] [INSERT] [MISMATCH] data.clerk_org_id ({data.get('clerk_org_id')}) != self.org_id ({self.org_id}) | "
+                    f"[DATABASE] [INSERT] [MISMATCH] data.clerk_org_id ({data_clerk_org_id_normalized}) != self.org_id ({self_org_id_normalized}) | "
                     f"Using self.org_id as source of truth | table={table}"
                 )
-                data["clerk_org_id"] = str(self.org_id).strip()
+                data["clerk_org_id"] = self_org_id_normalized
                 logger.info(f"[DATABASE] [INSERT] [MISMATCH] ✅ Corrected clerk_org_id to match self.org_id | value={data['clerk_org_id']}")
+            # If they match after normalization, keep the original value from data (matches knowledge bases pattern)
         
         # STEP 5: Log the final data dictionary being sent to Supabase (for debugging)
         if table == "agents":

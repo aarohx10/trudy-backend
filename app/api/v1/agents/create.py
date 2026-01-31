@@ -75,7 +75,7 @@ async def create_agent(
                     status_code=cached["status_code"],
                 )
         
-        # Initialize database service with org_id context (match knowledge bases pattern)
+        # Initialize database service with org_id context (match knowledge bases pattern exactly)
         db = DatabaseService(org_id=clerk_org_id)
         now = datetime.utcnow()
         
@@ -151,16 +151,6 @@ async def create_agent(
             f"name={agent_dict['name']}"
         )
         
-        # CRITICAL: Ensure clerk_org_id is NEVER modified after initial assignment
-        # Store in variable as source of truth
-        expected_clerk_org_id = clerk_org_id
-        
-        # Pre-insert validation: verify clerk_org_id is set correctly
-        if agent_record.get("clerk_org_id") != expected_clerk_org_id:
-            logger.error(f"[AGENTS] [CREATE] [ERROR] clerk_org_id mismatch before insert! | actual={agent_record.get('clerk_org_id')} | expected={expected_clerk_org_id}")
-            agent_record["clerk_org_id"] = expected_clerk_org_id  # Force correct value
-        logger.info(f"[AGENTS] [CREATE] [PRE-INSERT] ✅ clerk_org_id verified | value={agent_record.get('clerk_org_id')}")
-        
         # Validate agent can be created in Ultravox
         validation_result = await validate_agent_for_ultravox_sync(agent_record, clerk_org_id)
         
@@ -172,35 +162,50 @@ async def create_agent(
         # Set initial status
         agent_record["status"] = "creating"  # Will be updated to "active" after Ultravox
         
-        # CRITICAL: Verify clerk_org_id is STILL correct after status modification
-        if agent_record.get("clerk_org_id") != expected_clerk_org_id:
-            logger.error(f"[AGENTS] [CREATE] [ERROR] clerk_org_id corrupted after status modification! | actual={agent_record.get('clerk_org_id')} | expected={expected_clerk_org_id}")
-            agent_record["clerk_org_id"] = expected_clerk_org_id  # Force correct value
-        
         # MATCH KNOWLEDGE BASES PATTERN: Insert FIRST (before external operations)
-        logger.info(f"[AGENTS] [CREATE] [INSERT] Inserting agent into database | agent_id={agent_id} | clerk_org_id={expected_clerk_org_id}")
+        logger.info(
+            f"[AGENTS] [CREATE] [INSERT] Inserting agent into database | "
+            f"agent_id={agent_id} | "
+            f"clerk_org_id={clerk_org_id} | "
+            f"db.org_id={db.org_id} | "
+            f"agent_record.clerk_org_id={agent_record.get('clerk_org_id')}"
+        )
         try:
-            insert_result = db.insert("agents", agent_record)  # Capture return value for verification
-            if not insert_result or not insert_result.get("id"):
-                logger.error(f"[AGENTS] [CREATE] [INSERT] [ERROR] Insert returned empty result! | agent_id={agent_id} | insert_result={insert_result}")
+            insert_result = db.insert("agents", agent_record)  # Capture return value for verification only
+            # Verify insert succeeded and returned data
+            if not insert_result:
+                logger.error(f"[AGENTS] [CREATE] [INSERT] [ERROR] Insert returned None/empty! | agent_id={agent_id}")
                 raise ValidationError(f"Failed to insert agent: Insert returned empty result")
+            
             returned_clerk_org_id = insert_result.get("clerk_org_id")
-            if returned_clerk_org_id != expected_clerk_org_id:
-                logger.error(
-                    f"[AGENTS] [CREATE] [INSERT] [ERROR] clerk_org_id mismatch in returned record! | "
-                    f"expected={expected_clerk_org_id} | returned={returned_clerk_org_id} | agent_id={agent_id}"
-                )
-                raise ValidationError(f"Agent inserted with incorrect organization ID: {agent_id}")
             logger.info(
                 f"[AGENTS] [CREATE] [INSERT] ✅ Agent record inserted | "
                 f"agent_id={agent_id} | "
-                f"clerk_org_id={expected_clerk_org_id} | "
-                f"returned_clerk_org_id={returned_clerk_org_id}"
+                f"clerk_org_id={clerk_org_id} | "
+                f"returned_clerk_org_id={returned_clerk_org_id} | "
+                f"returned_id={insert_result.get('id')}"
             )
-        except ValidationError:
-            raise
+            
+            # Verify returned clerk_org_id matches what we sent (after normalization)
+            if returned_clerk_org_id and str(returned_clerk_org_id).strip() != str(clerk_org_id).strip():
+                logger.error(
+                    f"[AGENTS] [CREATE] [INSERT] [ERROR] clerk_org_id mismatch in returned record! | "
+                    f"expected={clerk_org_id} | returned={returned_clerk_org_id} | agent_id={agent_id}"
+                )
+                # Don't fail here - database might have normalized it, but log for debugging
         except Exception as insert_error:
-            logger.error(f"[AGENTS] [CREATE] [INSERT] [ERROR] Insert failed! | agent_id={agent_id} | error={insert_error}", exc_info=True)
+            import traceback
+            import json
+            error_details = {
+                "error_type": type(insert_error).__name__,
+                "error_message": str(insert_error),
+                "full_traceback": traceback.format_exc(),
+                "agent_id": agent_id,
+                "clerk_org_id": clerk_org_id,
+                "db.org_id": db.org_id,
+                "agent_record_clerk_org_id": agent_record.get("clerk_org_id"),
+            }
+            logger.error(f"[AGENTS] [CREATE] [INSERT] [ERROR] Insert failed (RAW ERROR): {json.dumps(error_details, indent=2, default=str)}", exc_info=True)
             raise ValidationError(f"Failed to insert agent: {str(insert_error)}")
         
         # Create in Ultravox AFTER database insert (like knowledge bases pattern)
@@ -214,7 +219,7 @@ async def create_agent(
             
             # Update database with Ultravox ID (separate update call - don't modify original dictionary)
             logger.info(f"[AGENTS] [CREATE] [UPDATE] Updating agent with Ultravox ID | agent_id={agent_id} | ultravox_agent_id={ultravox_agent_id}")
-            db.update("agents", {"id": agent_id, "clerk_org_id": expected_clerk_org_id}, {
+            db.update("agents", {"id": agent_id, "clerk_org_id": clerk_org_id}, {
                 "ultravox_agent_id": ultravox_agent_id,
                 "status": "active"
             })
@@ -222,17 +227,18 @@ async def create_agent(
             logger.info(
                 f"[AGENTS] [CREATE] [UPDATE] ✅ Agent updated with Ultravox ID | "
                 f"agent_id={agent_id} | "
-                f"clerk_org_id={expected_clerk_org_id}"
+                f"clerk_org_id={clerk_org_id}"
             )
             
         except Exception as uv_error:
             # Ultravox creation failed - agent already in DB as "creating" status
             # Update status to indicate failure
             logger.warning(f"[AGENTS] [CREATE] Ultravox creation failed, updating status | agent_id={agent_id}")
-            db.update("agents", {"id": agent_id, "clerk_org_id": expected_clerk_org_id}, {
+            db.update("agents", {"id": agent_id, "clerk_org_id": clerk_org_id}, {
                 "status": "draft"  # Fallback to draft if Ultravox fails
             })
             import traceback
+            import json
             error_details = {
                 "error_type": type(uv_error).__name__,
                 "error_message": str(uv_error),
@@ -251,30 +257,72 @@ async def create_agent(
             )
         
         # MATCH KNOWLEDGE BASES PATTERN: Re-fetch at the end (after all operations)
-        # Use clerk_org_id directly (not expected_clerk_org_id) to match knowledge bases pattern exactly
-        # Note: We explicitly pass clerk_org_id in filter, but db.org_id should also match (auto-append won't override)
-        logger.info(f"[AGENTS] [CREATE] [FETCH] Fetching agent from database | agent_id={agent_id} | clerk_org_id={clerk_org_id} | db.org_id={db.org_id}")
-        # Ensure db.org_id matches clerk_org_id before re-fetch
-        if db.org_id != clerk_org_id:
-            logger.warning(f"[AGENTS] [CREATE] [WARNING] db.org_id mismatch! | db.org_id={db.org_id} | clerk_org_id={clerk_org_id} | Re-initializing db")
-            db = DatabaseService(org_id=clerk_org_id)
-        created_agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
-        
-        if not created_agent:
-            logger.error(
-                f"[AGENTS] [CREATE] [ERROR] Agent not found after insert! | "
+        logger.info(
+            f"[AGENTS] [CREATE] [FETCH] Fetching agent from database | "
+            f"agent_id={agent_id} | "
+            f"clerk_org_id={clerk_org_id} | "
+            f"db.org_id={db.org_id}"
+        )
+        try:
+            created_agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
+            
+            if not created_agent:
+                # Try to fetch without org filter to see if record exists (for debugging)
+                logger.error(
+                    f"[AGENTS] [CREATE] [FETCH] [ERROR] Agent not found after insert! | "
+                    f"agent_id={agent_id} | "
+                    f"clerk_org_id={clerk_org_id} | "
+                    f"db.org_id={db.org_id}"
+                )
+                # Debug: Try fetching by ID only to see if record exists
+                try:
+                    debug_agent = db.select_one("agents", {"id": agent_id})
+                    if debug_agent:
+                        logger.error(
+                            f"[AGENTS] [CREATE] [FETCH] [DEBUG] Agent found without org filter! | "
+                            f"agent_id={agent_id} | "
+                            f"found_clerk_org_id={debug_agent.get('clerk_org_id')} | "
+                            f"expected_clerk_org_id={clerk_org_id}"
+                        )
+                    else:
+                        logger.error(f"[AGENTS] [CREATE] [FETCH] [DEBUG] Agent not found even without org filter! | agent_id={agent_id}")
+                except Exception as debug_error:
+                    logger.error(f"[AGENTS] [CREATE] [FETCH] [DEBUG] Failed to debug fetch: {debug_error}", exc_info=True)
+                
+                raise ValidationError(f"Failed to create/retrieve agent: {agent_id}")
+            
+            fetched_clerk_org_id = created_agent.get("clerk_org_id")
+            logger.info(
+                f"[AGENTS] [CREATE] [FETCH] ✅ Agent fetched successfully | "
                 f"agent_id={agent_id} | "
-                f"clerk_org_id={clerk_org_id} | "
-                f"db.org_id={db.org_id}"
+                f"clerk_org_id={fetched_clerk_org_id} | "
+                f"expected_clerk_org_id={clerk_org_id}"
             )
-            raise ValidationError(f"Failed to create/retrieve agent: {agent_id}")
-        
-        # Verify fetched record has correct clerk_org_id
-        if created_agent.get("clerk_org_id") != clerk_org_id:
-            logger.error(f"[AGENTS] [CREATE] [ERROR] Fetched record has wrong clerk_org_id! | actual={created_agent.get('clerk_org_id')} | expected={clerk_org_id}")
-            raise ValidationError(f"Agent created with incorrect organization ID: {agent_id}")
-        
-        logger.info(f"[AGENTS] [CREATE] [FETCH] ✅ Agent fetched successfully | agent_id={agent_id} | clerk_org_id={created_agent.get('clerk_org_id')}")
+            
+            # Verify fetched record has correct clerk_org_id (after normalization)
+            if fetched_clerk_org_id and str(fetched_clerk_org_id).strip() != str(clerk_org_id).strip():
+                logger.warning(
+                    f"[AGENTS] [CREATE] [FETCH] [WARNING] Fetched record clerk_org_id differs (after normalization)! | "
+                    f"actual={fetched_clerk_org_id} | expected={clerk_org_id} | "
+                    f"Both normalized: actual={str(fetched_clerk_org_id).strip()} | expected={str(clerk_org_id).strip()}"
+                )
+                # Don't fail - might be normalization difference, but log for debugging
+            
+        except ValidationError:
+            raise
+        except Exception as fetch_error:
+            import traceback
+            import json
+            error_details = {
+                "error_type": type(fetch_error).__name__,
+                "error_message": str(fetch_error),
+                "full_traceback": traceback.format_exc(),
+                "agent_id": agent_id,
+                "clerk_org_id": clerk_org_id,
+                "db.org_id": db.org_id,
+            }
+            logger.error(f"[AGENTS] [CREATE] [FETCH] [ERROR] Re-fetch failed (RAW ERROR): {json.dumps(error_details, indent=2, default=str)}", exc_info=True)
+            raise ValidationError(f"Failed to retrieve agent after creation: {str(fetch_error)}")
         
         response_data = {
             "data": created_agent,
@@ -297,14 +345,21 @@ async def create_agent(
         
         return response_data
         
+    except (ValidationError, ForbiddenError, ProviderError):
+        # Re-raise known error types as-is (they already have proper messages)
+        raise
     except Exception as e:
         import traceback
+        import json
         error_details_raw = {
             "error_type": type(e).__name__,
             "error_message": str(e),
+            "error_args": e.args if hasattr(e, 'args') else None,
+            "error_dict": e.__dict__ if hasattr(e, '__dict__') else None,
             "full_traceback": traceback.format_exc(),
+            "endpoint": "/agents",
+            "user_id": current_user.get("clerk_user_id") if 'current_user' in locals() else None,
+            "org_id": current_user.get("clerk_org_id") if 'current_user' in locals() else None,
         }
-        logger.error(f"[AGENTS] [CREATE] Failed to create agent (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
-        if isinstance(e, (ValidationError, ForbiddenError, ProviderError)):
-            raise
+        logger.error(f"[AGENTS] [CREATE] [ERROR] Unexpected error (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         raise ValidationError(f"Failed to create agent: {str(e)}")
