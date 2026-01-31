@@ -92,8 +92,8 @@ async def create_draft_agent(
             logger.warning(f"[AGENTS] [DRAFT] Ultravox creation failed (non-critical): {e}")
             # Agent stays as "draft"
         
-        # Simple re-fetch
-        created_agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
+        # Simple re-fetch - let select_one auto-append clerk_org_id using db.org_id (matches what was used during insert)
+        created_agent = db.select_one("agents", {"id": agent_id})
         
         if not created_agent:
             raise ValidationError(f"Failed to retrieve agent after creation: {agent_id}")
