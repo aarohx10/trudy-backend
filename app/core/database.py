@@ -97,94 +97,18 @@ def get_db_client(org_id: Optional[str] = None) -> Client:
 
 
 class DatabaseService:
-    """Database service with RLS support and org_id context"""
+    """Simple database service - no RLS, no auto-append, just direct queries"""
     
     def __init__(self, token: Optional[str] = None, org_id: Optional[str] = None):
-        """
-        Initialize database service with optional org_id context.
-        
-        Args:
-            token: JWT token for RLS (legacy)
-            org_id: Organization ID to set as context (organization-first approach)
-        """
+        """Initialize database service"""
         self.client = get_supabase_client()
-        # CRITICAL: Normalize org_id (strip whitespace, convert to string) to ensure consistent comparisons
         self.org_id = str(org_id).strip() if org_id else None
-        
-        # Set org_id context if provided
-        if self.org_id:
-            self.set_org_context(self.org_id)
-        
-        if token:
-            self.set_auth(token)
-    
-    def set_org_context(self, org_id: str):
-        """
-        Set organization ID context for this database connection.
-        Executes: SET LOCAL app.current_org_id = org_id
-        
-        CRITICAL: Must be called before EVERY query because Supabase HTTP client
-        doesn't maintain session state across requests. Each HTTP request uses a
-        new connection, so SET LOCAL context is lost.
-        """
-        try:
-            # Call RPC function to set org_id context
-            # This must be called before each query since Supabase uses HTTP (no persistent connections)
-            result = self.client.rpc("set_org_context", {"org_id": org_id}).execute()
-            self.org_id = org_id
-            logger.debug(f"Set org_id context: {org_id}")
-        except Exception as e:
-            # Log error but don't fail - RLS will block if context isn't set, which is safe
-            logger.error(f"CRITICAL: Could not set org_id context: {e}. RLS policies will block access.", exc_info=True)
-            # Don't raise - let RLS handle security (safer than allowing access without context)
-    
-    def set_auth(self, token: Optional[str]):
-        """Set authentication context if token is a Supabase-issued JWT"""
-        if not token or not self._is_supabase_token(token):
-            logger.debug("Skipping Supabase auth context: non-Supabase token provided")
-            return
-        set_auth_context(token)
-    
-    @staticmethod
-    def _is_supabase_token(token: str) -> bool:
-        """Check whether the JWT was issued by Supabase"""
-        try:
-            claims = jose_jwt.get_unverified_claims(token)
-            issuer = claims.get("iss", "")
-            return issuer.startswith(settings.SUPABASE_URL)
-        except Exception:
-            return False
     
     # Generic CRUD operations
     def select(self, table: str, filters: Optional[Dict[str, Any]] = None, order_by: Optional[str] = None, limit: Optional[int] = None, offset: Optional[int] = None) -> List[Dict[str, Any]]:
-        """Select records from table
-        
-        CRITICAL: Automatically appends clerk_org_id filter when org_id is set and table is org-scoped.
-        This ensures absolute data isolation at the application layer.
-        """
-        # CRITICAL: Re-set org context before each query (Supabase HTTP client doesn't maintain session state)
-        if self.org_id:
-            self.set_org_context(self.org_id)
-        
-        # #region debug log
-        import json
-        try:
-            with open(r"d:\Users\Admin\Downloads\Truedy Main\.cursor\debug.log", "a", encoding="utf-8") as f:
-                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"K","location":"database.py:99","message":"Database select called","data":{"table":table,"filters":filters,"order_by":order_by,"limit":limit,"offset":offset},"timestamp":int(__import__("time").time()*1000)})+"\n")
-        except: pass
-        # #endregion
-        
-        # Initialize filters dict if None
+        """Select records from table - SIMPLE: Use filters as provided"""
         if filters is None:
             filters = {}
-        
-        # CRITICAL: Auto-append clerk_org_id filter for org-scoped tables
-        org_scoped_tables = ["agents", "calls", "voices", "knowledge_bases", "tools", "contacts", "contact_folders", "campaigns", "webhook_endpoints"]
-        if table in org_scoped_tables and self.org_id:
-            # Only append if not already present (allows explicit override if needed)
-            if "clerk_org_id" not in filters:
-                filters["clerk_org_id"] = self.org_id
-                logger.debug(f"[DATABASE] [SELECT] Auto-appended clerk_org_id filter | table={table} | org_id={self.org_id}")
         
         query = self.client.table(table).select("*")
         
@@ -193,16 +117,13 @@ class DatabaseService:
                 query = query.eq(key, value)
         
         if order_by:
-            # Handle "column DESC" or "column ASC" format
             parts = order_by.split()
             col = parts[0]
             descending = True
             if len(parts) > 1:
                 descending = parts[1].upper() == "DESC"
-            
             query = query.order(col, desc=descending)
         
-        # Apply pagination if provided
         if limit is not None:
             query = query.limit(limit)
         if offset is not None:
@@ -212,213 +133,24 @@ class DatabaseService:
         return response.data if response.data else []
     
     def select_one(self, table: str, filters: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Select single record
-        
-        CRITICAL: Automatically appends clerk_org_id filter when org_id is set and table is org-scoped.
-        This ensures absolute data isolation at the application layer.
-        """
-        # CRITICAL: Re-set org context before each query (Supabase HTTP client doesn't maintain session state)
-        if self.org_id:
-            self.set_org_context(self.org_id)
-        
-        # Initialize filters dict if None
+        """Select single record - SIMPLE: Use filters as provided"""
         if filters is None:
             filters = {}
         
-        # CRITICAL: Auto-append clerk_org_id filter for org-scoped tables
-        org_scoped_tables = ["agents", "calls", "voices", "knowledge_bases", "tools", "contacts", "contact_folders", "campaigns", "webhook_endpoints"]
-        original_filters = filters.copy()
-        
-        if table in org_scoped_tables and self.org_id:
-            # Only append if not already present (allows explicit override if needed)
-            if "clerk_org_id" not in filters:
-                filters["clerk_org_id"] = self.org_id
-                logger.info(
-                    f"[DATABASE] [SELECT_ONE] Auto-appended clerk_org_id filter | "
-                    f"table={table} | org_id={self.org_id} | "
-                    f"original_filters={original_filters} | final_filters={filters}"
-                )
-            else:
-                logger.info(
-                    f"[DATABASE] [SELECT_ONE] Using explicit clerk_org_id filter | "
-                    f"table={table} | filter_clerk_org_id={filters.get('clerk_org_id')} | "
-                    f"self.org_id={self.org_id} | filters={filters}"
-                )
-        else:
-            logger.info(
-                f"[DATABASE] [SELECT_ONE] No auto-append (not org-scoped or no org_id) | "
-                f"table={table} | self.org_id={self.org_id} | filters={filters}"
-            )
-        
         results = self.select(table, filters)
-        logger.info(
-            f"[DATABASE] [SELECT_ONE] Query completed | "
-            f"table={table} | filters={filters} | results_count={len(results)}"
-        )
         return results[0] if results else None
     
     def insert(self, table: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Insert record"""
-        # CRITICAL: Re-set org context before each query (Supabase HTTP client doesn't maintain session state)
-        if self.org_id:
-            self.set_org_context(self.org_id)
-        
-        # CRITICAL: For tables with clerk_org_id, ensure it's ALWAYS set and never empty
-        # This is a multi-layer safety check to prevent empty clerk_org_id values
-        org_scoped_tables = ["agents", "calls", "voices", "knowledge_bases", "tools", "contacts", "contact_folders", "campaigns", "webhook_endpoints"]
-        
-        if table in org_scoped_tables:
-            logger.info(f"[DATABASE] [INSERT] [STEP 1] Processing insert for {table} | data_clerk_org_id={data.get('clerk_org_id')} | self.org_id={self.org_id}")
-            
-            # STEP 1: Check if clerk_org_id exists in data
-            if "clerk_org_id" in data:
-                # STEP 2: If exists but is empty/None, replace with self.org_id
-                clerk_org_id_value = data["clerk_org_id"]
-                if not clerk_org_id_value or (isinstance(clerk_org_id_value, str) and clerk_org_id_value.strip() == ""):
-                    logger.warning(
-                        f"[DATABASE] [INSERT] [STEP 2] clerk_org_id in data is empty/None, replacing with self.org_id | "
-                        f"table={table} | original_value={clerk_org_id_value} | self.org_id={self.org_id}"
-                    )
-                    if self.org_id:
-                        data["clerk_org_id"] = str(self.org_id).strip()
-                        logger.info(f"[DATABASE] [INSERT] [STEP 2] ✅ Replaced empty clerk_org_id with self.org_id | value={data['clerk_org_id']}")
-                    else:
-                        logger.error(
-                            f"[DATABASE] [INSERT] [ERROR] clerk_org_id is empty AND self.org_id is None! | "
-                            f"table={table} | data_keys={list(data.keys())}"
-                        )
-                        raise ValueError(f"Cannot insert {table} with empty clerk_org_id and no org_id context")
-                else:
-                    # Strip whitespace to ensure clean value
-                    data["clerk_org_id"] = str(clerk_org_id_value).strip()
-                    logger.info(f"[DATABASE] [INSERT] [STEP 2] ✅ clerk_org_id validated and stripped | value={data['clerk_org_id']}")
-            else:
-                # STEP 3: If clerk_org_id is missing, add it from self.org_id
-                if self.org_id:
-                    logger.warning(
-                        f"[DATABASE] [INSERT] [STEP 3] Missing clerk_org_id in {table} insert data, adding from org_id context | "
-                        f"self.org_id={self.org_id}"
-                    )
-                    data["clerk_org_id"] = str(self.org_id).strip()
-                    logger.info(f"[DATABASE] [INSERT] [STEP 3] ✅ Added clerk_org_id from self.org_id | value={data['clerk_org_id']}")
-                else:
-                    logger.error(
-                        f"[DATABASE] [INSERT] [ERROR] Missing clerk_org_id in data AND self.org_id is None! | "
-                        f"table={table} | data_keys={list(data.keys())}"
-                    )
-                    raise ValueError(f"Cannot insert {table} without clerk_org_id and no org_id context")
-            
-            # STEP 4: Final validation - ensure clerk_org_id is not empty after all processing
-            final_clerk_org_id = data.get("clerk_org_id")
-            if not final_clerk_org_id or (isinstance(final_clerk_org_id, str) and final_clerk_org_id.strip() == ""):
-                logger.error(
-                    f"[DATABASE] [INSERT] [ERROR] clerk_org_id is still empty after all processing! | "
-                    f"table={table} | final_value={final_clerk_org_id} | self.org_id={self.org_id} | data_keys={list(data.keys())}"
-                )
-                # CRITICAL: If self.org_id exists, use it as final fallback
-                if self.org_id and str(self.org_id).strip():
-                    logger.warning(
-                        f"[DATABASE] [INSERT] [FALLBACK] Using self.org_id as final fallback | "
-                        f"table={table} | self.org_id={self.org_id}"
-                    )
-                    data["clerk_org_id"] = str(self.org_id).strip()
-                    final_clerk_org_id = data["clerk_org_id"]
-                else:
-                    raise ValueError(f"Cannot insert {table} with empty clerk_org_id and no org_id context")
-            
-            # STEP 4b: Double-check after fallback
-            if not final_clerk_org_id or (isinstance(final_clerk_org_id, str) and final_clerk_org_id.strip() == ""):
-                logger.error(
-                    f"[DATABASE] [INSERT] [ERROR] clerk_org_id is STILL empty after fallback! | "
-                    f"table={table} | final_value={final_clerk_org_id} | self.org_id={self.org_id}"
-                )
-                raise ValueError(f"Cannot insert {table} with empty clerk_org_id - database constraint violation")
-            
-            logger.info(f"[DATABASE] [INSERT] [STEP 4] ✅ Final clerk_org_id validation passed | table={table} | clerk_org_id={final_clerk_org_id}")
-            
-            # CRITICAL: Ensure data clerk_org_id matches self.org_id (self.org_id is source of truth)
-            # This prevents any possibility of mismatch between what's inserted and what's queried
-            # Use normalized comparison (both stripped) to avoid false mismatches
-            data_clerk_org_id_normalized = str(data.get("clerk_org_id", "")).strip()
-            self_org_id_normalized = str(self.org_id).strip() if self.org_id else ""
-            
-            # Only override if there's an actual mismatch (not just whitespace/type differences)
-            # This allows the exact value from current_user to be used if it matches after normalization
-            if data_clerk_org_id_normalized != self_org_id_normalized:
-                logger.warning(
-                    f"[DATABASE] [INSERT] [MISMATCH] data.clerk_org_id ({data_clerk_org_id_normalized}) != self.org_id ({self_org_id_normalized}) | "
-                    f"Using self.org_id as source of truth | table={table}"
-                )
-                data["clerk_org_id"] = self_org_id_normalized
-                logger.info(f"[DATABASE] [INSERT] [MISMATCH] ✅ Corrected clerk_org_id to match self.org_id | value={data['clerk_org_id']}")
-            # If they match after normalization, keep the original value from data (matches knowledge bases pattern)
-        
-        # STEP 5: Log the final data dictionary being sent to Supabase (for debugging)
-        if table == "agents":
-            logger.info(
-                f"[DATABASE] [INSERT] [STEP 5] Final data dictionary before Supabase insert | "
-                f"table={table} | clerk_org_id={data.get('clerk_org_id')} | data_keys={list(data.keys())}"
-            )
+        """Insert record - SIMPLE: Use what's in data, don't override"""
+        # For agents table: Just strip whitespace if clerk_org_id exists, don't override
+        if table == "agents" and "clerk_org_id" in data:
+            data["clerk_org_id"] = str(data["clerk_org_id"]).strip()
         
         response = self.client.table(table).insert(data).execute()
-        
-        # STEP 6: Verify the returned record has clerk_org_id set and matches self.org_id
-        if response.data and table in org_scoped_tables:
-            returned_record = response.data[0]
-            returned_clerk_org_id = returned_record.get("clerk_org_id")
-            logger.info(
-                f"[DATABASE] [INSERT] [STEP 6] Insert completed | "
-                f"table={table} | returned_clerk_org_id={returned_clerk_org_id} | expected_org_id={self.org_id}"
-            )
-            
-            if not returned_clerk_org_id or (isinstance(returned_clerk_org_id, str) and returned_clerk_org_id.strip() == ""):
-                logger.error(
-                    f"[DATABASE] [INSERT] [ERROR] clerk_org_id is empty in returned record! | "
-                    f"table={table} | returned_clerk_org_id={returned_clerk_org_id} | returned_record_keys={list(returned_record.keys())}"
-                )
-                # Don't raise here - database constraint should have caught this, but log for debugging
-            elif self.org_id and returned_clerk_org_id != self.org_id:
-                logger.error(
-                    f"[DATABASE] [INSERT] [ERROR] Returned record clerk_org_id mismatch! | "
-                    f"table={table} | returned_clerk_org_id={returned_clerk_org_id} | expected_org_id={self.org_id} | "
-                    f"This indicates a database-level issue (trigger, RLS, etc.)"
-                )
-                # Attempt to re-fetch with correct filter (for debugging)
-                try:
-                    refetch_record = self.select_one(table, {"id": returned_record.get("id"), "clerk_org_id": self.org_id})
-                    if refetch_record:
-                        logger.warning(
-                            f"[DATABASE] [INSERT] [REFETCH] Agent found with correct filter | "
-                            f"table={table} | id={returned_record.get('id')} | refetch_clerk_org_id={refetch_record.get('clerk_org_id')}"
-                        )
-                    else:
-                        logger.error(
-                            f"[DATABASE] [INSERT] [REFETCH] Agent NOT found with correct filter! | "
-                            f"table={table} | id={returned_record.get('id')} | This is a critical data isolation issue"
-                        )
-                except Exception as refetch_error:
-                    logger.error(f"[DATABASE] [INSERT] [REFETCH] Failed to re-fetch record: {refetch_error}", exc_info=True)
-        
         return response.data[0] if response.data else {}
     
     def update(self, table: str, filters: Dict[str, Any], data: Dict[str, Any]) -> Dict[str, Any]:
-        """Update records
-        
-        CRITICAL: Automatically appends clerk_org_id filter when org_id is set and table is org-scoped.
-        This ensures absolute data isolation at the application layer.
-        """
-        # CRITICAL: Re-set org context before each query (Supabase HTTP client doesn't maintain session state)
-        if self.org_id:
-            self.set_org_context(self.org_id)
-        
-        # CRITICAL: Auto-append clerk_org_id filter for org-scoped tables
-        org_scoped_tables = ["agents", "calls", "voices", "knowledge_bases", "tools", "contacts", "contact_folders", "campaigns", "webhook_endpoints"]
-        if table in org_scoped_tables and self.org_id:
-            # Only append if not already present (allows explicit override if needed)
-            if "clerk_org_id" not in filters:
-                filters["clerk_org_id"] = self.org_id
-                logger.debug(f"[DATABASE] [UPDATE] Auto-appended clerk_org_id filter | table={table} | org_id={self.org_id}")
-        
+        """Update records - SIMPLE: Use filters as provided"""
         query = self.client.table(table).update(data)
         
         for key, value in filters.items():
@@ -428,23 +160,7 @@ class DatabaseService:
         return response.data[0] if response.data else {}
     
     def delete(self, table: str, filters: Dict[str, Any]) -> bool:
-        """Delete records
-        
-        CRITICAL: Automatically appends clerk_org_id filter when org_id is set and table is org-scoped.
-        This ensures absolute data isolation at the application layer.
-        """
-        # CRITICAL: Re-set org context before each query (Supabase HTTP client doesn't maintain session state)
-        if self.org_id:
-            self.set_org_context(self.org_id)
-        
-        # CRITICAL: Auto-append clerk_org_id filter for org-scoped tables
-        org_scoped_tables = ["agents", "calls", "voices", "knowledge_bases", "tools", "contacts", "contact_folders", "campaigns", "webhook_endpoints"]
-        if table in org_scoped_tables and self.org_id:
-            # Only append if not already present (allows explicit override if needed)
-            if "clerk_org_id" not in filters:
-                filters["clerk_org_id"] = self.org_id
-                logger.debug(f"[DATABASE] [DELETE] Auto-appended clerk_org_id filter | table={table} | org_id={self.org_id}")
-        
+        """Delete records - SIMPLE: Use filters as provided"""
         query = self.client.table(table).delete()
         
         for key, value in filters.items():
@@ -454,26 +170,9 @@ class DatabaseService:
         return len(response.data) > 0
     
     def count(self, table: str, filters: Optional[Dict[str, Any]] = None) -> int:
-        """Count records
-        
-        CRITICAL: Automatically appends clerk_org_id filter when org_id is set and table is org-scoped.
-        This ensures absolute data isolation at the application layer.
-        """
-        # CRITICAL: Re-set org context before each query (Supabase HTTP client doesn't maintain session state)
-        if self.org_id:
-            self.set_org_context(self.org_id)
-        
-        # Initialize filters dict if None
+        """Count records - SIMPLE: Use filters as provided"""
         if filters is None:
             filters = {}
-        
-        # CRITICAL: Auto-append clerk_org_id filter for org-scoped tables
-        org_scoped_tables = ["agents", "calls", "voices", "knowledge_bases", "tools", "contacts", "contact_folders", "campaigns", "webhook_endpoints"]
-        if table in org_scoped_tables and self.org_id:
-            # Only append if not already present (allows explicit override if needed)
-            if "clerk_org_id" not in filters:
-                filters["clerk_org_id"] = self.org_id
-                logger.debug(f"[DATABASE] [COUNT] Auto-appended clerk_org_id filter | table={table} | org_id={self.org_id}")
         
         query = self.client.table(table).select("*", count="exact")
         
