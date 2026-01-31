@@ -24,7 +24,6 @@ router = APIRouter()
 async def create_draft_agent(
     payload: Dict[str, Any] = Body(default={}),
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Create a draft agent with default settings, optionally from a template"""
     # Permission check handled by require_admin_role dependency
@@ -34,8 +33,6 @@ async def create_draft_agent(
         clerk_org_id = current_user.get("clerk_org_id")
         if not clerk_org_id:
             raise ValidationError("Missing organization ID in token")
-        
-        client_id = current_user.get("client_id")  # Legacy field
         
         # Initialize database service with org_id context
         db = DatabaseService(org_id=clerk_org_id)
@@ -64,11 +61,10 @@ async def create_draft_agent(
             name = template.get("name", "Untitled Agent")
             system_prompt = template.get("system_prompt", system_prompt)
         
-        # Build agent record
+        # Build agent record - use clerk_org_id only (organization-first approach)
         # Note: Some fields require migration 015_expand_agents_table.sql to be run
         agent_record = {
             "id": agent_id,
-            "client_id": client_id,  # Legacy field
             "clerk_org_id": clerk_org_id,  # CRITICAL: Organization ID for data partitioning
             "name": name,
             "description": template.get("description") if template else "Draft agent",
@@ -98,12 +94,12 @@ async def create_draft_agent(
              pass
         
         # Validate agent can be created in Ultravox
-        validation_result = await validate_agent_for_ultravox_sync(agent_record, client_id)
+        validation_result = await validate_agent_for_ultravox_sync(agent_record, clerk_org_id)
         
         if validation_result["can_sync"]:
             # Create in Ultravox FIRST
             try:
-                ultravox_response = await create_agent_ultravox_first(agent_record, client_id)
+                ultravox_response = await create_agent_ultravox_first(agent_record, clerk_org_id)
                 ultravox_agent_id = ultravox_response.get("agentId")
                 
                 if not ultravox_agent_id:

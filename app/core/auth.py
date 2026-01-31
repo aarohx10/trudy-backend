@@ -281,9 +281,12 @@ async def ensure_admin_role_for_creator(
     
     This function handles all edge cases:
     - Clerk org admins → always admin
-    - First user in organization (by client_id) → admin
+    - First user in organization (by clerk_org_id) → admin
     - First user in personal workspace (by clerk_org_id) → admin
     - Updates database immediately for consistency
+    
+    NOTE: Uses clerk_org_id for organization scoping (organization-first approach).
+    client_id is only used for billing/audit tables, not for main app operations.
     
     Args:
         user_id: Clerk user ID
@@ -335,52 +338,31 @@ async def ensure_admin_role_for_creator(
             return "client_admin"
         
         # Personal workspace case: Check if user is first/only user
+        # NOTE: Use clerk_org_id for all role determination (organization-first approach)
         try:
-            if client_id:
-                # Standard case: Check users by client_id
-                logger.debug(f"[ROLE_DETERMINATION] Checking users by client_id={client_id}")
-                org_users = admin_db.table("users").select("id,role,clerk_user_id").eq("client_id", client_id).execute()
+            # Check users by clerk_org_id (organization-first approach)
+            logger.debug(f"[ROLE_DETERMINATION] Checking users by clerk_org_id={clerk_org_id}")
+            org_users = admin_db.table("users").select("id,role,clerk_user_id,clerk_org_id").eq("clerk_org_id", clerk_org_id).execute()
+            
+            if org_users.data:
+                # Check if any other users are admins (excluding current user)
+                other_admins = [
+                    u for u in org_users.data 
+                    if u.get("clerk_user_id") != user_id and u.get("role") == "client_admin"
+                ]
                 
-                if org_users.data:
-                    # Check if any other users are admins (excluding current user)
-                    other_admins = [
-                        u for u in org_users.data 
-                        if u.get("clerk_user_id") != user_id and u.get("role") == "client_admin"
-                    ]
-                    
-                    if not other_admins:
-                        # This user is the first admin - upgrade them
-                        logger.info(f"[ROLE_DETERMINATION] User {user_id} is first user in client_id={client_id} → upgrading to client_admin")
-                        admin_db.table("users").update({"role": "client_admin"}).eq("clerk_user_id", user_id).execute()
-                        return "client_admin"
-                    else:
-                        logger.debug(f"[ROLE_DETERMINATION] User {user_id} is not first user ({len(other_admins)} other admins exist)")
-                else:
-                    logger.warning(f"[ROLE_DETERMINATION] No users found with client_id={client_id} (unexpected)")
-            else:
-                # Personal workspace case: Check users by clerk_org_id
-                logger.debug(f"[ROLE_DETERMINATION] client_id is None, checking users by clerk_org_id={clerk_org_id}")
-                org_users = admin_db.table("users").select("id,role,clerk_user_id,clerk_org_id").eq("clerk_org_id", clerk_org_id).execute()
-                
-                if org_users.data:
-                    # Check if any other users are admins (excluding current user)
-                    other_admins = [
-                        u for u in org_users.data 
-                        if u.get("clerk_user_id") != user_id and u.get("role") == "client_admin"
-                    ]
-                    
-                    if not other_admins:
-                        # This user is the first admin in personal workspace - upgrade them
-                        logger.info(f"[ROLE_DETERMINATION] User {user_id} is first user in personal workspace clerk_org_id={clerk_org_id} → upgrading to client_admin")
-                        admin_db.table("users").update({"role": "client_admin"}).eq("clerk_user_id", user_id).execute()
-                        return "client_admin"
-                    else:
-                        logger.debug(f"[ROLE_DETERMINATION] User {user_id} is not first user ({len(other_admins)} other admins exist)")
-                else:
-                    # No users found - this is a new user, upgrade them immediately
-                    logger.info(f"[ROLE_DETERMINATION] No users found with clerk_org_id={clerk_org_id} → new user, upgrading to client_admin")
+                if not other_admins:
+                    # This user is the first admin - upgrade them
+                    logger.info(f"[ROLE_DETERMINATION] User {user_id} is first user in clerk_org_id={clerk_org_id} → upgrading to client_admin")
                     admin_db.table("users").update({"role": "client_admin"}).eq("clerk_user_id", user_id).execute()
                     return "client_admin"
+                else:
+                    logger.debug(f"[ROLE_DETERMINATION] User {user_id} is not first user ({len(other_admins)} other admins exist)")
+            else:
+                # No users found - this is a new user, upgrade them immediately
+                logger.info(f"[ROLE_DETERMINATION] No users found with clerk_org_id={clerk_org_id} → new user, upgrading to client_admin")
+                admin_db.table("users").update({"role": "client_admin"}).eq("clerk_user_id", user_id).execute()
+                return "client_admin"
         except Exception as e:
             logger.error(f"[ROLE_DETERMINATION] Failed to check/upgrade user role: {e}", exc_info=True)
             # On error, grant admin to be safe (SIMPLIFIED LOGIC)
@@ -422,7 +404,6 @@ async def ensure_admin_role_for_creator(
 
 async def get_current_user(
     authorization: Optional[str] = Header(None),
-    x_client_id: Optional[str] = Header(None),
 ) -> Dict[str, Any]:
     """
     Get current user from Clerk JWT token.
@@ -530,8 +511,9 @@ async def get_current_user(
     result = user_context.dict()
     # Add legacy fields for backward compatibility
     result["user_id"] = user_id
-    # CRITICAL: Populate client_id from DB so legacy fields (e.g. agent_record["client_id"]) and
-    # auth endpoints (/clients, /users, api_keys) work. User is created with client_id by /auth/me.
+    # NOTE: client_id is kept only for billing/audit endpoints (clients, users, api_keys, credit_transactions)
+    # Main app tables (agents, voices, calls, campaigns, etc.) use clerk_org_id only
+    # client_id is populated from user_data if it exists (for billing endpoints), but not actively fetched
     result["client_id"] = user_data.get("client_id") if user_data else None
     result["token_type"] = "clerk"
     
@@ -542,7 +524,7 @@ async def get_current_user(
         f"clerk_org_id={clerk_org_id} | "
         f"role={role} | "
         f"clerk_role={clerk_role} | "
-        f"client_id={result.get('client_id')} | "
+        f"client_id={result.get('client_id')} (billing only) | "
         f"user_in_db={'yes' if user_data else 'no'} | "
         f"token_type=clerk"
     )
@@ -570,7 +552,7 @@ async def get_optional_current_user(
         return None
     
     try:
-        return await get_current_user(authorization, x_client_id)
+        return await get_current_user(authorization)
     except Exception:
         # Any auth error returns None instead of raising
         return None

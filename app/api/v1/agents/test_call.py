@@ -28,7 +28,6 @@ async def create_test_call(
     agent_id: str,
     test_call_data: AgentTestCallRequest = Body(...),
     current_user: dict = Depends(get_current_user),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Create WebRTC test call for agent"""
     try:

@@ -41,14 +41,14 @@ def require_admin_role(
     if role not in ["client_admin", "agency_admin"]:
         # ENHANCED DEBUG LOGGING: Log all context for debugging
         clerk_org_id = current_user.get("clerk_org_id")
-        client_id = current_user.get("client_id")
+        client_id = current_user.get("client_id")  # Optional - only for billing endpoints
         clerk_role = current_user.get("claims", {}).get("org_role") if isinstance(current_user.get("claims"), dict) else None
         
         logger.error(
             f"[PERMISSION_CHECK] [DEBUG] Access denied for user | "
             f"clerk_user_id={user_id} | "
             f"clerk_org_id={clerk_org_id} | "
-            f"client_id={client_id} | "
+            f"client_id={client_id} (billing only) | "
             f"role={role} | "
             f"clerk_role={clerk_role} | "
             f"required_roles=['client_admin', 'agency_admin']"

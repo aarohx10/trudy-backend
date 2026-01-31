@@ -42,7 +42,6 @@ async def create_campaign(
     campaign_data: CampaignCreate,
     request: Request,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
     idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     """
@@ -56,8 +55,6 @@ async def create_campaign(
     clerk_org_id = current_user.get("clerk_org_id")
     if not clerk_org_id:
         raise ValidationError("Missing organization ID in token")
-    
-    client_id = current_user.get("client_id")  # Legacy field
     
     # Check idempotency key
     body_dict = campaign_data.dict() if hasattr(campaign_data, 'dict') else json.loads(json.dumps(campaign_data, default=str))
@@ -79,11 +76,10 @@ async def create_campaign(
     db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
-    # Create campaign record
+    # Create campaign record - use clerk_org_id only (organization-first approach)
     campaign_id = str(uuid.uuid4())
     campaign_record = {
         "id": campaign_id,
-        "client_id": client_id,  # Legacy field
         "clerk_org_id": clerk_org_id,  # CRITICAL: Organization ID for data partitioning
         "agent_id": campaign_data.agent_id if campaign_data.agent_id else None,
         "name": campaign_data.name,
@@ -100,8 +96,7 @@ async def create_campaign(
     # Emit event
     await emit_campaign_created(
         campaign_id=campaign_id,
-        client_id=client_id,  # Legacy
-        org_id=clerk_org_id,  # CRITICAL: Include org_id
+        org_id=clerk_org_id,  # CRITICAL: Organization ID (organization-first approach)
         name=campaign_data.name,
     )
     
@@ -131,7 +126,6 @@ async def create_campaign(
 async def presign_contacts_csv(
     campaign_id: str,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Get presigned URL for contacts CSV upload"""
     # Permission check handled by require_admin_role dependency
@@ -180,7 +174,6 @@ async def upload_campaign_contacts(
     campaign_id: str,
     contacts_data: CampaignContactsUpload,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Upload campaign contacts (CSV or direct array)"""
     # Permission check handled by require_admin_role dependency
@@ -282,7 +275,6 @@ async def upload_campaign_contacts(
 async def schedule_campaign(
     campaign_id: str,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """
     Schedule campaign with atomic pre-flight checks.
@@ -457,7 +449,6 @@ async def schedule_campaign(
 @router.get("")
 async def list_campaigns(
     current_user: dict = Depends(get_current_user),
-    x_client_id: Optional[str] = Header(None),
     agent_id: Optional[str] = None,
     status: Optional[str] = None,
     limit: int = 50,
@@ -601,7 +592,6 @@ async def list_campaigns(
 async def get_campaign(
     campaign_id: str,
     current_user: dict = Depends(get_current_user),
-    x_client_id: Optional[str] = Header(None),
 ):
     """
     Get campaign with live reconciliation from Ultravox.
@@ -731,7 +721,6 @@ async def update_campaign(
     campaign_id: str,
     campaign_data: CampaignUpdate,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Update campaign"""
     # Permission check handled by require_admin_role dependency
@@ -795,7 +784,6 @@ async def update_campaign(
 async def pause_campaign(
     campaign_id: str,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Pause a running campaign"""
     # Permission check handled by require_admin_role dependency
@@ -851,7 +839,6 @@ async def pause_campaign(
 async def resume_campaign(
     campaign_id: str,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Resume a paused campaign"""
     # Permission check handled by require_admin_role dependency
@@ -929,7 +916,6 @@ async def resume_campaign(
 async def bulk_delete_campaigns(
     request_data: BulkDeleteRequest,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Bulk delete campaigns"""
     # Permission check handled by require_admin_role dependency
@@ -1001,7 +987,6 @@ async def bulk_delete_campaigns(
 async def delete_campaign(
     campaign_id: str,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Delete campaign"""
     # Permission check handled by require_admin_role dependency

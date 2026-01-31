@@ -30,7 +30,6 @@ router = APIRouter()
 async def add_contact_to_folder(
     contact_data: ContactCreate,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """
     Add contact to folder - Simple: Verify folder, validate contact, insert with folder_id.
@@ -44,8 +43,6 @@ async def add_contact_to_folder(
         clerk_org_id = current_user.get("clerk_org_id")
         if not clerk_org_id:
             raise ValidationError("Missing organization ID in token")
-        
-        client_id = current_user.get("client_id")  # Legacy field
         
         # Initialize database service with org_id context
         db = DatabaseService(org_id=clerk_org_id)
@@ -64,7 +61,6 @@ async def add_contact_to_folder(
         contact_id = str(uuid.uuid4())
         contact_record = {
             "id": contact_id,
-            "client_id": client_id,  # Legacy field
             "clerk_org_id": clerk_org_id,  # CRITICAL: Organization ID for data partitioning
             "folder_id": validated_contact["folder_id"],
             "first_name": validated_contact.get("first_name"),
@@ -88,7 +84,6 @@ async def add_contact_to_folder(
         # Build response (include new standard fields)
         response_data = ContactResponse(
             id=contact_id,
-            client_id=client_id,
             folder_id=validated_contact["folder_id"],
             first_name=validated_contact.get("first_name"),
             last_name=validated_contact.get("last_name"),

@@ -31,7 +31,6 @@ router = APIRouter()
 @router.post("/init")
 async def init_telephony(
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Initialize telephony configuration for the organization"""
     # Permission check handled by require_admin_role dependency
@@ -69,7 +68,6 @@ async def init_telephony(
 async def search_numbers(
     request: NumberSearchRequest,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Search for available phone numbers"""
     # Permission check handled by require_admin_role dependency
@@ -113,7 +111,6 @@ async def search_numbers(
 async def purchase_number(
     request: NumberPurchaseRequest,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Purchase a phone number from Telnyx"""
     # Permission check handled by require_admin_role dependency
@@ -155,7 +152,6 @@ async def purchase_number(
 async def import_number(
     request: NumberImportRequest,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Import a BYO (Bring Your Own) phone number"""
     # Permission check handled by require_admin_role dependency
@@ -219,7 +215,6 @@ async def import_number(
 @router.get("/numbers")
 async def list_phone_numbers(
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
@@ -287,7 +282,6 @@ async def list_phone_numbers(
 async def assign_number_to_agent(
     request: NumberAssignmentRequest,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Assign a phone number to an agent (inbound or outbound)"""
     # Permission check handled by require_admin_role dependency
@@ -336,7 +330,6 @@ async def assign_number_to_agent(
 async def unassign_number_from_agent(
     request: Dict[str, Any] = Body(...),
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Unassign a phone number from an agent"""
     # Permission check handled by require_admin_role dependency
@@ -388,7 +381,6 @@ async def unassign_number_from_agent(
 @router.get("/credentials")
 async def list_telephony_credentials(
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """List all telephony credentials for the organization"""
     # CRITICAL: Use clerk_org_id for organization-first approach
@@ -438,7 +430,6 @@ async def list_telephony_credentials(
 async def get_agent_numbers(
     agent_id: str,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Get all phone numbers assigned to an agent"""
     # CRITICAL: Use clerk_org_id for organization-first approach
@@ -506,7 +497,6 @@ async def get_agent_numbers(
 async def get_agent_webhook_url(
     agent_id: str,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Get Ultravox webhook URL for BYOC setup
     
@@ -563,7 +553,6 @@ async def get_agent_webhook_url(
 @router.get("/config")
 async def get_telephony_config(
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Get SIP/Telephony configuration (legacy endpoint for compatibility)"""
     from app.services.ultravox import ultravox_client

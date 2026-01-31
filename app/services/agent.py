@@ -145,8 +145,10 @@ def build_ultravox_call_template(agent_record: Dict[str, Any], ultravox_voice_id
             selected_tools = []
             for tool_id in tools:
                 # Get tool details from database to get ultravox_tool_id
-                db = DatabaseService()
-                tool_record = db.select_one("tools", {"id": tool_id, "client_id": agent_record.get("client_id")})
+                # Use clerk_org_id for filtering (organization-first approach)
+                clerk_org_id = agent_record.get("clerk_org_id")
+                db = DatabaseService(org_id=clerk_org_id) if clerk_org_id else DatabaseService()
+                tool_record = db.select_one("tools", {"id": tool_id, "clerk_org_id": clerk_org_id}) if clerk_org_id else None
                 if tool_record and tool_record.get("ultravox_tool_id"):
                     selected_tools.append({
                         "toolId": tool_record["ultravox_tool_id"],
@@ -172,20 +174,20 @@ def build_ultravox_call_template(agent_record: Dict[str, Any], ultravox_voice_id
         raise
 
 
-async def get_voice_ultravox_id(voice_id: str, client_id: str) -> Optional[str]:
+async def get_voice_ultravox_id(voice_id: str, clerk_org_id: str) -> Optional[str]:
     """
     Get Ultravox voice ID from our voice record.
     
     Args:
         voice_id: Our voice UUID
-        client_id: Client UUID
-        
+        clerk_org_id: Clerk organization ID (organization-first approach)
+    
     Returns:
         Ultravox voice ID or None
     """
     try:
-        db = DatabaseService()
-        voice_record = db.select_one("voices", {"id": voice_id, "client_id": client_id})
+        db = DatabaseService(org_id=clerk_org_id)
+        voice_record = db.select_one("voices", {"id": voice_id, "clerk_org_id": clerk_org_id})
         if voice_record:
             return voice_record.get("ultravox_voice_id")
         return None
@@ -194,14 +196,14 @@ async def get_voice_ultravox_id(voice_id: str, client_id: str) -> Optional[str]:
         return None
 
 
-async def validate_agent_for_ultravox_sync(agent_data: Dict[str, Any], client_id: str) -> Dict[str, Any]:
+async def validate_agent_for_ultravox_sync(agent_data: Dict[str, Any], clerk_org_id: str) -> Dict[str, Any]:
     """
     Validate agent data is ready for Ultravox sync.
     
     Args:
         agent_data: Agent data dictionary
-        client_id: Client UUID
-        
+        clerk_org_id: Clerk organization ID (organization-first approach)
+    
     Returns:
         {
             "can_sync": bool,
@@ -227,7 +229,7 @@ async def validate_agent_for_ultravox_sync(agent_data: Dict[str, Any], client_id
         return {"can_sync": False, "reason": "voice_required", "errors": errors}
     
     # Validate voice exists and has Ultravox ID
-    ultravox_voice_id = await get_voice_ultravox_id(voice_id, client_id)
+    ultravox_voice_id = await get_voice_ultravox_id(voice_id, clerk_org_id)
     if not ultravox_voice_id:
         errors.append(f"Voice {voice_id} is not synced to Ultravox. Voice must be synced to Ultravox first.")
         return {"can_sync": False, "reason": "voice_not_synced", "errors": errors}
@@ -238,12 +240,13 @@ async def validate_agent_for_ultravox_sync(agent_data: Dict[str, Any], client_id
     return {"can_sync": True, "reason": None, "errors": []}
 
 
-async def create_agent_in_ultravox(agent_data: Dict[str, Any]) -> Dict[str, Any]:
+async def create_agent_in_ultravox(agent_data: Dict[str, Any], clerk_org_id: str) -> Dict[str, Any]:
     """
     Create agent in Ultravox API.
     
     Args:
         agent_data: Agent data dictionary (from database record)
+        clerk_org_id: Clerk organization ID (required for organization-first approach)
         
     Returns:
         Ultravox agent response
@@ -255,14 +258,11 @@ async def create_agent_in_ultravox(agent_data: Dict[str, Any]) -> Dict[str, Any]
     try:
         # Get voice Ultravox ID - REQUIRED
         voice_id = agent_data.get("voice_id")
-        client_id = agent_data.get("client_id")
         
         if not voice_id:
             raise ValueError("voice_id is required to create agent in Ultravox")
-        if not client_id:
-            raise ValueError("client_id is required to create agent in Ultravox")
         
-        ultravox_voice_id = await get_voice_ultravox_id(voice_id, client_id)
+        ultravox_voice_id = await get_voice_ultravox_id(voice_id, clerk_org_id)
         if not ultravox_voice_id:
             raise ValueError(f"Voice {voice_id} does not have an Ultravox voice ID. Voice must be synced to Ultravox first.")
         
@@ -300,13 +300,14 @@ async def create_agent_in_ultravox(agent_data: Dict[str, Any]) -> Dict[str, Any]
         )
 
 
-async def update_agent_in_ultravox(ultravox_agent_id: str, agent_data: Dict[str, Any]) -> Dict[str, Any]:
+async def update_agent_in_ultravox(ultravox_agent_id: str, agent_data: Dict[str, Any], clerk_org_id: str) -> Dict[str, Any]:
     """
     Update agent in Ultravox API.
     
     Args:
         ultravox_agent_id: Ultravox agent ID
         agent_data: Updated agent data dictionary
+        clerk_org_id: Clerk organization ID (required for organization-first approach)
         
     Returns:
         Ultravox agent response
@@ -318,14 +319,11 @@ async def update_agent_in_ultravox(ultravox_agent_id: str, agent_data: Dict[str,
     try:
         # Get voice Ultravox ID - REQUIRED
         voice_id = agent_data.get("voice_id")
-        client_id = agent_data.get("client_id")
         
         if not voice_id:
             raise ValueError("voice_id is required to update agent in Ultravox")
-        if not client_id:
-            raise ValueError("client_id is required to update agent in Ultravox")
         
-        ultravox_voice_id = await get_voice_ultravox_id(voice_id, client_id)
+        ultravox_voice_id = await get_voice_ultravox_id(voice_id, clerk_org_id)
         if not ultravox_voice_id:
             raise ValueError(f"Voice {voice_id} does not have an Ultravox voice ID. Voice must be synced to Ultravox first.")
         
@@ -353,7 +351,7 @@ async def update_agent_in_ultravox(ultravox_agent_id: str, agent_data: Dict[str,
             "agent_data": {
                 "name": agent_data.get("name"),
                 "voice_id": agent_data.get("voice_id"),
-                "client_id": agent_data.get("client_id"),
+                "clerk_org_id": clerk_org_id,
             },
         }
         logger.error(f"[AGENT_SERVICE] Failed to update agent in Ultravox (RAW ERROR): {json.dumps(error_details, indent=2, default=str)}", exc_info=True)
@@ -423,14 +421,13 @@ def normalize_agent_name(name: str) -> str:
     return normalized
 
 
-async def create_agent_ultravox_first(agent_data: Dict[str, Any], client_id: str, clerk_org_id: Optional[str] = None) -> Dict[str, Any]:
+async def create_agent_ultravox_first(agent_data: Dict[str, Any], clerk_org_id: str) -> Dict[str, Any]:
     """
     Create agent in Ultravox FIRST (before database).
     This is the primary source of truth.
     
     Args:
         agent_data: Agent data dictionary (not yet in database)
-        client_id: Client UUID (legacy - for backward compatibility)
         clerk_org_id: Clerk organization ID (required for organization-first approach)
         
     Returns:
@@ -441,14 +438,14 @@ async def create_agent_ultravox_first(agent_data: Dict[str, Any], client_id: str
         ProviderError: If Ultravox API call fails
     """
     # Validate agent can be created in Ultravox
-    validation_result = await validate_agent_for_ultravox_sync(agent_data, client_id)
+    validation_result = await validate_agent_for_ultravox_sync(agent_data, clerk_org_id)
     if not validation_result["can_sync"]:
         error_msg = "; ".join(validation_result["errors"])
         raise ValueError(f"Agent cannot be created in Ultravox: {error_msg}")
     
     # Get voice Ultravox ID
     voice_id = agent_data.get("voice_id")
-    ultravox_voice_id = await get_voice_ultravox_id(voice_id, client_id)
+    ultravox_voice_id = await get_voice_ultravox_id(voice_id, clerk_org_id)
     if not ultravox_voice_id:
         raise ValueError(f"Voice {voice_id} does not have an Ultravox voice ID")
     
@@ -489,7 +486,7 @@ async def create_agent_ultravox_first(agent_data: Dict[str, Any], client_id: str
     return response
 
 
-async def update_agent_ultravox_first(ultravox_agent_id: str, agent_data: Dict[str, Any], client_id: str) -> Dict[str, Any]:
+async def update_agent_ultravox_first(ultravox_agent_id: str, agent_data: Dict[str, Any], clerk_org_id: str) -> Dict[str, Any]:
     """
     Update agent in Ultravox FIRST (before database).
     This is the primary source of truth.
@@ -497,7 +494,7 @@ async def update_agent_ultravox_first(ultravox_agent_id: str, agent_data: Dict[s
     Args:
         ultravox_agent_id: Ultravox agent ID
         agent_data: Updated agent data dictionary
-        client_id: Client UUID
+        clerk_org_id: Clerk organization ID (organization-first approach)
         
     Returns:
         Ultravox agent response
@@ -507,14 +504,14 @@ async def update_agent_ultravox_first(ultravox_agent_id: str, agent_data: Dict[s
         ProviderError: If Ultravox API call fails
     """
     # Validate agent can be updated in Ultravox
-    validation_result = await validate_agent_for_ultravox_sync(agent_data, client_id)
+    validation_result = await validate_agent_for_ultravox_sync(agent_data, clerk_org_id)
     if not validation_result["can_sync"]:
         error_msg = "; ".join(validation_result["errors"])
         raise ValueError(f"Agent cannot be updated in Ultravox: {error_msg}")
     
     # Get voice Ultravox ID
     voice_id = agent_data.get("voice_id")
-    ultravox_voice_id = await get_voice_ultravox_id(voice_id, client_id)
+    ultravox_voice_id = await get_voice_ultravox_id(voice_id, clerk_org_id)
     if not ultravox_voice_id:
         raise ValueError(f"Voice {voice_id} does not have an Ultravox voice ID")
     
@@ -549,13 +546,13 @@ async def update_agent_ultravox_first(ultravox_agent_id: str, agent_data: Dict[s
     return response
 
 
-async def sync_agent_to_ultravox(agent_id: str, client_id: str) -> Dict[str, Any]:
+async def sync_agent_to_ultravox(agent_id: str, clerk_org_id: str) -> Dict[str, Any]:
     """
     Sync local agent to Ultravox (create or update).
     
     Args:
         agent_id: Local agent UUID
-        client_id: Client UUID
+        clerk_org_id: Clerk organization ID (organization-first approach)
         
     Returns:
         Ultravox agent response
@@ -564,14 +561,14 @@ async def sync_agent_to_ultravox(agent_id: str, client_id: str) -> Dict[str, Any
         ValueError: If agent data is invalid for Ultravox sync
     """
     try:
-        db = DatabaseService()
-        agent_record = db.select_one("agents", {"id": agent_id, "client_id": client_id})
+        db = DatabaseService(org_id=clerk_org_id)
+        agent_record = db.select_one("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
         
         if not agent_record:
             raise ValueError(f"Agent not found: {agent_id}")
         
         # Validate agent can be synced
-        validation_result = await validate_agent_for_ultravox_sync(agent_record, client_id)
+        validation_result = await validate_agent_for_ultravox_sync(agent_record, clerk_org_id)
         if not validation_result["can_sync"]:
             error_msg = "; ".join(validation_result["errors"])
             raise ValueError(f"Agent cannot be synced to Ultravox: {error_msg}")
@@ -580,13 +577,13 @@ async def sync_agent_to_ultravox(agent_id: str, client_id: str) -> Dict[str, Any
         
         if ultravox_agent_id:
             # Update existing agent
-            response = await update_agent_in_ultravox(ultravox_agent_id, agent_record)
+            response = await update_agent_in_ultravox(ultravox_agent_id, agent_record, clerk_org_id)
         else:
             # Create new agent
-            response = await create_agent_in_ultravox(agent_record)
-            # Update database with Ultravox agent ID
+            response = await create_agent_in_ultravox(agent_record, clerk_org_id)
+            # Update database with Ultravox agent ID - use clerk_org_id for filtering
             ultravox_agent_id = response.get("agentId")
-            db.update("agents", {"id": agent_id, "client_id": client_id}, {
+            db.update("agents", {"id": agent_id, "clerk_org_id": clerk_org_id}, {
                 "ultravox_agent_id": ultravox_agent_id,
                 "status": "active",
             })
@@ -595,7 +592,7 @@ async def sync_agent_to_ultravox(agent_id: str, client_id: str) -> Dict[str, Any
         if ultravox_agent_id:
             from app.services.telephony import TelephonyService
             telephony_service = TelephonyService(db)
-            phone_numbers = await telephony_service.get_agent_phone_numbers(client_id, agent_id)
+            phone_numbers = await telephony_service.get_agent_phone_numbers(clerk_org_id, agent_id)
             
             # Update Ultravox with inbound numbers using inboundConfig API
             if phone_numbers["inbound"]:
@@ -619,7 +616,7 @@ async def sync_agent_to_ultravox(agent_id: str, client_id: str) -> Dict[str, Any
             "error_message": str(e),
             "full_traceback": traceback.format_exc(),
             "agent_id": agent_id,
-            "client_id": client_id,
+            "clerk_org_id": clerk_org_id,
         }
         logger.error(f"[AGENT_SERVICE] Failed to sync agent to Ultravox (RAW ERROR): {json.dumps(error_details, indent=2, default=str)}", exc_info=True)
         raise

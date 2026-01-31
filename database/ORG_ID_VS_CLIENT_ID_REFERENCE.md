@@ -13,9 +13,11 @@ This document explains **which column** in each table is used to scope data by *
 
 ---
 
-## Tables that use `clerk_org_id` (organization-first)
+## Tables that use `clerk_org_id` ONLY (organization-first)
 
-These tables have a **`clerk_org_id`** column. The app filters by this column to get data by organization instead of by `client_id`.
+These tables **ONLY** have a **`clerk_org_id`** column (no `client_id` column). The app filters by this column to get data by organization.
+
+**IMPORTANT:** `client_id` has been **removed** from these tables via migration `026_remove_client_id_from_main_tables.sql`.
 
 | Table               | Organization column | Index                         | Notes |
 |---------------------|---------------------|-------------------------------|--------|

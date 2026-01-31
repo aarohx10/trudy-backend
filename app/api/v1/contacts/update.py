@@ -30,7 +30,6 @@ async def update_contact(
     contact_id: str,
     contact_data: ContactUpdate,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Update contact"""
     # Permission check handled by require_admin_role dependency

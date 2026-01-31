@@ -21,7 +21,6 @@ router = APIRouter()
 @router.get("/calls")
 async def export_calls(
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
     status: Optional[str] = Query(None),
     date_from: Optional[str] = Query(None),
     date_to: Optional[str] = Query(None),
@@ -133,7 +132,6 @@ async def export_calls(
 @router.get("/campaigns")
 async def export_campaigns(
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
     status: Optional[str] = Query(None),
     date_from: Optional[str] = Query(None),
     date_to: Optional[str] = Query(None),

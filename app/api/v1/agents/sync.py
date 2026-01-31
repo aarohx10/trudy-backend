@@ -25,7 +25,6 @@ router = APIRouter()
 async def sync_agent(
     agent_id: str,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Sync agent with Ultravox (create or update)"""
     # Permission check handled by require_admin_role dependency
@@ -36,10 +35,8 @@ async def sync_agent(
         if not clerk_org_id:
             raise ValidationError("Missing organization ID in token")
         
-        client_id = current_user.get("client_id")  # Legacy field
-        
         # Sync agent
-        ultravox_response = await sync_agent_to_ultravox(agent_id, client_id)
+        ultravox_response = await sync_agent_to_ultravox(agent_id, clerk_org_id)
         
         # Update database with Ultravox agent ID if it was created
         # Initialize database service with org_id context

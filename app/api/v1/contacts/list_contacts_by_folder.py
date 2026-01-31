@@ -23,7 +23,6 @@ router = APIRouter()
 @router.get("/list-contacts", response_model=dict)
 async def list_contacts_by_folder(
     current_user: dict = Depends(get_current_user),
-    x_client_id: Optional[str] = Header(None),
     folder_id: Optional[str] = Query(None, description="Folder ID to filter contacts"),
     search: Optional[str] = Query(None, description="Search by name, email, or phone"),
     page: Optional[int] = Query(1, ge=1, description="Page number"),

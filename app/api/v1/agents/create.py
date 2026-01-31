@@ -31,7 +31,6 @@ async def create_agent(
     agent_data: AgentCreate,
     request: Request,
     current_user: dict = Depends(get_current_user),
-    x_client_id: Optional[str] = Header(None),
     idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     """Create new agent (creates in Supabase + Ultravox)"""
@@ -63,9 +62,6 @@ async def create_agent(
         if not clerk_org_id:
             raise ValidationError("Missing organization ID in token")
         
-        # Legacy client_id lookup (for backward compatibility with validation)
-        client_id = current_user.get("client_id")
-        
         # Initialize database service with org_id context
         db = DatabaseService(org_id=clerk_org_id)
         now = datetime.utcnow()
@@ -73,11 +69,10 @@ async def create_agent(
         # Convert Pydantic model to dict
         agent_dict = agent_data.dict(exclude_none=True)
         
-        # Build database record
+        # Build database record - use clerk_org_id only (organization-first approach)
         agent_id = str(uuid.uuid4())
         agent_record = {
             "id": agent_id,
-            "client_id": client_id,  # Legacy field - kept for backward compatibility
             "clerk_org_id": clerk_org_id,  # CRITICAL: Organization ID for data partitioning
             "name": agent_dict["name"],
             "description": agent_dict.get("description"),
@@ -128,7 +123,7 @@ async def create_agent(
             agent_record["crm_webhook_secret"] = agent_dict["crm_webhook_secret"]
         
         # Validate agent can be created in Ultravox
-        validation_result = await validate_agent_for_ultravox_sync(agent_record, client_id)
+        validation_result = await validate_agent_for_ultravox_sync(agent_record, clerk_org_id)
         
         if not validation_result["can_sync"]:
             # Validation failed - return error immediately
@@ -138,7 +133,7 @@ async def create_agent(
         # Create in Ultravox FIRST
         try:
             # Pass clerk_org_id to Ultravox for metadata tagging (vital for webhook billing/logging)
-            ultravox_response = await create_agent_ultravox_first(agent_record, client_id, clerk_org_id=clerk_org_id)
+            ultravox_response = await create_agent_ultravox_first(agent_record, clerk_org_id)
             ultravox_agent_id = ultravox_response.get("agentId")
             
             if not ultravox_agent_id:

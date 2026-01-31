@@ -25,7 +25,6 @@ router = APIRouter()
 async def delete_contact(
     contact_id: str,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Delete contact"""
     # Permission check handled by require_admin_role dependency

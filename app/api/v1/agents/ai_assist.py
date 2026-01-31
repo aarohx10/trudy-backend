@@ -35,7 +35,6 @@ except ImportError:
 async def ai_assist(
     assist_request: AgentAIAssistRequest,
     current_user: dict = Depends(get_current_user),
-    x_client_id: Optional[str] = Header(None),
 ):
     """AI assistance for agent creation/editing (uses OpenAI)"""
     if not openai_available or not settings.OPENAI_API_KEY:

@@ -22,7 +22,6 @@ router = APIRouter()
 @router.get("/")
 async def list_agents(
     current_user: dict = Depends(get_current_user),
-    x_client_id: Optional[str] = Header(None),
 ):
     """
     List all agents for current organization.

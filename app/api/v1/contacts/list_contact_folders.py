@@ -23,7 +23,6 @@ router = APIRouter()
 @router.get("/list-folders", response_model=dict)
 async def list_contact_folders(
     current_user: dict = Depends(get_current_user),
-    x_client_id: Optional[str] = Header(None),
     sort_by: Optional[str] = Query("created_at", description="Sort by: name, created_at, contact_count"),
     order: Optional[str] = Query("desc", description="Order: asc or desc"),
 ):
@@ -108,7 +107,6 @@ async def list_contact_folders(
             "error_type": type(e).__name__,
             "error_message": str(e),
             "full_traceback": traceback.format_exc(),
-            "client_id": current_user.get("client_id") if current_user else None,
         }
         logger.error(f"[CONTACTS] [LIST_FOLDERS] Failed to list folders (RAW ERROR): {json.dumps(error_details_raw, indent=2, default=str)}", exc_info=True)
         if isinstance(e, ValidationError):

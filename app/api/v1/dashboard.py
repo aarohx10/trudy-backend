@@ -17,7 +17,6 @@ router = APIRouter()
 @router.get("/stats")
 async def get_dashboard_stats(
     current_user: dict = Depends(get_current_user),
-    x_client_id: Optional[str] = Header(None),
     date_from: Optional[str] = Query(None, description="Start date (ISO format: YYYY-MM-DD)"),
     date_to: Optional[str] = Query(None, description="End date (ISO format: YYYY-MM-DD)"),
 ):
@@ -30,8 +29,6 @@ async def get_dashboard_stats(
     clerk_org_id = current_user.get("clerk_org_id")
     if not clerk_org_id:
         raise ValidationError("Missing organization ID in token")
-    
-    client_id = current_user.get("client_id")  # Legacy field
     
     # Initialize database service with org_id context
     db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
@@ -67,7 +64,7 @@ async def get_dashboard_stats(
     # Build filters for calls - filter by org_id instead of client_id
     call_filters = {"clerk_org_id": clerk_org_id}
     
-    # Get all calls for the client (we'll filter by date in Python)
+    # Get all calls for the organization (we'll filter by date in Python)
     all_calls = db.select("calls", call_filters, order_by="created_at")
     
     # Filter calls by date range
@@ -158,8 +155,8 @@ async def get_dashboard_stats(
     active_campaigns = sum(1 for c in filtered_campaigns if c.get("status") in ["running", "scheduled"])
     completed_campaigns = sum(1 for c in filtered_campaigns if c.get("status") == "completed")
     
-    # Get client credit balance
-    client = db.get_client(client_id)
+    # Get organization credit balance - CRITICAL: Use clerk_org_id (organization-first approach)
+    client = db.get_client_by_org_id(clerk_org_id)
     credits_balance = client.get("credits_balance", 0) if client else 0
     
     # Format date range for response

@@ -42,7 +42,6 @@ async def log_both(source: str, level: str, category: str, message: str, **kwarg
 async def create_voice(
     request: Request,
         current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
     # Voice import only - voice cloning has been removed
     name: Optional[str] = Form(None),
     strategy: Optional[str] = Form(None),
@@ -83,11 +82,18 @@ async def create_voice(
     logger.info("=" * 80)
     
     try:
-        client_id = current_user.get("client_id")
+        # CRITICAL: Use clerk_org_id for organization-first approach
+        clerk_org_id = current_user.get("clerk_org_id")
+        if not clerk_org_id:
+            raise ValidationError("Missing organization ID in token")
+        
         user_id = current_user.get("user_id")
         request_id = getattr(request.state, "request_id", None)
         ip_address = request.client.host if request.client else None
         user_agent = request.headers.get("user-agent")
+        
+        # client_id kept only for audit logging (billing/audit table)
+        client_id = current_user.get("client_id")
         
         # Permission check handled by require_admin_role dependency (applied via Depends)
         
@@ -473,17 +479,12 @@ async def create_voice(
             
             # Step 2: Save to DB (AFTER Ultravox import succeeds - no credit checks)
             # CRITICAL: Use clerk_org_id for organization-first approach
-            clerk_org_id = current_user.get("clerk_org_id")
-            if not clerk_org_id:
-                raise ValidationError("Missing organization ID in token")
-            
             # Initialize database service with org_id context
             db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
             db.set_auth(current_user["token"])
             
             voice_record = {
                 "id": voice_id,
-                "client_id": client_id,  # Legacy field
                 "clerk_org_id": clerk_org_id,  # CRITICAL: Organization ID for data partitioning
                 "user_id": user_id,  # Track which user created the voice
                 "name": name,
@@ -610,7 +611,6 @@ async def create_voice(
 async def list_voices(
     request: Request,
         current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
     source: Optional[str] = Query(None, description="Filter by source: 'ultravox' or 'custom'"),
 ):
     """
@@ -695,7 +695,6 @@ async def list_voices(
                 
                 voice_data = {
                     "id": ultravox_voice_id,
-                    "client_id": client_id,
                     "name": uv_voice.get("name", "Untitled Voice"),
                     "provider": uv_voice.get("provider", "elevenlabs"),
                     "type": "reference",
@@ -726,7 +725,6 @@ async def get_voice(
     voice_id: str,
     request: Request,
         current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Get single voice - from DB (filtered by org_id)"""
     # CRITICAL: Use clerk_org_id for organization-first approach
@@ -753,7 +751,6 @@ async def update_voice(
     voice_id: str,
     request: Request,
         current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Update voice (name and description only)"""
     # Permission check handled by require_admin_role dependency
@@ -795,7 +792,6 @@ async def update_voice(
 async def delete_voice(
     voice_id: str,
         current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Delete voice"""
     # Permission check handled by require_admin_role dependency
@@ -826,7 +822,6 @@ async def preview_voice(
     voice_id: str,
     request: Request,
         current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Preview voice - from Ultravox. ALWAYS uses ultravox_voice_id, never provider_voice_id or local voice_id."""
     if not settings.ULTRAVOX_API_KEY:

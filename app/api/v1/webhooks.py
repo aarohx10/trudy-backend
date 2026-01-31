@@ -196,7 +196,7 @@ async def ultravox_webhook(
     
     # Trigger egress webhooks
     # CRITICAL: Use org_id for organization-first approach
-    org_id_for_webhook = client_id_for_webhook  # Handler now returns org_id instead of client_id
+    org_id_for_webhook = client_id_for_webhook  # Handler returns org_id (variable name kept for backward compatibility)
     if org_id_for_webhook:
         try:
             await trigger_egress_webhooks(
@@ -406,7 +406,6 @@ async def telnyx_webhook(
 async def create_webhook_endpoint(
     webhook_data: WebhookEndpointCreate,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Create webhook endpoint"""
     # Permission check handled by require_admin_role dependency
@@ -416,8 +415,6 @@ async def create_webhook_endpoint(
     if not clerk_org_id:
         raise ValidationError("Missing organization ID in token")
     
-    client_id = current_user.get("client_id")  # Legacy field
-    
     # Initialize database service with org_id context
     db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
@@ -425,10 +422,10 @@ async def create_webhook_endpoint(
     # Generate secret if not provided
     secret = webhook_data.secret or secrets.token_hex(16)
     
+    # Create webhook endpoint - use clerk_org_id only (organization-first approach)
     webhook_record = db.insert(
         "webhook_endpoints",
         {
-            "client_id": client_id,  # Legacy field
             "clerk_org_id": clerk_org_id,  # CRITICAL: Organization ID for data partitioning
             "url": webhook_data.url,
             "event_types": webhook_data.event_types,
@@ -441,7 +438,6 @@ async def create_webhook_endpoint(
     return {
         "data": WebhookEndpointResponse(
             id=webhook_record["id"],
-            client_id=webhook_record["client_id"],
             url=webhook_record["url"],
             event_types=webhook_record["event_types"],
             secret=webhook_record["secret"],
@@ -458,7 +454,6 @@ async def create_webhook_endpoint(
 @router.get("")
 async def list_webhook_endpoints(
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """List webhook endpoints"""
     # CRITICAL: Use clerk_org_id for organization-first approach
@@ -490,7 +485,6 @@ async def list_webhook_endpoints(
 async def get_webhook_endpoint(
     webhook_id: str,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Get single webhook endpoint"""
     # CRITICAL: Use clerk_org_id for organization-first approach
@@ -524,7 +518,6 @@ async def update_webhook_endpoint(
     webhook_id: str,
     webhook_data: WebhookEndpointUpdate,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Update webhook endpoint"""
     # Permission check handled by require_admin_role dependency
@@ -577,7 +570,6 @@ async def update_webhook_endpoint(
 async def delete_webhook_endpoint(
     webhook_id: str,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Delete webhook endpoint"""
     # Permission check handled by require_admin_role dependency

@@ -119,7 +119,7 @@ async def emit_voice_created(voice_id: str, client_id: Optional[str] = None, org
     )
 
 
-async def emit_call_created(call_id: str, client_id: Optional[str] = None, org_id: Optional[str] = None, ultravox_call_id: str = "", phone_number: str = "", direction: str = "") -> bool:
+async def emit_call_created(call_id: str, org_id: Optional[str] = None, ultravox_call_id: str = "", phone_number: str = "", direction: str = "") -> bool:
     """
     Emit call.created event
     
@@ -135,8 +135,7 @@ async def emit_call_created(call_id: str, client_id: Optional[str] = None, org_i
         "call.created",
         {
             "call_id": call_id,
-            "client_id": client_id,  # Legacy field
-            "org_id": org_id,  # Organization ID
+            "org_id": org_id,  # Organization ID (organization-first approach)
             "ultravox_call_id": ultravox_call_id,
             "phone_number": phone_number,
             "direction": direction,
@@ -191,13 +190,12 @@ async def emit_call_failed(call_id: str, client_id: Optional[str] = None, org_id
     )
 
 
-async def emit_campaign_created(campaign_id: str, client_id: Optional[str] = None, org_id: Optional[str] = None, name: str = "") -> bool:
+async def emit_campaign_created(campaign_id: str, org_id: Optional[str] = None, name: str = "") -> bool:
     """
     Emit campaign.created event
     
     Args:
         campaign_id: Campaign UUID
-        client_id: Legacy client ID (deprecated)
         org_id: Organization ID (organization-first approach)
         name: Campaign name
     """
@@ -205,8 +203,7 @@ async def emit_campaign_created(campaign_id: str, client_id: Optional[str] = Non
         "campaign.created",
         {
             "campaign_id": campaign_id,
-            "client_id": client_id,  # Legacy field
-            "org_id": org_id,  # CRITICAL: Organization ID
+            "org_id": org_id,  # CRITICAL: Organization ID (organization-first approach)
             "name": name,
             "status": "draft",
             "timestamp": datetime.utcnow().isoformat(),

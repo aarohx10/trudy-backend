@@ -95,7 +95,6 @@ async def clone_to_elevenlabs(audio_files: List[bytes], voice_name: str) -> dict
 async def create_voice_clone(
     request_data: VoiceCloneRequest = Body(...),
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """
     Create voice clone - SIMPLE: Just like test_voice_clone.py
@@ -196,7 +195,6 @@ async def create_voice_clone(
         
         voice_record = {
             "id": voice_id,
-            "client_id": client_id,
             "clerk_org_id": clerk_org_id,
             "user_id": user_id,
             "name": name,

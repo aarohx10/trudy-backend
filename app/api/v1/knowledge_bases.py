@@ -69,7 +69,6 @@ class KnowledgeBaseCreateRequest(BaseModel):
 async def create_knowledge_base(
     request_data: KnowledgeBaseCreateRequest = Body(...),
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """
     Create new knowledge base with document upload (base64 encoded).
@@ -94,50 +93,18 @@ async def create_knowledge_base(
         clerk_user_id = current_user.get("clerk_user_id") or current_user.get("user_id")
         clerk_org_id = current_user.get("clerk_org_id")
         user_role = current_user.get("role", "unknown")
-        client_id = current_user.get("client_id")
         
         logger.info(
             f"[KB_CREATE] [DEBUG] Knowledge base creation attempt | "
             f"clerk_user_id={clerk_user_id} | "
             f"clerk_org_id={clerk_org_id} | "
-            f"role={user_role} | "
-            f"client_id={client_id}"
+            f"role={user_role}"
         )
         
         # CRITICAL: Use clerk_org_id for organization-first approach
         if not clerk_org_id:
             logger.error(f"[KB_CREATE] [ERROR] Missing organization ID in token | clerk_user_id={clerk_user_id}")
             raise ValidationError("Missing organization ID in token")
-        
-        # FIX: If client_id is missing, fetch it from database
-        # NOTE: client_id must be a UUID, not clerk_org_id (which is TEXT)
-        if not client_id:
-            logger.warning(f"[KB_CREATE] [WARNING] client_id is null, attempting to fetch from database | clerk_user_id={clerk_user_id} | clerk_org_id={clerk_org_id}")
-            from app.core.database import get_supabase_admin_client
-            admin_db = get_supabase_admin_client()
-            
-            # Try to get user's client_id from database
-            try:
-                user_record = admin_db.table("users").select("client_id").eq("clerk_user_id", clerk_user_id).execute()
-                if user_record.data and user_record.data[0].get("client_id"):
-                    client_id = user_record.data[0]["client_id"]
-                    logger.info(f"[KB_CREATE] [FIX] Fetched client_id from database | client_id={client_id}")
-                else:
-                    # Try to get client_id from clients table by clerk_organization_id
-                    client_record = admin_db.table("clients").select("id").eq("clerk_organization_id", clerk_org_id).execute()
-                    if client_record.data and client_record.data[0].get("id"):
-                        client_id = client_record.data[0]["id"]
-                        logger.info(f"[KB_CREATE] [FIX] Fetched client_id from clients table | client_id={client_id}")
-                    else:
-                        # If no client_id found, set to None (will be NULL in database)
-                        # Database column should be nullable for development
-                        client_id = None
-                        logger.warning(f"[KB_CREATE] [FIX] No client_id found, setting to None (requires nullable column) | clerk_org_id={clerk_org_id}")
-            except Exception as e:
-                logger.error(f"[KB_CREATE] [ERROR] Failed to fetch client_id: {e}", exc_info=True)
-                # Set to None if fetch fails (requires nullable column)
-                client_id = None
-                logger.warning(f"[KB_CREATE] [FIX] Setting client_id to None after fetch error | clerk_org_id={clerk_org_id}")
         
         # Permission check is handled by require_admin_role dependency
         # Role assignment is handled in get_current_user() via ensure_admin_role_for_creator()
@@ -191,24 +158,9 @@ async def create_knowledge_base(
         # Initialize database service with org_id context
         db = DatabaseService(org_id=clerk_org_id)
         
-        # CRITICAL: Ensure client_id is a valid UUID or None
-        # client_id must be a UUID or NULL, never a Clerk ID string
-        if client_id:
-            # Validate it's a UUID format (UUIDs are 36 characters: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
-            try:
-                import uuid as uuid_module
-                # Try to parse as UUID - this will raise ValueError if invalid
-                uuid_module.UUID(str(client_id))
-                # If we get here, it's a valid UUID format
-                logger.debug(f"[KB_CREATE] client_id is valid UUID: {client_id}")
-            except (ValueError, AttributeError, TypeError) as e:
-                # Not a valid UUID, set to None
-                logger.warning(f"[KB_CREATE] [FIX] client_id '{client_id}' is not a valid UUID (error: {e}), setting to None")
-                client_id = None
-        
+        # Create KB record - use clerk_org_id only (organization-first approach)
         kb_record = {
             "id": kb_id,
-            "client_id": client_id,  # Legacy field - can be NULL for development
             "clerk_org_id": clerk_org_id,  # CRITICAL: Organization ID for data partitioning
             "name": name,
             "description": request_data.description,
@@ -224,7 +176,6 @@ async def create_knowledge_base(
         logger.info(
             f"[KB_CREATE] [DEBUG] KB record prepared | "
             f"kb_id={kb_id} | "
-            f"client_id={client_id} (type: {type(client_id).__name__}) | "
             f"clerk_org_id={clerk_org_id}"
         )
         
@@ -233,7 +184,6 @@ async def create_knowledge_base(
             f"kb_id={kb_id} | "
             f"clerk_user_id={clerk_user_id} | "
             f"clerk_org_id={clerk_org_id} | "
-            f"client_id={client_id} | "
             f"name={name}"
         )
         
@@ -252,12 +202,13 @@ async def create_knowledge_base(
                 temp_file.write(file_content)
                 temp_file_path = temp_file.name
             
-            # Extract text and store content (pass org_id)
+            # Extract text and store content - CRITICAL: Pass clerk_org_id (not client_id)
+            # clerk_org_id is TEXT (e.g., "org_..."), client_id is UUID
             extracted_text = await extract_and_store_content(
                 file_path=temp_file_path,
                 file_type=file_type,
                 kb_id=kb_id,
-                client_id=clerk_org_id,  # Pass org_id as client_id for backward compatibility
+                clerk_org_id=clerk_org_id,  # Use clerk_org_id for organization-first approach
                 file_name=request_data.file.filename,
                 file_size=file_size
             )
@@ -265,7 +216,7 @@ async def create_knowledge_base(
             # Create Ultravox tool (non-blocking - don't fail if this fails)
             ultravox_tool_id = None
             try:
-                ultravox_tool_id = await create_ultravox_tool_for_kb(kb_id, name, client_id)
+                ultravox_tool_id = await create_ultravox_tool_for_kb(kb_id, name, clerk_org_id)
             except Exception as tool_error:
                 logger.warning(f"[KB] Failed to create Ultravox tool (non-critical): {tool_error}", exc_info=True)
             
@@ -307,7 +258,6 @@ async def create_knowledge_base(
 @router.get("")
 async def list_knowledge_bases(
     current_user: dict = Depends(get_current_user),
-    x_client_id: Optional[str] = Header(None),
 ):
     """
     List all knowledge bases for current organization.
@@ -349,7 +299,6 @@ async def list_knowledge_bases(
 async def get_knowledge_base(
     kb_id: str,
     current_user: dict = Depends(get_current_user),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Get single knowledge base with content"""
     try:
@@ -393,7 +342,6 @@ async def update_knowledge_base(
     kb_id: str,
     request_data: Dict[str, Any] = Body(...),
     current_user: dict = Depends(get_current_user),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Update knowledge base (name, description, or content)"""
     try:
@@ -454,7 +402,6 @@ async def update_knowledge_base(
 async def delete_knowledge_base(
     kb_id: str,
     current_user: dict = Depends(get_current_user),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Delete knowledge base and associated Ultravox tool"""
     try:

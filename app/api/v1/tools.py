@@ -25,7 +25,6 @@ router = APIRouter()
 @router.get("")
 async def list_tools(
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """
     List tools from database for current organization.
@@ -68,7 +67,6 @@ async def list_tools(
 async def get_tool(
     tool_id: str,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """
     Get tool from database.
@@ -120,7 +118,6 @@ async def create_tool(
     tool_data: Dict[str, Any],
     request: Request,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
     idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     """Create tool in Ultravox - Direct proxy"""
@@ -169,10 +166,9 @@ async def create_tool(
                 tool_definition = tool_data.get("definition", {})
                 http_config = tool_definition.get("http", {})
                 
-                # Build database record
+                # Build database record - use clerk_org_id only (organization-first approach)
                 tool_db_record = {
                     "id": str(uuid.uuid4()),
-                    "client_id": current_user.get("client_id"),  # Legacy field
                     "clerk_org_id": clerk_org_id,  # CRITICAL: Organization ID for data partitioning
                     "ultravox_tool_id": ultravox_tool_id,
                     "name": tool_data.get("name") or ultravox_response.get("name", ""),
@@ -244,7 +240,6 @@ async def update_tool(
     tool_id: str,
     tool_data: Dict[str, Any],
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Update tool in both Ultravox and database"""
     # Permission check handled by require_admin_role dependency
@@ -333,7 +328,6 @@ async def update_tool(
 async def delete_tool(
     tool_id: str,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Delete tool from both Ultravox and database"""
     # Permission check handled by require_admin_role dependency
@@ -395,7 +389,6 @@ async def test_tool(
     tool_id: str,
     test_data: Dict[str, Any],
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Test tool in Ultravox"""
     # Permission check handled by require_admin_role dependency

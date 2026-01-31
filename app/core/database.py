@@ -226,8 +226,12 @@ class DatabaseService:
     
     # Specific table methods
     def get_client(self, client_id: str) -> Optional[Dict[str, Any]]:
-        """Get client by ID"""
+        """Get client by ID (legacy method - prefer get_client_by_org_id)"""
         return self.select_one("clients", {"id": client_id})
+    
+    def get_client_by_org_id(self, clerk_org_id: str) -> Optional[Dict[str, Any]]:
+        """Get client by Clerk organization ID (organization-first approach)"""
+        return self.select_one("clients", {"clerk_organization_id": clerk_org_id})
     
     def get_user_by_clerk_id(self, clerk_user_id: str) -> Optional[Dict[str, Any]]:
         """Get user by clerk_user_id (Clerk authentication ONLY)"""

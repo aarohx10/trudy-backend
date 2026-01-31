@@ -90,10 +90,11 @@ class UserContext(BaseModel):
 class UserResponse(BaseModel):
     id: str
     auth0_sub: Optional[str] = ""  # Legacy field - empty string for Clerk-only users
-    client_id: str
+    client_id: str  # Legacy field - kept for backward compatibility
     email: str
     role: str
     created_at: datetime
+    credits_balance: Optional[int] = 0  # Organization's credits balance (organization-first billing)
 
 
 class ClientResponse(BaseModel):
@@ -317,7 +318,6 @@ class CallUpdate(BaseModel):
 
 class CallResponse(BaseModel):
     id: str
-    client_id: str
     agent_id: Optional[str] = None
     ultravox_call_id: Optional[str] = None
     phone_number: str
@@ -408,7 +408,6 @@ class CampaignUpdate(BaseModel):
 
 class CampaignResponse(BaseModel):
     id: str
-    client_id: str
     agent_id: Optional[str] = None
     name: str
     schedule_type: str
@@ -443,7 +442,6 @@ class WebhookEndpointUpdate(BaseModel):
 
 class WebhookEndpointResponse(BaseModel):
     id: str
-    client_id: str
     url: str
     event_types: List[str]
     secret: Optional[str] = None  # Only returned on creation
@@ -481,7 +479,6 @@ class ToolUpdate(BaseModel):
 
 class ToolResponse(BaseModel):
     id: str
-    client_id: str
     ultravox_tool_id: Optional[str] = None
     name: str
     description: Optional[str] = None
@@ -673,7 +670,6 @@ class AgentUpdate(BaseModel):
 
 class AgentResponse(BaseModel):
     id: str
-    client_id: str
     ultravox_agent_id: Optional[str] = None
     name: str
     description: Optional[str] = None
@@ -746,7 +742,6 @@ class ContactFolderUpdate(BaseModel):
 
 class ContactFolderResponse(BaseModel):
     id: str
-    client_id: str
     name: str
     description: Optional[str] = None
     contact_count: Optional[int] = 0
@@ -811,7 +806,6 @@ class ContactUpdate(BaseModel):
 
 class ContactResponse(BaseModel):
     id: str
-    client_id: str
     folder_id: str
     first_name: Optional[str] = None
     last_name: Optional[str] = None

@@ -23,7 +23,6 @@ router = APIRouter()
 async def get_agent(
     agent_id: str,
     current_user: dict = Depends(get_current_user),
-    x_client_id: Optional[str] = Header(None),
 ):
     """
     Get single agent.

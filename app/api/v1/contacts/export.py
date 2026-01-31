@@ -24,7 +24,6 @@ router = APIRouter()
 @router.get("/export-contacts")
 async def export_contacts(
     current_user: dict = Depends(get_current_user),
-    x_client_id: Optional[str] = Header(None),
     folder_id: Optional[str] = Query(None, description="Filter by folder ID"),
 ):
     """

@@ -17,8 +17,7 @@ async def partial_update_agent(
     agent_id: str,
     agent_data: AgentUpdate,
     current_user: dict = Depends(get_current_user),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Partial update agent (for auto-save) - same as PUT but more lenient"""
     # Reuse PUT logic
-    return await update_agent(agent_id, agent_data, current_user, x_client_id)
+    return await update_agent(agent_id, agent_data, current_user)

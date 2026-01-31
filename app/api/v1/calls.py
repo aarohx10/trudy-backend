@@ -40,7 +40,6 @@ async def create_call(
     call_data: CallCreate,
     request: Request,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
     idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ):
     """Create call"""
@@ -74,11 +73,10 @@ async def create_call(
     db = DatabaseService(token=current_user["token"], org_id=clerk_org_id)
     db.set_auth(current_user["token"])
     
-    # Create call record
+    # Create call record - use clerk_org_id only (organization-first approach)
     call_id = str(uuid.uuid4())
     call_record = {
         "id": call_id,
-        "client_id": current_user.get("client_id"),  # Legacy field
         "clerk_org_id": clerk_org_id,  # CRITICAL: Organization ID for data partitioning
         "created_by_user_id": current_user.get("clerk_user_id"),  # Track which user created the call
         "agent_id": call_data.agent_id if call_data.agent_id else None,
@@ -164,7 +162,6 @@ async def create_call(
     if call_record.get("ultravox_call_id"):
         await emit_call_created(
             call_id=call_id,
-            client_id=current_user.get("client_id"),  # Legacy
             org_id=clerk_org_id,  # Organization ID
             ultravox_call_id=call_record["ultravox_call_id"],
             phone_number=call_data.phone_number,
@@ -201,7 +198,6 @@ async def create_call(
 @router.get("")
 async def list_calls(
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
     agent_id: Optional[str] = None,
     status: Optional[str] = None,
     direction: Optional[str] = None,
@@ -258,7 +254,6 @@ async def list_calls(
 async def get_call(
     call_id: str,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
     refresh: bool = False,
 ):
     """Get call with optional status refresh from Ultravox"""
@@ -325,7 +320,6 @@ async def get_call(
 async def get_call_transcript(
     call_id: str,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Get call transcript"""
     # CRITICAL: Use clerk_org_id for organization-first approach
@@ -386,7 +380,6 @@ async def get_call_transcript(
 async def get_call_recording(
     call_id: str,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Get call recording URL"""
     # CRITICAL: Use clerk_org_id for organization-first approach
@@ -503,7 +496,6 @@ async def update_call(
     call_id: str,
     call_data: CallUpdate,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Update call (context and settings only)"""
     # CRITICAL: Use clerk_org_id for organization-first approach
@@ -558,7 +550,6 @@ async def update_call(
 async def bulk_delete_calls(
     request_data: BulkDeleteRequest,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Bulk delete calls"""
     # Permission check handled by require_admin_role dependency
@@ -625,7 +616,6 @@ async def bulk_delete_calls(
 async def delete_call(
     call_id: str,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """Delete call"""
     # Permission check handled by require_admin_role dependency

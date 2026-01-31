@@ -29,7 +29,6 @@ router = APIRouter()
 async def create_contact_folder(
     folder_data: ContactFolderCreate,
     current_user: dict = Depends(require_admin_role),
-    x_client_id: Optional[str] = Header(None),
 ):
     """
     Create new contact folder - Simple: Insert to Supabase with org_id.
@@ -45,17 +44,14 @@ async def create_contact_folder(
         if not clerk_org_id:
             raise ValidationError("Missing organization ID in token")
         
-        client_id = current_user.get("client_id")  # Legacy field
-        
         # Use DatabaseAdminService to match list endpoint (ensures consistency)
         db = DatabaseAdminService()
         now = datetime.utcnow()
         
-        # Create folder record
+        # Create folder record - use clerk_org_id only (organization-first approach)
         folder_id = str(uuid.uuid4())
         folder_record = {
             "id": folder_id,
-            "client_id": client_id,  # Legacy field
             "clerk_org_id": clerk_org_id,  # CRITICAL: Organization ID for data partitioning
             "name": folder_data.name,
             "description": folder_data.description,
@@ -72,7 +68,6 @@ async def create_contact_folder(
         # Build response
         response_data = ContactFolderResponse(
             id=folder_id,
-            client_id=client_id,
             name=folder_data.name,
             description=folder_data.description,
             contact_count=contact_count,

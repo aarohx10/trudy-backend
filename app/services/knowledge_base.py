@@ -19,7 +19,7 @@ async def extract_and_store_content(
     file_path: str,
     file_type: str,
     kb_id: str,
-    client_id: str,
+    clerk_org_id: str,
     file_name: str,
     file_size: int
 ) -> str:
@@ -30,7 +30,7 @@ async def extract_and_store_content(
         file_path: Path to the uploaded file
         file_type: File type (pdf, txt, docx, md)
         kb_id: Knowledge base UUID
-        client_id: Client UUID for ownership validation
+        clerk_org_id: Clerk organization ID for ownership validation (organization-first approach)
         file_name: Original filename
         file_size: File size in bytes
     
@@ -54,8 +54,9 @@ async def extract_and_store_content(
         if not extracted_text or len(extracted_text.strip()) < 10:
             raise ValueError(f"Extracted text is too short or empty from file: {file_name}")
         
-        # Store in database
-        db = DatabaseService()
+        # Store in database - CRITICAL: Use clerk_org_id for filtering (organization-first approach)
+        # Initialize DatabaseService with org_id context
+        db = DatabaseService(org_id=clerk_org_id)
         update_data = {
             "content": extracted_text,
             "file_type": file_type.lower(),
@@ -64,21 +65,22 @@ async def extract_and_store_content(
             "status": "ready",
         }
         
-        db.update("knowledge_bases", {"id": kb_id, "client_id": client_id}, update_data)
+        # Filter by clerk_org_id instead of client_id (client_id is UUID, clerk_org_id is TEXT)
+        db.update("knowledge_bases", {"id": kb_id, "clerk_org_id": clerk_org_id}, update_data)
         
-        logger.info(f"[KB_SERVICE] Successfully stored {len(extracted_text)} characters for KB {kb_id}")
+        logger.info(f"[KB_SERVICE] Successfully stored {len(extracted_text)} characters for KB {kb_id} | clerk_org_id={clerk_org_id}")
         return extracted_text
         
     except Exception as e:
         logger.error(f"[KB_SERVICE] Failed to extract and store content: {e}", exc_info=True)
-        # Update status to failed
+        # Update status to failed - use clerk_org_id for filtering
         try:
-            db = DatabaseService()
-            db.update("knowledge_bases", {"id": kb_id, "client_id": client_id}, {
+            db = DatabaseService(org_id=clerk_org_id)
+            db.update("knowledge_bases", {"id": kb_id, "clerk_org_id": clerk_org_id}, {
                 "status": "failed"
             })
-        except:
-            pass
+        except Exception as update_error:
+            logger.error(f"[KB_SERVICE] Failed to update status to failed: {update_error}", exc_info=True)
         raise
 
 
@@ -165,14 +167,14 @@ async def update_knowledge_base_content(kb_id: str, org_id: Optional[str] = None
         raise
 
 
-async def create_ultravox_tool_for_kb(kb_id: str, kb_name: str, client_id: str) -> Optional[str]:
+async def create_ultravox_tool_for_kb(kb_id: str, kb_name: str, clerk_org_id: str) -> Optional[str]:
     """
     Create Ultravox tool that points to our backend fetch endpoint.
     
     Args:
         kb_id: Knowledge base UUID
         kb_name: Knowledge base name (for tool description)
-        client_id: Client UUID
+        clerk_org_id: Clerk organization ID (organization-first approach)
     
     Returns:
         Ultravox tool ID if successful, None otherwise
@@ -243,9 +245,9 @@ async def create_ultravox_tool_for_kb(kb_id: str, kb_name: str, client_id: str) 
         if not tool_id:
             raise ValueError("Ultravox did not return toolId")
         
-        # Store tool ID in database
-        db = DatabaseService()
-        db.update("knowledge_bases", {"id": kb_id, "client_id": client_id}, {
+        # Store tool ID in database - use clerk_org_id for filtering (organization-first approach)
+        db = DatabaseService(org_id=clerk_org_id)
+        db.update("knowledge_bases", {"id": kb_id, "clerk_org_id": clerk_org_id}, {
             "ultravox_tool_id": tool_id
         })
         
