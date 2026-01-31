@@ -3,7 +3,7 @@
 
 $commitMsg = if ($args[0]) { $args[0] } else { "Update backend" }
 
-Write-Host "🚀 Syncing changes to GitHub..." -ForegroundColor Yellow
+Write-Host "Syncing changes to GitHub..." -ForegroundColor Yellow
 
 # 1. Add all changes in the backend
 git add .
@@ -14,8 +14,8 @@ git commit -m $commitMsg
 # 3. Push to master
 git push origin master
 
-Write-Host "✅ Code pushed to GitHub" -ForegroundColor Green
-Write-Host "🔄 Triggering deployment on Hetzner VPS..." -ForegroundColor Yellow
+Write-Host "Code pushed to GitHub" -ForegroundColor Green
+Write-Host "Triggering deployment on Hetzner VPS..." -ForegroundColor Yellow
 
 # 4. SSH into server and run deploy.sh (with output capture)
 Write-Host "Connecting to server and running deployment..." -ForegroundColor Yellow
@@ -28,15 +28,15 @@ $deployOutput = ssh root@hetzner-truedy $deployCommand
 
 # Check exit code
 if ($LASTEXITCODE -eq 0) {
-    Write-Host "✅ Deployment script completed!" -ForegroundColor Green
+    Write-Host "Deployment script completed!" -ForegroundColor Green
     Write-Host ""
     
     # Show deployment output summary
-    Write-Host "📋 Deployment Output Summary:" -ForegroundColor Cyan
-    $deployOutput | Select-String -Pattern "✅|❌|⚠️|ERROR|FAILED|completed successfully" | Select-Object -Last 10
+    Write-Host "Deployment Output Summary:" -ForegroundColor Cyan
+    $deployOutput | Select-String -Pattern "ERROR|FAILED|completed successfully" | Select-Object -Last 10
     
     Write-Host ""
-    Write-Host "🔍 Running post-deployment verification..." -ForegroundColor Yellow
+    Write-Host "Running post-deployment verification..." -ForegroundColor Yellow
     
     # Wait a moment for service to stabilize
     Start-Sleep -Seconds 5
@@ -46,7 +46,7 @@ if ($LASTEXITCODE -eq 0) {
     $healthCheck = try {
         $response = Invoke-WebRequest -Uri "https://truedy.closi.tech/health" -Method GET -TimeoutSec 15 -UseBasicParsing -ErrorAction Stop
         if ($response.StatusCode -eq 200) {
-            Write-Host "   ✅ Health check passed (HTTP 200)" -ForegroundColor Green
+            Write-Host "   Health check passed (HTTP 200)" -ForegroundColor Green
             
             # Parse health status
             $healthJson = $response.Content | ConvertFrom-Json
@@ -55,11 +55,11 @@ if ($LASTEXITCODE -eq 0) {
             }
             $true
         } else {
-            Write-Host "   ⚠️  Health check returned HTTP $($response.StatusCode)" -ForegroundColor Yellow
+            Write-Host "   Health check returned HTTP $($response.StatusCode)" -ForegroundColor Yellow
             $false
         }
     } catch {
-        Write-Host "   ❌ Health check failed: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "   Health check failed: $($_.Exception.Message)" -ForegroundColor Red
         $false
     }
     
@@ -68,9 +68,9 @@ if ($LASTEXITCODE -eq 0) {
     $serviceStatusCmd = 'systemctl is-active trudy-backend 2>&1'
     $serviceStatus = ssh root@hetzner-truedy $serviceStatusCmd
     if ($serviceStatus -eq "active") {
-        Write-Host "   ✅ Service is active" -ForegroundColor Green
+        Write-Host "   Service is active" -ForegroundColor Green
     } else {
-        Write-Host "   ⚠️  Service status: $serviceStatus" -ForegroundColor Yellow
+        Write-Host "   Service status: $serviceStatus" -ForegroundColor Yellow
     }
     
     # 3. Recent Errors Check
@@ -78,10 +78,10 @@ if ($LASTEXITCODE -eq 0) {
     $errorsCmd = "journalctl -u trudy-backend -n 50 --no-pager | grep -iE 'error|exception|traceback|failed' | tail -5"
     $recentErrors = ssh root@hetzner-truedy $errorsCmd 2>&1
     if ($recentErrors -and $recentErrors -notmatch "No entries") {
-        Write-Host "   ⚠️  Found recent errors in logs:" -ForegroundColor Yellow
+        Write-Host "   Found recent errors in logs:" -ForegroundColor Yellow
         $recentErrors | ForEach-Object { Write-Host "      $_" -ForegroundColor Gray }
     } else {
-        Write-Host "   ✅ No recent errors found" -ForegroundColor Green
+        Write-Host "   No recent errors found" -ForegroundColor Green
     }
     
     # 4. Port Check
@@ -89,40 +89,41 @@ if ($LASTEXITCODE -eq 0) {
     $portCmd = "ss -tlnp | grep :8000 || netstat -tlnp | grep :8000"
     $portCheck = ssh root@hetzner-truedy $portCmd 2>&1
     if ($portCheck) {
-        Write-Host "   ✅ Port 8000 is listening" -ForegroundColor Green
+        Write-Host "   Port 8000 is listening" -ForegroundColor Green
     } else {
-        Write-Host "   ⚠️  Port 8000 check inconclusive" -ForegroundColor Yellow
+        Write-Host "   Port 8000 check inconclusive" -ForegroundColor Yellow
     }
     
     Write-Host ""
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Gray
-    Write-Host "📋 Deployment Summary" -ForegroundColor Cyan
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Gray
+    Write-Host "Deployment Summary" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Gray
     
     if ($healthCheck) {
-        Write-Host "✅ Deployment Status: SUCCESS" -ForegroundColor Green
+        Write-Host "Deployment Status: SUCCESS" -ForegroundColor Green
         Write-Host ""
-        Write-Host "✨ Your backend is updated and live at:" -ForegroundColor Green
+        Write-Host "Your backend is updated and live at:" -ForegroundColor Green
         Write-Host "   https://truedy.closi.tech" -ForegroundColor Cyan
         Write-Host ""
-        Write-Host "💡 Next steps:" -ForegroundColor Yellow
+        Write-Host "Next steps:" -ForegroundColor Yellow
         Write-Host "   - Test API endpoints with your application" -ForegroundColor Gray
         Write-Host "   - Verify organization isolation works correctly" -ForegroundColor Gray
         Write-Host "   - Check database migrations if needed" -ForegroundColor Gray
     } else {
-        Write-Host "⚠️  Deployment Status: COMPLETED WITH WARNINGS" -ForegroundColor Yellow
+        Write-Host "Deployment Status: COMPLETED WITH WARNINGS" -ForegroundColor Yellow
         Write-Host ""
         Write-Host "The deployment script completed, but health check failed." -ForegroundColor Yellow
         Write-Host "This may be normal if the service is still starting." -ForegroundColor Yellow
         Write-Host ""
         Write-Host "Check manually:" -ForegroundColor Cyan
-        Write-Host '   ssh root@hetzner-truedy "systemctl status trudy-backend"' -ForegroundColor Gray
-        Write-Host '   ssh root@hetzner-truedy "journalctl -u trudy-backend -n 100"' -ForegroundColor Gray
+        $manualCmd1 = "ssh root@hetzner-truedy `"systemctl status trudy-backend`""
+        Write-Host "   $manualCmd1" -ForegroundColor Gray
+        $manualCmd2 = "ssh root@hetzner-truedy `"journalctl -u trudy-backend -n 100`""
+        Write-Host "   $manualCmd2" -ForegroundColor Gray
     }
     
     Write-Host ""
 } else {
-    Write-Host "❌ Deployment FAILED!" -ForegroundColor Red
+    Write-Host "Deployment FAILED!" -ForegroundColor Red
     Write-Host ""
     Write-Host "Deployment output:" -ForegroundColor Yellow
     $deployOutput | Select-Object -Last 30
@@ -130,13 +131,16 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host ""
     Write-Host "Debugging steps:" -ForegroundColor Cyan
     Write-Host "1. Check service status:" -ForegroundColor Gray
-    Write-Host '   ssh root@hetzner-truedy "systemctl status trudy-backend"' -ForegroundColor White
+    $cmd1 = "ssh root@hetzner-truedy `"systemctl status trudy-backend`""
+    Write-Host "   $cmd1" -ForegroundColor White
     Write-Host ""
     Write-Host "2. Check recent logs:" -ForegroundColor Gray
-    Write-Host '   ssh root@hetzner-truedy "journalctl -u trudy-backend -n 100"' -ForegroundColor White
+    $cmd2 = "ssh root@hetzner-truedy `"journalctl -u trudy-backend -n 100`""
+    Write-Host "   $cmd2" -ForegroundColor White
     Write-Host ""
     Write-Host "3. Check deployment script:" -ForegroundColor Gray
-    Write-Host '   ssh root@hetzner-truedy "cd /opt/backend; bash deploy.sh"' -ForegroundColor White
+    $cmd3 = "ssh root@hetzner-truedy `"cd /opt/backend; bash deploy.sh`""
+    Write-Host "   $cmd3" -ForegroundColor White
     
     exit 1
 }
