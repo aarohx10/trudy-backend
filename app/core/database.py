@@ -141,11 +141,7 @@ class DatabaseService:
         return results[0] if results else None
     
     def insert(self, table: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Insert record - SIMPLE: Use what's in data, don't override"""
-        # For agents table: Just strip whitespace if clerk_org_id exists, don't override
-        if table == "agents" and "clerk_org_id" in data:
-            data["clerk_org_id"] = str(data["clerk_org_id"]).strip()
-        
+        """Insert record - SIMPLE: Use what's in data"""
         response = self.client.table(table).insert(data).execute()
         return response.data[0] if response.data else {}
     

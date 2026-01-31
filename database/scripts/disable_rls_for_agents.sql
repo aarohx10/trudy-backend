@@ -21,11 +21,20 @@ DROP TRIGGER IF EXISTS agents_validate_clerk_org_id ON agents;
 -- Step 4: Drop validation function (if exists)
 DROP FUNCTION IF EXISTS validate_agents_clerk_org_id();
 
--- Step 5: Drop set_org_context function (no longer needed for agents)
+-- Step 5: Check for any other triggers that might modify clerk_org_id
+-- List all triggers on agents table
+SELECT 
+    trigger_name, 
+    event_manipulation, 
+    action_statement 
+FROM information_schema.triggers 
+WHERE event_object_table = 'agents';
+
+-- Step 6: Drop set_org_context function (no longer needed for agents)
 -- NOTE: Keep this function if other tables still use it
 -- DROP FUNCTION IF EXISTS set_org_context(TEXT);
 
--- Step 6: Drop current_org_id helper function (if exists and not used elsewhere)
+-- Step 7: Drop current_org_id helper function (if exists and not used elsewhere)
 -- DROP FUNCTION IF EXISTS current_org_id();
 
 -- ============================================

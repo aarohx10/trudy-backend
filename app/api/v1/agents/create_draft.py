@@ -26,23 +26,20 @@ async def create_draft_agent(
 ):
     """Create a draft agent with default settings, optionally from a template"""
     try:
-        # SIMPLE: Use clerk_org_id from frontend request body (frontend always sends it)
+        # TEMPORARY: Allow NULL clerk_org_id for testing (remove restrictions in DB first)
         clerk_org_id = payload.get("clerk_org_id")
+        if clerk_org_id:
+            clerk_org_id = str(clerk_org_id).strip()
         
-        if not clerk_org_id:
-            raise ValidationError("Missing clerk_org_id in request body")
-        
-        # Strip whitespace
-        clerk_org_id = str(clerk_org_id).strip()
-        
-        # Initialize database service
         db = DatabaseService(org_id=clerk_org_id)
         now = datetime.utcnow()
         template_id = payload.get("template_id")
         
-        # Get default voice if available
-        voices = db.select("voices", {"clerk_org_id": clerk_org_id}, order_by="created_at DESC")
-        default_voice_id = voices[0]["id"] if voices else None
+        # Get default voice if available (skip if no clerk_org_id)
+        default_voice_id = None
+        if clerk_org_id:
+            voices = db.select("voices", {"clerk_org_id": clerk_org_id}, order_by="created_at DESC")
+            default_voice_id = voices[0]["id"] if voices else None
         
         # Get template if provided
         template = None
@@ -55,10 +52,9 @@ async def create_draft_agent(
         name = template.get("name", "Untitled Agent") if template else "Untitled Agent"
         system_prompt = template.get("system_prompt", "You are a helpful assistant.") if template else "You are a helpful assistant."
         
-        # Create agent record - always start as "draft"
+        # Create agent record
         agent_record = {
             "id": agent_id,
-            "clerk_org_id": clerk_org_id,
             "name": name,
             "description": template.get("description") if template else "Draft agent",
             "voice_id": default_voice_id,
@@ -80,7 +76,10 @@ async def create_draft_agent(
         if template_id:
             agent_record["template_id"] = template_id
         
-        # Insert into database
+        # Only include clerk_org_id if it exists (can be NULL for testing)
+        if clerk_org_id:
+            agent_record["clerk_org_id"] = clerk_org_id
+        
         db.insert("agents", agent_record)
         
         # Try Ultravox sync in background (non-blocking)
