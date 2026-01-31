@@ -93,10 +93,31 @@ async def create_draft_agent(
             # Agent stays as "draft"
         
         # Simple re-fetch - let select_one auto-append clerk_org_id using db.org_id (matches what was used during insert)
+        logger.info(
+            f"[AGENTS] [DRAFT] [FETCH] Attempting to re-fetch agent | "
+            f"agent_id={agent_id} | "
+            f"clerk_org_id={clerk_org_id} | "
+            f"db.org_id={db.org_id}"
+        )
         created_agent = db.select_one("agents", {"id": agent_id})
         
         if not created_agent:
+            logger.error(
+                f"[AGENTS] [DRAFT] [FETCH] [ERROR] Agent not found after insert! | "
+                f"agent_id={agent_id} | "
+                f"clerk_org_id={clerk_org_id} | "
+                f"db.org_id={db.org_id} | "
+                f"filter_used=id only (auto-append expected)"
+            )
             raise ValidationError(f"Failed to retrieve agent after creation: {agent_id}")
+        
+        logger.info(
+            f"[AGENTS] [DRAFT] [FETCH] ✅ Agent fetched successfully | "
+            f"agent_id={agent_id} | "
+            f"fetched_clerk_org_id={created_agent.get('clerk_org_id')} | "
+            f"expected_clerk_org_id={clerk_org_id} | "
+            f"db.org_id={db.org_id}"
+        )
         
         return {
             "data": created_agent,
