@@ -35,6 +35,11 @@ async def get_agent(
         if not clerk_org_id:
             raise ValidationError("Missing organization ID in token")
         
+        logger.info(
+            f"[AGENTS] [GET] [DEBUG] Fetching agent | "
+            f"agent_id={agent_id} | clerk_org_id={clerk_org_id}"
+        )
+        
         # Initialize database service with org_id context
         db = DatabaseService(org_id=clerk_org_id)
         
@@ -42,7 +47,16 @@ async def get_agent(
         agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
         
         if not agent:
+            logger.error(
+                f"[AGENTS] [GET] [ERROR] Agent not found | "
+                f"agent_id={agent_id} | clerk_org_id={clerk_org_id}"
+            )
             raise NotFoundError("agent", agent_id)
+        
+        logger.info(
+            f"[AGENTS] [GET] [DEBUG] ✅ Agent found | "
+            f"agent_id={agent_id} | clerk_org_id={agent.get('clerk_org_id')}"
+        )
         
         return {
             "data": agent,

@@ -309,6 +309,16 @@ class DatabaseService:
                 raise ValueError(f"Cannot insert {table} with empty clerk_org_id - database constraint violation")
             
             logger.info(f"[DATABASE] [INSERT] [STEP 4] ✅ Final clerk_org_id validation passed | table={table} | clerk_org_id={final_clerk_org_id}")
+            
+            # CRITICAL: Ensure data clerk_org_id matches self.org_id (self.org_id is source of truth)
+            # This prevents any possibility of mismatch between what's inserted and what's queried
+            if data.get("clerk_org_id") != self.org_id:
+                logger.warning(
+                    f"[DATABASE] [INSERT] [MISMATCH] data.clerk_org_id ({data.get('clerk_org_id')}) != self.org_id ({self.org_id}) | "
+                    f"Using self.org_id as source of truth | table={table}"
+                )
+                data["clerk_org_id"] = str(self.org_id).strip()
+                logger.info(f"[DATABASE] [INSERT] [MISMATCH] ✅ Corrected clerk_org_id to match self.org_id | value={data['clerk_org_id']}")
         
         # STEP 5: Log the final data dictionary being sent to Supabase (for debugging)
         if table == "agents":
@@ -319,13 +329,13 @@ class DatabaseService:
         
         response = self.client.table(table).insert(data).execute()
         
-        # STEP 6: Verify the returned record has clerk_org_id set
+        # STEP 6: Verify the returned record has clerk_org_id set and matches self.org_id
         if response.data and table in org_scoped_tables:
             returned_record = response.data[0]
             returned_clerk_org_id = returned_record.get("clerk_org_id")
             logger.info(
                 f"[DATABASE] [INSERT] [STEP 6] Insert completed | "
-                f"table={table} | returned_clerk_org_id={returned_clerk_org_id}"
+                f"table={table} | returned_clerk_org_id={returned_clerk_org_id} | expected_org_id={self.org_id}"
             )
             
             if not returned_clerk_org_id or (isinstance(returned_clerk_org_id, str) and returned_clerk_org_id.strip() == ""):
@@ -334,6 +344,27 @@ class DatabaseService:
                     f"table={table} | returned_clerk_org_id={returned_clerk_org_id} | returned_record_keys={list(returned_record.keys())}"
                 )
                 # Don't raise here - database constraint should have caught this, but log for debugging
+            elif self.org_id and returned_clerk_org_id != self.org_id:
+                logger.error(
+                    f"[DATABASE] [INSERT] [ERROR] Returned record clerk_org_id mismatch! | "
+                    f"table={table} | returned_clerk_org_id={returned_clerk_org_id} | expected_org_id={self.org_id} | "
+                    f"This indicates a database-level issue (trigger, RLS, etc.)"
+                )
+                # Attempt to re-fetch with correct filter (for debugging)
+                try:
+                    refetch_record = self.select_one(table, {"id": returned_record.get("id"), "clerk_org_id": self.org_id})
+                    if refetch_record:
+                        logger.warning(
+                            f"[DATABASE] [INSERT] [REFETCH] Agent found with correct filter | "
+                            f"table={table} | id={returned_record.get('id')} | refetch_clerk_org_id={refetch_record.get('clerk_org_id')}"
+                        )
+                    else:
+                        logger.error(
+                            f"[DATABASE] [INSERT] [REFETCH] Agent NOT found with correct filter! | "
+                            f"table={table} | id={returned_record.get('id')} | This is a critical data isolation issue"
+                        )
+                except Exception as refetch_error:
+                    logger.error(f"[DATABASE] [INSERT] [REFETCH] Failed to re-fetch record: {refetch_error}", exc_info=True)
         
         return response.data[0] if response.data else {}
     

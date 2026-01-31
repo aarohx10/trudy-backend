@@ -144,9 +144,26 @@ async def create_draft_agent(
                 agent_record["ultravox_agent_id"] = ultravox_agent_id
                 agent_record["status"] = "active"
                 
+                # CRITICAL: Ensure clerk_org_id is NEVER modified after initial assignment
+                # Pre-insert validation: verify clerk_org_id is set correctly
+                logger.info(f"[AGENTS] [DRAFT] [PRE-INSERT] Verifying clerk_org_id | value={agent_record.get('clerk_org_id')} | expected={clerk_org_id}")
+                if agent_record.get("clerk_org_id") != clerk_org_id:
+                    logger.error(f"[AGENTS] [DRAFT] [ERROR] clerk_org_id mismatch! | actual={agent_record.get('clerk_org_id')} | expected={clerk_org_id}")
+                    agent_record["clerk_org_id"] = clerk_org_id  # Force correct value
+                
                 # Now save to Supabase - match knowledge bases pattern: Simple insert
                 logger.info(f"[AGENTS] [DRAFT] [DEBUG] Inserting agent into database | agent_id={agent_id} | clerk_org_id={clerk_org_id}")
                 created_agent = db.insert("agents", agent_record)
+                
+                # Post-insert verification: verify returned record has correct clerk_org_id
+                if created_agent and created_agent.get("clerk_org_id") != clerk_org_id:
+                    logger.error(f"[AGENTS] [DRAFT] [ERROR] Returned record has wrong clerk_org_id! | actual={created_agent.get('clerk_org_id')} | expected={clerk_org_id}")
+                    # Re-fetch with explicit filter
+                    created_agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
+                    if not created_agent:
+                        logger.error(f"[AGENTS] [DRAFT] [ERROR] Agent not found even after re-fetch! | agent_id={agent_id} | clerk_org_id={clerk_org_id}")
+                elif created_agent:
+                    logger.info(f"[AGENTS] [DRAFT] [POST-INSERT] ✅ Returned record has correct clerk_org_id | value={created_agent.get('clerk_org_id')}")
                 
                 logger.info(
                     f"[AGENTS] [DRAFT] [DEBUG] Agent record created successfully | "
@@ -173,9 +190,27 @@ async def create_draft_agent(
             if reason == "voice_required":
                 # No voice selected - create as draft in DB only
                 agent_record["status"] = "draft"
+                
+                # CRITICAL: Ensure clerk_org_id is NEVER modified after initial assignment
+                # Pre-insert validation: verify clerk_org_id is set correctly
+                logger.info(f"[AGENTS] [DRAFT] [PRE-INSERT] Verifying clerk_org_id (draft path) | value={agent_record.get('clerk_org_id')} | expected={clerk_org_id}")
+                if agent_record.get("clerk_org_id") != clerk_org_id:
+                    logger.error(f"[AGENTS] [DRAFT] [ERROR] clerk_org_id mismatch (draft path)! | actual={agent_record.get('clerk_org_id')} | expected={clerk_org_id}")
+                    agent_record["clerk_org_id"] = clerk_org_id  # Force correct value
+                
                 # Match knowledge bases pattern: Simple insert
                 logger.info(f"[AGENTS] [DRAFT] [DEBUG] Inserting draft agent into database | agent_id={agent_id} | clerk_org_id={clerk_org_id}")
                 created_agent = db.insert("agents", agent_record)
+                
+                # Post-insert verification: verify returned record has correct clerk_org_id
+                if created_agent and created_agent.get("clerk_org_id") != clerk_org_id:
+                    logger.error(f"[AGENTS] [DRAFT] [ERROR] Returned record has wrong clerk_org_id (draft path)! | actual={created_agent.get('clerk_org_id')} | expected={clerk_org_id}")
+                    # Re-fetch with explicit filter
+                    created_agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
+                    if not created_agent:
+                        logger.error(f"[AGENTS] [DRAFT] [ERROR] Agent not found even after re-fetch (draft path)! | agent_id={agent_id} | clerk_org_id={clerk_org_id}")
+                elif created_agent:
+                    logger.info(f"[AGENTS] [DRAFT] [POST-INSERT] ✅ Returned record has correct clerk_org_id (draft path) | value={created_agent.get('clerk_org_id')}")
                 
                 logger.info(
                     f"[AGENTS] [DRAFT] [DEBUG] Draft agent record created successfully | "

@@ -172,9 +172,22 @@ async def create_agent(
             agent_record["ultravox_agent_id"] = ultravox_agent_id
             agent_record["status"] = "active"
             
+            # CRITICAL: Ensure clerk_org_id is NEVER modified after initial assignment
+            # Pre-insert validation: verify clerk_org_id is set correctly
+            logger.info(f"[AGENTS] [CREATE] [PRE-INSERT] Verifying clerk_org_id | value={agent_record.get('clerk_org_id')} | expected={clerk_org_id}")
+            if agent_record.get("clerk_org_id") != clerk_org_id:
+                logger.error(f"[AGENTS] [CREATE] [ERROR] clerk_org_id mismatch! | actual={agent_record.get('clerk_org_id')} | expected={clerk_org_id}")
+                agent_record["clerk_org_id"] = clerk_org_id  # Force correct value
+            
             # Now save to Supabase - match knowledge bases pattern: Simple insert
             logger.info(f"[AGENTS] [CREATE] [DEBUG] Inserting agent into database | agent_id={agent_id} | clerk_org_id={clerk_org_id}")
-            db.insert("agents", agent_record)
+            created_agent_from_insert = db.insert("agents", agent_record)
+            
+            # Post-insert verification: verify returned record has correct clerk_org_id
+            if created_agent_from_insert and created_agent_from_insert.get("clerk_org_id") != clerk_org_id:
+                logger.error(f"[AGENTS] [CREATE] [ERROR] Returned record has wrong clerk_org_id! | actual={created_agent_from_insert.get('clerk_org_id')} | expected={clerk_org_id}")
+            elif created_agent_from_insert:
+                logger.info(f"[AGENTS] [CREATE] [POST-INSERT] ✅ Returned record has correct clerk_org_id | value={created_agent_from_insert.get('clerk_org_id')}")
             
             logger.info(
                 f"[AGENTS] [CREATE] [DEBUG] Agent record created successfully | "
@@ -203,10 +216,14 @@ async def create_agent(
             )
         
         # Fetch updated record - match knowledge bases pattern
+        logger.info(f"[AGENTS] [CREATE] [FETCH] Fetching created agent | agent_id={agent_id} | clerk_org_id={clerk_org_id}")
         created_agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
         
         if not created_agent:
+            logger.error(f"[AGENTS] [CREATE] [ERROR] Failed to fetch created agent | agent_id={agent_id} | clerk_org_id={clerk_org_id}")
             raise ValidationError(f"Failed to fetch created agent: {agent_id}")
+        
+        logger.info(f"[AGENTS] [CREATE] [FETCH] ✅ Agent fetched successfully | agent_id={agent_id} | clerk_org_id={created_agent.get('clerk_org_id')}")
         
         response_data = {
             "data": created_agent,
