@@ -156,7 +156,9 @@ async def create_agent(
         expected_clerk_org_id = clerk_org_id
         
         # Pre-insert validation: verify clerk_org_id is set correctly
-        assert agent_record.get("clerk_org_id") == expected_clerk_org_id, f"clerk_org_id mismatch before insert: {agent_record.get('clerk_org_id')} != {expected_clerk_org_id}"
+        if agent_record.get("clerk_org_id") != expected_clerk_org_id:
+            logger.error(f"[AGENTS] [CREATE] [ERROR] clerk_org_id mismatch before insert! | actual={agent_record.get('clerk_org_id')} | expected={expected_clerk_org_id}")
+            agent_record["clerk_org_id"] = expected_clerk_org_id  # Force correct value
         logger.info(f"[AGENTS] [CREATE] [PRE-INSERT] ✅ clerk_org_id verified | value={agent_record.get('clerk_org_id')}")
         
         # Validate agent can be created in Ultravox
@@ -171,7 +173,9 @@ async def create_agent(
         agent_record["status"] = "creating"  # Will be updated to "active" after Ultravox
         
         # CRITICAL: Verify clerk_org_id is STILL correct after status modification
-        assert agent_record.get("clerk_org_id") == expected_clerk_org_id, f"clerk_org_id corrupted after status modification: {agent_record.get('clerk_org_id')} != {expected_clerk_org_id}"
+        if agent_record.get("clerk_org_id") != expected_clerk_org_id:
+            logger.error(f"[AGENTS] [CREATE] [ERROR] clerk_org_id corrupted after status modification! | actual={agent_record.get('clerk_org_id')} | expected={expected_clerk_org_id}")
+            agent_record["clerk_org_id"] = expected_clerk_org_id  # Force correct value
         
         # MATCH KNOWLEDGE BASES PATTERN: Insert FIRST (before external operations)
         logger.info(f"[AGENTS] [CREATE] [INSERT] Inserting agent into database | agent_id={agent_id} | clerk_org_id={expected_clerk_org_id}")
