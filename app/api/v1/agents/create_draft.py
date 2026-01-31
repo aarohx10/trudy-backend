@@ -125,14 +125,48 @@ async def create_draft_agent(
             f"name={name}"
         )
         
-        # Validate agent can be created in Ultravox
+        # CRITICAL: Ensure clerk_org_id is NEVER modified after initial assignment
+        # Store in variable as source of truth
+        expected_clerk_org_id = clerk_org_id
+        
+        # Pre-insert validation: verify clerk_org_id is set correctly
+        assert agent_record.get("clerk_org_id") == expected_clerk_org_id, f"clerk_org_id mismatch before insert: {agent_record.get('clerk_org_id')} != {expected_clerk_org_id}"
+        logger.info(f"[AGENTS] [DRAFT] [PRE-INSERT] ✅ clerk_org_id verified | value={agent_record.get('clerk_org_id')}")
+        
+        # Validate agent can be created in Ultravox (for status determination)
         validation_result = await validate_agent_for_ultravox_sync(agent_record, clerk_org_id)
+        
+        # Determine initial status based on validation
+        if validation_result["can_sync"]:
+            agent_record["status"] = "creating"  # Will be updated to "active" after Ultravox
+        else:
+            reason = validation_result.get("reason", "unknown")
+            if reason == "voice_required":
+                agent_record["status"] = "draft"
+            else:
+                # Other validation failure - return error
+                error_msg = "; ".join(validation_result["errors"])
+                raise ValidationError(f"Agent validation failed: {error_msg}")
+        
+        # CRITICAL: Verify clerk_org_id is STILL correct after status modification
+        assert agent_record.get("clerk_org_id") == expected_clerk_org_id, f"clerk_org_id corrupted after status modification: {agent_record.get('clerk_org_id')} != {expected_clerk_org_id}"
+        
+        # MATCH KNOWLEDGE BASES PATTERN: Insert FIRST (before external operations)
+        logger.info(f"[AGENTS] [DRAFT] [INSERT] Inserting agent into database | agent_id={agent_id} | clerk_org_id={expected_clerk_org_id}")
+        db.insert("agents", agent_record)  # Don't capture return value (like knowledge bases)
+        
+        logger.info(
+            f"[AGENTS] [DRAFT] [INSERT] ✅ Agent record inserted | "
+            f"agent_id={agent_id} | "
+            f"clerk_org_id={expected_clerk_org_id}"
+        )
         
         # Variable to store the created agent record
         created_agent = None
         
+        # Handle external operations AFTER insert (like knowledge bases)
         if validation_result["can_sync"]:
-            # Create in Ultravox FIRST
+            # Create in Ultravox AFTER database insert
             try:
                 ultravox_response = await create_agent_ultravox_first(agent_record, clerk_org_id)
                 ultravox_agent_id = ultravox_response.get("agentId")
@@ -140,39 +174,26 @@ async def create_draft_agent(
                 if not ultravox_agent_id:
                     raise ValueError("Ultravox did not return agentId")
                 
-                # Add ultravox_agent_id to agent_record
-                agent_record["ultravox_agent_id"] = ultravox_agent_id
-                agent_record["status"] = "active"
-                
-                # CRITICAL: Ensure clerk_org_id is NEVER modified after initial assignment
-                # Pre-insert validation: verify clerk_org_id is set correctly
-                logger.info(f"[AGENTS] [DRAFT] [PRE-INSERT] Verifying clerk_org_id | value={agent_record.get('clerk_org_id')} | expected={clerk_org_id}")
-                if agent_record.get("clerk_org_id") != clerk_org_id:
-                    logger.error(f"[AGENTS] [DRAFT] [ERROR] clerk_org_id mismatch! | actual={agent_record.get('clerk_org_id')} | expected={clerk_org_id}")
-                    agent_record["clerk_org_id"] = clerk_org_id  # Force correct value
-                
-                # Now save to Supabase - match knowledge bases pattern: Simple insert
-                logger.info(f"[AGENTS] [DRAFT] [DEBUG] Inserting agent into database | agent_id={agent_id} | clerk_org_id={clerk_org_id}")
-                created_agent = db.insert("agents", agent_record)
-                
-                # Post-insert verification: verify returned record has correct clerk_org_id
-                if created_agent and created_agent.get("clerk_org_id") != clerk_org_id:
-                    logger.error(f"[AGENTS] [DRAFT] [ERROR] Returned record has wrong clerk_org_id! | actual={created_agent.get('clerk_org_id')} | expected={clerk_org_id}")
-                    # Re-fetch with explicit filter
-                    created_agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
-                    if not created_agent:
-                        logger.error(f"[AGENTS] [DRAFT] [ERROR] Agent not found even after re-fetch! | agent_id={agent_id} | clerk_org_id={clerk_org_id}")
-                elif created_agent:
-                    logger.info(f"[AGENTS] [DRAFT] [POST-INSERT] ✅ Returned record has correct clerk_org_id | value={created_agent.get('clerk_org_id')}")
+                # Update database with Ultravox ID (separate update call - don't modify original dictionary)
+                logger.info(f"[AGENTS] [DRAFT] [UPDATE] Updating agent with Ultravox ID | agent_id={agent_id} | ultravox_agent_id={ultravox_agent_id}")
+                db.update("agents", {"id": agent_id, "clerk_org_id": expected_clerk_org_id}, {
+                    "ultravox_agent_id": ultravox_agent_id,
+                    "status": "active"
+                })
                 
                 logger.info(
-                    f"[AGENTS] [DRAFT] [DEBUG] Agent record created successfully | "
+                    f"[AGENTS] [DRAFT] [UPDATE] ✅ Agent updated with Ultravox ID | "
                     f"agent_id={agent_id} | "
-                    f"clerk_org_id={clerk_org_id}"
+                    f"clerk_org_id={expected_clerk_org_id}"
                 )
                 
             except Exception as uv_error:
-                # Ultravox creation failed - DO NOT create in DB
+                # Ultravox creation failed - agent already in DB as "creating" status
+                # Update status to indicate failure
+                logger.warning(f"[AGENTS] [DRAFT] Ultravox creation failed, updating status | agent_id={agent_id}")
+                db.update("agents", {"id": agent_id, "clerk_org_id": expected_clerk_org_id}, {
+                    "status": "draft"  # Fallback to draft if Ultravox fails
+                })
                 import traceback
                 import json
                 error_details = {
@@ -181,58 +202,24 @@ async def create_draft_agent(
                     "full_traceback": traceback.format_exc(),
                     "agent_id": agent_id,
                 }
-                logger.error(f"[AGENTS] [DRAFT] Failed to create in Ultravox FIRST (RAW ERROR): {json.dumps(error_details, indent=2, default=str)}", exc_info=True)
+                logger.error(f"[AGENTS] [DRAFT] Failed to create in Ultravox (RAW ERROR): {json.dumps(error_details, indent=2, default=str)}", exc_info=True)
                 # Re-raise error to return to user
                 raise ValidationError(f"Failed to create agent in Ultravox: {str(uv_error)}")
-        else:
-            # Validation failed - voice not selected
-            reason = validation_result.get("reason", "unknown")
-            if reason == "voice_required":
-                # No voice selected - create as draft in DB only
-                agent_record["status"] = "draft"
-                
-                # CRITICAL: Ensure clerk_org_id is NEVER modified after initial assignment
-                # Pre-insert validation: verify clerk_org_id is set correctly
-                logger.info(f"[AGENTS] [DRAFT] [PRE-INSERT] Verifying clerk_org_id (draft path) | value={agent_record.get('clerk_org_id')} | expected={clerk_org_id}")
-                if agent_record.get("clerk_org_id") != clerk_org_id:
-                    logger.error(f"[AGENTS] [DRAFT] [ERROR] clerk_org_id mismatch (draft path)! | actual={agent_record.get('clerk_org_id')} | expected={clerk_org_id}")
-                    agent_record["clerk_org_id"] = clerk_org_id  # Force correct value
-                
-                # Match knowledge bases pattern: Simple insert
-                logger.info(f"[AGENTS] [DRAFT] [DEBUG] Inserting draft agent into database | agent_id={agent_id} | clerk_org_id={clerk_org_id}")
-                created_agent = db.insert("agents", agent_record)
-                
-                # Post-insert verification: verify returned record has correct clerk_org_id
-                if created_agent and created_agent.get("clerk_org_id") != clerk_org_id:
-                    logger.error(f"[AGENTS] [DRAFT] [ERROR] Returned record has wrong clerk_org_id (draft path)! | actual={created_agent.get('clerk_org_id')} | expected={clerk_org_id}")
-                    # Re-fetch with explicit filter
-                    created_agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
-                    if not created_agent:
-                        logger.error(f"[AGENTS] [DRAFT] [ERROR] Agent not found even after re-fetch (draft path)! | agent_id={agent_id} | clerk_org_id={clerk_org_id}")
-                elif created_agent:
-                    logger.info(f"[AGENTS] [DRAFT] [POST-INSERT] ✅ Returned record has correct clerk_org_id (draft path) | value={created_agent.get('clerk_org_id')}")
-                
-                logger.info(
-                    f"[AGENTS] [DRAFT] [DEBUG] Draft agent record created successfully | "
-                    f"agent_id={agent_id} | "
-                    f"clerk_org_id={clerk_org_id}"
-                )
-            else:
-                # Other validation failure - return error
-                error_msg = "; ".join(validation_result["errors"])
-                raise ValidationError(f"Agent validation failed: {error_msg}")
         
-        # Fetch updated record - match knowledge bases pattern
-        if created_agent:
-            # Use the returned record
-            pass
-        else:
-            # Fallback: fetch if insert didn't return data
-            logger.warning(f"[AGENTS] [DRAFT] Insert didn't return data, attempting to fetch: {agent_id}")
-            created_agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
+        # MATCH KNOWLEDGE BASES PATTERN: Re-fetch at the end (after all operations)
+        logger.info(f"[AGENTS] [DRAFT] [FETCH] Fetching agent from database | agent_id={agent_id} | clerk_org_id={expected_clerk_org_id}")
+        created_agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": expected_clerk_org_id})
         
         if not created_agent:
+            logger.error(f"[AGENTS] [DRAFT] [ERROR] Agent not found after insert! | agent_id={agent_id} | clerk_org_id={expected_clerk_org_id}")
             raise ValidationError(f"Failed to create/retrieve agent: {agent_id}")
+        
+        # Verify fetched record has correct clerk_org_id
+        if created_agent.get("clerk_org_id") != expected_clerk_org_id:
+            logger.error(f"[AGENTS] [DRAFT] [ERROR] Fetched record has wrong clerk_org_id! | actual={created_agent.get('clerk_org_id')} | expected={expected_clerk_org_id}")
+            raise ValidationError(f"Agent created with incorrect organization ID: {agent_id}")
+        
+        logger.info(f"[AGENTS] [DRAFT] [FETCH] ✅ Agent fetched successfully | agent_id={agent_id} | clerk_org_id={created_agent.get('clerk_org_id')}")
         
         return {
             "data": created_agent,
