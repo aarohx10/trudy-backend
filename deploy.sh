@@ -239,5 +239,19 @@ else
     echo -e "${YELLOW}⚠️  CORS configuration not found in logs (may need to check manually)${NC}"
 fi
 
+# Run comprehensive deployment verification
+echo ""
+echo -e "${GREEN}Running comprehensive deployment verification...${NC}"
+if [ -f "scripts/comprehensive_deployment_check.sh" ]; then
+    chmod +x scripts/comprehensive_deployment_check.sh
+    bash scripts/comprehensive_deployment_check.sh || {
+        echo -e "${YELLOW}⚠️  Deployment verification had issues (non-fatal)${NC}"
+        echo "Review the output above for details"
+    }
+else
+    echo -e "${YELLOW}Comprehensive verification script not found, skipping...${NC}"
+fi
+
+echo ""
 echo -e "${GREEN}✅ Deployment completed successfully!${NC}"
 
