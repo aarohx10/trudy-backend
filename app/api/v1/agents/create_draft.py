@@ -29,25 +29,30 @@ async def create_draft_agent(
     # Permission check handled by require_admin_role dependency
     
     try:
-        # CRITICAL: Use clerk_org_id for organization-first approach
+        # =================================================================
+        # DEBUG LOGGING: Track organization ID and user context
+        # =================================================================
+        clerk_user_id = current_user.get("clerk_user_id") or current_user.get("user_id")
         clerk_org_id = current_user.get("clerk_org_id")
+        user_role = current_user.get("role", "unknown")
         
-        # STEP 1: Explicit validation BEFORE creating agent_record
-        logger.info(f"[AGENTS] [DRAFT] [STEP 1] Extracting clerk_org_id from current_user | clerk_org_id={clerk_org_id}")
+        logger.info(
+            f"[AGENTS] [DRAFT] [DEBUG] Draft agent creation attempt | "
+            f"clerk_user_id={clerk_user_id} | "
+            f"clerk_org_id={clerk_org_id} | "
+            f"role={user_role}"
+        )
         
+        # CRITICAL: Use clerk_org_id for organization-first approach
+        # Match knowledge bases pattern: Simple, direct validation
         if not clerk_org_id:
-            logger.error(f"[AGENTS] [DRAFT] [ERROR] Missing clerk_org_id in current_user | current_user_keys={list(current_user.keys())}")
+            logger.error(f"[AGENTS] [DRAFT] [ERROR] Missing organization ID in token | clerk_user_id={clerk_user_id}")
             raise ValidationError("Missing organization ID in token")
         
-        # Strip whitespace and validate it's not empty
-        clerk_org_id = str(clerk_org_id).strip()
-        if not clerk_org_id:
-            logger.error(f"[AGENTS] [DRAFT] [ERROR] clerk_org_id is empty after stripping | original_value={current_user.get('clerk_org_id')}")
-            raise ValidationError("Organization ID cannot be empty")
+        # Permission check is handled by require_admin_role dependency
+        # Role assignment is handled in get_current_user() via ensure_admin_role_for_creator()
         
-        logger.info(f"[AGENTS] [DRAFT] [STEP 2] ✅ clerk_org_id validated | clerk_org_id={clerk_org_id}")
-        
-        # Initialize database service with org_id context
+        # Initialize database service with org_id context (match knowledge bases pattern)
         db = DatabaseService(org_id=clerk_org_id)
         now = datetime.utcnow()
         template_id = payload.get("template_id")
@@ -74,18 +79,11 @@ async def create_draft_agent(
             name = template.get("name", "Untitled Agent")
             system_prompt = template.get("system_prompt", system_prompt)
         
-        # STEP 3: Build agent record - use clerk_org_id only (organization-first approach)
-        # Note: Some fields require migration 015_expand_agents_table.sql to be run
-        # CRITICAL: Ensure clerk_org_id is never empty (double-check before setting)
-        logger.info(f"[AGENTS] [DRAFT] [STEP 3] Building agent_record | clerk_org_id={clerk_org_id}")
-        
-        if not clerk_org_id or not clerk_org_id.strip():
-            logger.error(f"[AGENTS] [DRAFT] [ERROR] Invalid clerk_org_id before creating agent_record | clerk_org_id={clerk_org_id}")
-            raise ValidationError(f"Invalid clerk_org_id: '{clerk_org_id}' - cannot be empty")
-        
+        # Create agent record - use clerk_org_id only (organization-first approach)
+        # Match knowledge bases pattern: Simple, direct assignment
         agent_record = {
             "id": agent_id,
-            "clerk_org_id": clerk_org_id.strip(),  # CRITICAL: Organization ID for data partitioning - ensure no whitespace
+            "clerk_org_id": clerk_org_id,  # CRITICAL: Organization ID for data partitioning
             "name": name,
             "description": template.get("description") if template else "Draft agent",
             "voice_id": default_voice_id,  # None if no voice available - user must select voice
@@ -113,21 +111,19 @@ async def create_draft_agent(
              # Agent table doesn't have category.
              pass
         
-        # STEP 4: Explicit validation AFTER setting clerk_org_id in agent_record
-        logger.info(f"[AGENTS] [DRAFT] [STEP 4] Validating agent_record.clerk_org_id | value={agent_record.get('clerk_org_id')}")
+        logger.info(
+            f"[AGENTS] [DRAFT] [DEBUG] Agent record prepared | "
+            f"agent_id={agent_id} | "
+            f"clerk_org_id={clerk_org_id}"
+        )
         
-        if "clerk_org_id" not in agent_record:
-            logger.error(f"[AGENTS] [DRAFT] [ERROR] clerk_org_id key missing from agent_record | keys={list(agent_record.keys())}")
-            raise ValidationError("clerk_org_id is missing from agent_record")
-        
-        if not agent_record["clerk_org_id"] or not str(agent_record["clerk_org_id"]).strip():
-            logger.error(f"[AGENTS] [DRAFT] [ERROR] clerk_org_id is empty in agent_record | agent_record={agent_record}")
-            raise ValidationError(f"clerk_org_id cannot be empty in agent_record: '{agent_record.get('clerk_org_id')}'")
-        
-        logger.info(f"[AGENTS] [DRAFT] [STEP 4] ✅ agent_record.clerk_org_id validated | value={agent_record.get('clerk_org_id')}")
-        
-        # STEP 5: Log complete agent_record before insert (for debugging)
-        logger.info(f"[AGENTS] [DRAFT] [STEP 5] Complete agent_record before insert | agent_id={agent_id} | clerk_org_id={agent_record.get('clerk_org_id')} | keys={list(agent_record.keys())}")
+        logger.info(
+            f"[AGENTS] [DRAFT] [DEBUG] Creating draft agent record | "
+            f"agent_id={agent_id} | "
+            f"clerk_user_id={clerk_user_id} | "
+            f"clerk_org_id={clerk_org_id} | "
+            f"name={name}"
+        )
         
         # Validate agent can be created in Ultravox
         validation_result = await validate_agent_for_ultravox_sync(agent_record, clerk_org_id)
@@ -148,20 +144,15 @@ async def create_draft_agent(
                 agent_record["ultravox_agent_id"] = ultravox_agent_id
                 agent_record["status"] = "active"
                 
-                # Now save to Supabase - capture the returned record
-                # STEP 6: Log the agent_record before insert to verify clerk_org_id
-                logger.info(f"[AGENTS] [DRAFT] [STEP 6] Inserting agent into database | agent_id={agent_id} | clerk_org_id={agent_record.get('clerk_org_id')}")
+                # Now save to Supabase - match knowledge bases pattern: Simple insert
+                logger.info(f"[AGENTS] [DRAFT] [DEBUG] Inserting agent into database | agent_id={agent_id} | clerk_org_id={clerk_org_id}")
                 created_agent = db.insert("agents", agent_record)
                 
-                # STEP 7: Verify clerk_org_id was saved correctly
-                saved_clerk_org_id = created_agent.get('clerk_org_id') if created_agent else None
-                logger.info(f"[AGENTS] [DRAFT] [STEP 7] Agent inserted | agent_id={agent_id} | saved_clerk_org_id={saved_clerk_org_id}")
-                
-                if not saved_clerk_org_id or not str(saved_clerk_org_id).strip():
-                    logger.error(f"[AGENTS] [DRAFT] [ERROR] clerk_org_id is empty after insert! | agent_id={agent_id} | created_agent={created_agent}")
-                    raise ValidationError(f"clerk_org_id was not saved correctly: '{saved_clerk_org_id}'")
-                
-                logger.info(f"[AGENTS] [DRAFT] [STEP 7] ✅ Agent created successfully | agent_id={agent_id} | clerk_org_id={saved_clerk_org_id}")
+                logger.info(
+                    f"[AGENTS] [DRAFT] [DEBUG] Agent record created successfully | "
+                    f"agent_id={agent_id} | "
+                    f"clerk_org_id={clerk_org_id}"
+                )
                 
             except Exception as uv_error:
                 # Ultravox creation failed - DO NOT create in DB
@@ -182,27 +173,26 @@ async def create_draft_agent(
             if reason == "voice_required":
                 # No voice selected - create as draft in DB only
                 agent_record["status"] = "draft"
-                # STEP 6: Log the agent_record before insert to verify clerk_org_id
-                logger.info(f"[AGENTS] [DRAFT] [STEP 6] Inserting draft agent into database | agent_id={agent_id} | clerk_org_id={agent_record.get('clerk_org_id')}")
+                # Match knowledge bases pattern: Simple insert
+                logger.info(f"[AGENTS] [DRAFT] [DEBUG] Inserting draft agent into database | agent_id={agent_id} | clerk_org_id={clerk_org_id}")
                 created_agent = db.insert("agents", agent_record)
                 
-                # STEP 7: Verify clerk_org_id was saved correctly
-                saved_clerk_org_id = created_agent.get('clerk_org_id') if created_agent else None
-                logger.info(f"[AGENTS] [DRAFT] [STEP 7] Draft agent inserted | agent_id={agent_id} | saved_clerk_org_id={saved_clerk_org_id}")
-                
-                if not saved_clerk_org_id or not str(saved_clerk_org_id).strip():
-                    logger.error(f"[AGENTS] [DRAFT] [ERROR] clerk_org_id is empty after insert! | agent_id={agent_id} | created_agent={created_agent}")
-                    raise ValidationError(f"clerk_org_id was not saved correctly: '{saved_clerk_org_id}'")
-                
-                logger.info(f"[AGENTS] [DRAFT] [STEP 7] ✅ Draft agent created successfully | agent_id={agent_id} | clerk_org_id={saved_clerk_org_id}")
+                logger.info(
+                    f"[AGENTS] [DRAFT] [DEBUG] Draft agent record created successfully | "
+                    f"agent_id={agent_id} | "
+                    f"clerk_org_id={clerk_org_id}"
+                )
             else:
                 # Other validation failure - return error
                 error_msg = "; ".join(validation_result["errors"])
                 raise ValidationError(f"Agent validation failed: {error_msg}")
         
-        # Use the agent record returned from insert() directly
-        # If insert() didn't return data (shouldn't happen), try fetching as fallback
-        if not created_agent:
+        # Fetch updated record - match knowledge bases pattern
+        if created_agent:
+            # Use the returned record
+            pass
+        else:
+            # Fallback: fetch if insert didn't return data
             logger.warning(f"[AGENTS] [DRAFT] Insert didn't return data, attempting to fetch: {agent_id}")
             created_agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
         

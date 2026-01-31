@@ -289,7 +289,24 @@ class DatabaseService:
                     f"[DATABASE] [INSERT] [ERROR] clerk_org_id is still empty after all processing! | "
                     f"table={table} | final_value={final_clerk_org_id} | self.org_id={self.org_id} | data_keys={list(data.keys())}"
                 )
-                raise ValueError(f"Cannot insert {table} with empty clerk_org_id")
+                # CRITICAL: If self.org_id exists, use it as final fallback
+                if self.org_id and str(self.org_id).strip():
+                    logger.warning(
+                        f"[DATABASE] [INSERT] [FALLBACK] Using self.org_id as final fallback | "
+                        f"table={table} | self.org_id={self.org_id}"
+                    )
+                    data["clerk_org_id"] = str(self.org_id).strip()
+                    final_clerk_org_id = data["clerk_org_id"]
+                else:
+                    raise ValueError(f"Cannot insert {table} with empty clerk_org_id and no org_id context")
+            
+            # STEP 4b: Double-check after fallback
+            if not final_clerk_org_id or (isinstance(final_clerk_org_id, str) and final_clerk_org_id.strip() == ""):
+                logger.error(
+                    f"[DATABASE] [INSERT] [ERROR] clerk_org_id is STILL empty after fallback! | "
+                    f"table={table} | final_value={final_clerk_org_id} | self.org_id={self.org_id}"
+                )
+                raise ValueError(f"Cannot insert {table} with empty clerk_org_id - database constraint violation")
             
             logger.info(f"[DATABASE] [INSERT] [STEP 4] ✅ Final clerk_org_id validation passed | table={table} | clerk_org_id={final_clerk_org_id}")
         

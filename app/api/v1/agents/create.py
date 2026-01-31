@@ -36,64 +36,59 @@ async def create_agent(
     """Create new agent (creates in Supabase + Ultravox)"""
     # Permission check handled by require_admin_role dependency
     
-    # CRITICAL: Use clerk_org_id for organization-first approach
-    clerk_org_id = current_user.get("clerk_org_id")
-    if not clerk_org_id:
-        raise ValidationError("Missing organization ID in token")
-    
-    # Check idempotency key
-    if idempotency_key:
-        cached = await check_idempotency_key(
-            clerk_org_id,
-            idempotency_key,
-            request,
-            agent_data.dict(),
-        )
-        if cached:
-            from fastapi.responses import JSONResponse
-            return JSONResponse(
-                content=cached["response_body"],
-                status_code=cached["status_code"],
-            )
-    
     try:
-        # CRITICAL: Use clerk_org_id for organization-first approach
+        # =================================================================
+        # DEBUG LOGGING: Track organization ID and user context
+        # =================================================================
+        clerk_user_id = current_user.get("clerk_user_id") or current_user.get("user_id")
         clerk_org_id = current_user.get("clerk_org_id")
+        user_role = current_user.get("role", "unknown")
         
-        # STEP 1: Explicit validation BEFORE creating agent_record
-        logger.info(f"[AGENTS] [CREATE] [STEP 1] Extracting clerk_org_id from current_user | clerk_org_id={clerk_org_id}")
+        logger.info(
+            f"[AGENTS] [CREATE] [DEBUG] Agent creation attempt | "
+            f"clerk_user_id={clerk_user_id} | "
+            f"clerk_org_id={clerk_org_id} | "
+            f"role={user_role}"
+        )
         
+        # CRITICAL: Use clerk_org_id for organization-first approach
+        # Match knowledge bases pattern: Simple, direct validation
         if not clerk_org_id:
-            logger.error(f"[AGENTS] [CREATE] [ERROR] Missing clerk_org_id in current_user | current_user_keys={list(current_user.keys())}")
+            logger.error(f"[AGENTS] [CREATE] [ERROR] Missing organization ID in token | clerk_user_id={clerk_user_id}")
             raise ValidationError("Missing organization ID in token")
         
-        # Strip whitespace and validate it's not empty
-        clerk_org_id = str(clerk_org_id).strip()
-        if not clerk_org_id:
-            logger.error(f"[AGENTS] [CREATE] [ERROR] clerk_org_id is empty after stripping | original_value={current_user.get('clerk_org_id')}")
-            raise ValidationError("Organization ID cannot be empty")
+        # Permission check is handled by require_admin_role dependency
+        # Role assignment is handled in get_current_user() via ensure_admin_role_for_creator()
         
-        logger.info(f"[AGENTS] [CREATE] [STEP 2] ✅ clerk_org_id validated | clerk_org_id={clerk_org_id}")
+        # Check idempotency key
+        if idempotency_key:
+            cached = await check_idempotency_key(
+                clerk_org_id,
+                idempotency_key,
+                request,
+                agent_data.dict(),
+            )
+            if cached:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    content=cached["response_body"],
+                    status_code=cached["status_code"],
+                )
         
-        # Initialize database service with org_id context
+        # Initialize database service with org_id context (match knowledge bases pattern)
         db = DatabaseService(org_id=clerk_org_id)
         now = datetime.utcnow()
         
         # Convert Pydantic model to dict
         agent_dict = agent_data.dict(exclude_none=True)
         
-        # STEP 3: Build database record - use clerk_org_id only (organization-first approach)
-        # CRITICAL: Ensure clerk_org_id is never empty (double-check before setting)
-        logger.info(f"[AGENTS] [CREATE] [STEP 3] Building agent_record | clerk_org_id={clerk_org_id}")
-        
-        if not clerk_org_id or not clerk_org_id.strip():
-            logger.error(f"[AGENTS] [CREATE] [ERROR] Invalid clerk_org_id before creating agent_record | clerk_org_id={clerk_org_id}")
-            raise ValidationError(f"Invalid clerk_org_id: '{clerk_org_id}' - cannot be empty")
-        
         agent_id = str(uuid.uuid4())
+        
+        # Create agent record - use clerk_org_id only (organization-first approach)
+        # Match knowledge bases pattern: Simple, direct assignment
         agent_record = {
             "id": agent_id,
-            "clerk_org_id": clerk_org_id.strip(),  # CRITICAL: Organization ID for data partitioning - ensure no whitespace
+            "clerk_org_id": clerk_org_id,  # CRITICAL: Organization ID for data partitioning
             "name": agent_dict["name"],
             "description": agent_dict.get("description"),
             "voice_id": agent_dict["voice_id"],
@@ -142,27 +137,19 @@ async def create_agent(
         if agent_dict.get("crm_webhook_secret"):
             agent_record["crm_webhook_secret"] = agent_dict["crm_webhook_secret"]
         
-        # STEP 4: Explicit validation AFTER setting clerk_org_id in agent_record
-        logger.info(f"[AGENTS] [CREATE] [STEP 4] Validating agent_record.clerk_org_id | value={agent_record.get('clerk_org_id')}")
+        logger.info(
+            f"[AGENTS] [CREATE] [DEBUG] Agent record prepared | "
+            f"agent_id={agent_id} | "
+            f"clerk_org_id={clerk_org_id}"
+        )
         
-        if "clerk_org_id" not in agent_record:
-            logger.error(f"[AGENTS] [CREATE] [ERROR] clerk_org_id key missing from agent_record | keys={list(agent_record.keys())}")
-            raise ValidationError("clerk_org_id is missing from agent_record")
-        
-        if not agent_record["clerk_org_id"] or not str(agent_record["clerk_org_id"]).strip():
-            logger.error(f"[AGENTS] [CREATE] [ERROR] clerk_org_id is empty in agent_record | agent_record={agent_record}")
-            raise ValidationError(f"clerk_org_id cannot be empty in agent_record: '{agent_record.get('clerk_org_id')}'")
-        
-        logger.info(f"[AGENTS] [CREATE] [STEP 4] ✅ agent_record.clerk_org_id validated | value={agent_record.get('clerk_org_id')}")
-        
-        # STEP 5: Log complete agent_record before insert (for debugging)
-        logger.info(f"[AGENTS] [CREATE] [STEP 5] Complete agent_record before insert | agent_id={agent_id} | clerk_org_id={agent_record.get('clerk_org_id')} | keys={list(agent_record.keys())}")
-        
-        # CRITICAL: Final validation immediately before db.insert - raise ValidationError if clerk_org_id is empty
-        final_clerk_org_id = agent_record.get("clerk_org_id")
-        if not final_clerk_org_id or not str(final_clerk_org_id).strip():
-            logger.error(f"[AGENTS] [CREATE] [ERROR] clerk_org_id is empty immediately before db.insert | agent_id={agent_id} | agent_record={agent_record}")
-            raise ValidationError("clerk_org_id cannot be empty. Organization ID is required to create an agent.")
+        logger.info(
+            f"[AGENTS] [CREATE] [DEBUG] Creating agent record | "
+            f"agent_id={agent_id} | "
+            f"clerk_user_id={clerk_user_id} | "
+            f"clerk_org_id={clerk_org_id} | "
+            f"name={agent_dict['name']}"
+        )
         
         # Validate agent can be created in Ultravox
         validation_result = await validate_agent_for_ultravox_sync(agent_record, clerk_org_id)
@@ -185,11 +172,15 @@ async def create_agent(
             agent_record["ultravox_agent_id"] = ultravox_agent_id
             agent_record["status"] = "active"
             
-            # Now save to Supabase
-            # CRITICAL: Log the agent_record before insert to verify clerk_org_id
-            logger.info(f"[AGENTS] [CREATE] Inserting agent with clerk_org_id: {agent_record.get('clerk_org_id')}")
+            # Now save to Supabase - match knowledge bases pattern: Simple insert
+            logger.info(f"[AGENTS] [CREATE] [DEBUG] Inserting agent into database | agent_id={agent_id} | clerk_org_id={clerk_org_id}")
             db.insert("agents", agent_record)
-            logger.info(f"[AGENTS] [CREATE] Agent created in Ultravox FIRST, then saved to DB: {agent_id}")
+            
+            logger.info(
+                f"[AGENTS] [CREATE] [DEBUG] Agent record created successfully | "
+                f"agent_id={agent_id} | "
+                f"clerk_org_id={clerk_org_id}"
+            )
             
         except Exception as uv_error:
             # Ultravox creation failed - DO NOT create in DB
@@ -211,20 +202,10 @@ async def create_agent(
                 http_status=500,
             )
         
-        # Fetch the created agent - filter by org_id to enforce org scoping
-        # STEP 8: Fetch and verify the created agent
-        logger.info(f"[AGENTS] [CREATE] [STEP 8] Fetching created agent | agent_id={agent_id} | clerk_org_id={clerk_org_id}")
+        # Fetch updated record - match knowledge bases pattern
         created_agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
         
-        if created_agent:
-            fetched_clerk_org_id = created_agent.get('clerk_org_id')
-            logger.info(f"[AGENTS] [CREATE] [STEP 8] ✅ Agent fetched | agent_id={agent_id} | fetched_clerk_org_id={fetched_clerk_org_id}")
-            
-            if not fetched_clerk_org_id or not str(fetched_clerk_org_id).strip():
-                logger.error(f"[AGENTS] [CREATE] [ERROR] clerk_org_id is empty in fetched agent! | agent_id={agent_id} | created_agent={created_agent}")
-                raise ValidationError(f"clerk_org_id is empty in fetched agent: '{fetched_clerk_org_id}'")
-        else:
-            logger.error(f"[AGENTS] [CREATE] [ERROR] Failed to fetch created agent | agent_id={agent_id} | clerk_org_id={clerk_org_id}")
+        if not created_agent:
             raise ValidationError(f"Failed to fetch created agent: {agent_id}")
         
         response_data = {
