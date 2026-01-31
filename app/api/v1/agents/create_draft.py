@@ -29,76 +29,48 @@ async def create_draft_agent(
     """Create a draft agent with default settings, optionally from a template"""
     try:
         # ============================================================
-        # SAFEGUARD 1: Manual JSON parsing fallback if FastAPI Body() fails
+        # SIMPLIFIED LOGIC: Extract payload, get org_id, insert
         # ============================================================
-        manual_payload = {}
+        
+        # 1. Get Payload (Robustly)
+        # Try manual parsing first to avoid FastAPI Body() issues
+        data = {}
         try:
             raw_body = await request.body()
             if raw_body:
-                raw_body_str = raw_body.decode('utf-8')
-                logger.info(f"[AGENTS] [DRAFT] [DEBUG] Raw request body: {raw_body_str}")
-                logger.info(f"[AGENTS] [DRAFT] [DEBUG] Body length: {len(raw_body)}")
-                logger.info(f"[AGENTS] [DRAFT] [DEBUG] Content-Type: {request.headers.get('content-type')}")
-                
-                # Try to manually parse JSON as fallback
-                try:
-                    manual_payload = json.loads(raw_body_str)
-                    logger.info(f"[AGENTS] [DRAFT] [DEBUG] Manual JSON parse successful: {manual_payload}")
-                except json.JSONDecodeError as e:
-                    logger.warning(f"[AGENTS] [DRAFT] [DEBUG] Manual JSON parse failed: {e}")
-        except Exception as e:
-            logger.error(f"[AGENTS] [DRAFT] [DEBUG] Failed to read raw body: {e}")
+                data = json.loads(raw_body.decode('utf-8'))
+        except Exception:
+            pass
+            
+        # Fallback to FastAPI parsed payload if manual failed
+        if not data and payload:
+            data = payload
+            
+        # 2. Get Org ID
+        # Priority: Payload -> Current User -> Error
+        clerk_org_id = data.get("clerk_org_id") or current_user.get("clerk_org_id")
         
-        # ============================================================
-        # SAFEGUARD 2: Use manual_payload if FastAPI payload is empty
-        # ============================================================
-        effective_payload = payload if payload else manual_payload
-        
-        logger.info(f"[AGENTS] [DRAFT] [DEBUG] FastAPI parsed payload: {payload}")
-        logger.info(f"[AGENTS] [DRAFT] [DEBUG] Effective payload (after fallback): {effective_payload}")
-        logger.info(f"[AGENTS] [DRAFT] [DEBUG] Payload keys: {list(effective_payload.keys())}")
-        logger.info(f"[AGENTS] [DRAFT] [DEBUG] payload.get('clerk_org_id'): {effective_payload.get('clerk_org_id')}")
-        logger.info(f"[AGENTS] [DRAFT] [DEBUG] current_user.get('clerk_org_id'): {current_user.get('clerk_org_id')}")
-        
-        # ============================================================
-        # SAFEGUARD 3: Extract clerk_org_id with MULTIPLE fallbacks
-        # Priority: effective_payload → current_user → RAISE ERROR
-        # ============================================================
-        clerk_org_id = effective_payload.get("clerk_org_id") or current_user.get("clerk_org_id")
-        
-        logger.info(f"[AGENTS] [DRAFT] [DEBUG] clerk_org_id after extraction (before validation): {clerk_org_id}")
-        logger.info(f"[AGENTS] [DRAFT] [DEBUG] clerk_org_id type: {type(clerk_org_id)}")
-        
-        # ============================================================
-        # SAFEGUARD 4: Explicit validation (same pattern as other endpoints)
-        # ============================================================
         if not clerk_org_id:
-            logger.error(f"[AGENTS] [DRAFT] [ERROR] Missing clerk_org_id in both payload and current_user")
-            logger.error(f"[AGENTS] [DRAFT] [ERROR] Effective payload: {effective_payload}")
-            logger.error(f"[AGENTS] [DRAFT] [ERROR] Current user keys: {list(current_user.keys())}")
-            logger.error(f"[AGENTS] [DRAFT] [ERROR] Current user clerk_org_id: {current_user.get('clerk_org_id')}")
-            raise ValidationError("Missing organization ID. Ensure you are authenticated and part of an organization.")
-        
-        # Strip whitespace and validate it's not empty
+            logger.error(f"[AGENTS] [DRAFT] Missing clerk_org_id. Payload keys: {list(data.keys())}")
+            raise ValidationError("Missing organization ID")
+            
         clerk_org_id = str(clerk_org_id).strip()
         if not clerk_org_id:
-            logger.error(f"[AGENTS] [DRAFT] [ERROR] clerk_org_id is empty after stripping")
-            logger.error(f"[AGENTS] [DRAFT] [ERROR] Original value: {effective_payload.get('clerk_org_id') or current_user.get('clerk_org_id')}")
             raise ValidationError("Organization ID cannot be empty")
-        
-        logger.info(f"[AGENTS] [DRAFT] [DEBUG] ✅ Final clerk_org_id validated: '{clerk_org_id}'")
-        
+            
+        logger.info(f"[AGENTS] [DRAFT] Creating agent for org: {clerk_org_id}")
+
+        # 3. Prepare Data
         db = DatabaseService(org_id=clerk_org_id)
         now = datetime.utcnow()
-        template_id = effective_payload.get("template_id")
+        template_id = data.get("template_id")
         
-        # Get default voice if available (skip if no clerk_org_id)
+        # Get default voice
         default_voice_id = None
-        if clerk_org_id:
-            voices = db.select("voices", {"clerk_org_id": clerk_org_id}, order_by="created_at DESC")
-            default_voice_id = voices[0]["id"] if voices else None
+        voices = db.select("voices", {"clerk_org_id": clerk_org_id}, order_by="created_at DESC")
+        default_voice_id = voices[0]["id"] if voices else None
         
-        # Get template if provided
+        # Get template
         template = None
         if template_id:
             template = db.select_one("agent_templates", {"id": template_id})
@@ -109,9 +81,10 @@ async def create_draft_agent(
         name = template.get("name", "Untitled Agent") if template else "Untitled Agent"
         system_prompt = template.get("system_prompt", "You are a helpful assistant.") if template else "You are a helpful assistant."
         
-        # Create agent record
+        # 4. Create Record
         agent_record = {
             "id": agent_id,
+            "clerk_org_id": clerk_org_id,  # ALWAYS INCLUDED
             "name": name,
             "description": template.get("description") if template else "Draft agent",
             "voice_id": default_voice_id,
@@ -133,42 +106,11 @@ async def create_draft_agent(
         if template_id:
             agent_record["template_id"] = template_id
         
-        # ============================================================
-        # SAFEGUARD 5: ALWAYS include clerk_org_id (no conditional)
-        # This ensures it's NEVER NULL when inserting
-        # ============================================================
-        agent_record["clerk_org_id"] = clerk_org_id
+        # 5. Insert
+        logger.info(f"[AGENTS] [DRAFT] Inserting agent: {agent_id}")
+        db.insert("agents", agent_record)
         
-        # ============================================================
-        # SAFEGUARD 6: Final validation before insert
-        # ============================================================
-        if "clerk_org_id" not in agent_record:
-            logger.error(f"[AGENTS] [DRAFT] [ERROR] clerk_org_id key missing from agent_record")
-            logger.error(f"[AGENTS] [DRAFT] [ERROR] agent_record keys: {list(agent_record.keys())}")
-            raise ValidationError("clerk_org_id is missing from agent_record - this should never happen")
-        
-        if not agent_record["clerk_org_id"] or not str(agent_record["clerk_org_id"]).strip():
-            logger.error(f"[AGENTS] [DRAFT] [ERROR] clerk_org_id is empty in agent_record")
-            logger.error(f"[AGENTS] [DRAFT] [ERROR] agent_record['clerk_org_id']: {agent_record['clerk_org_id']}")
-            raise ValidationError("clerk_org_id cannot be empty in agent_record - this should never happen")
-        
-        # CRITICAL DEBUG: Log agent_record before insert
-        logger.info(f"[AGENTS] [DRAFT] [DEBUG] agent_record before insert: {agent_record}")
-        logger.info(f"[AGENTS] [DRAFT] [DEBUG] ✅ clerk_org_id in agent_record: {agent_record['clerk_org_id']}")
-        
-        # ============================================================
-        # SAFEGUARD 7: Insert with explicit error handling
-        # ============================================================
-        try:
-            db.insert("agents", agent_record)
-            logger.info(f"[AGENTS] [DRAFT] [DEBUG] ✅ Agent inserted successfully with clerk_org_id: {agent_record['clerk_org_id']}")
-        except Exception as insert_error:
-            logger.error(f"[AGENTS] [DRAFT] [ERROR] Database insert failed: {insert_error}")
-            logger.error(f"[AGENTS] [DRAFT] [ERROR] agent_record that failed: {agent_record}")
-            logger.error(f"[AGENTS] [DRAFT] [ERROR] clerk_org_id value: {agent_record.get('clerk_org_id')}")
-            raise ValidationError(f"Failed to insert agent: {str(insert_error)}")
-        
-        # Try Ultravox sync in background (non-blocking)
+        # 6. Sync (Background)
         try:
             ultravox_response = await create_agent_ultravox_first(agent_record, clerk_org_id)
             ultravox_agent_id = ultravox_response.get("agentId")
@@ -178,11 +120,10 @@ async def create_draft_agent(
                     "status": "active"
                 })
         except Exception as e:
-            logger.warning(f"[AGENTS] [DRAFT] Ultravox creation failed (non-critical): {e}")
+            logger.warning(f"[AGENTS] [DRAFT] Ultravox sync failed (non-critical): {e}")
         
-        # Re-fetch the created agent
+        # 7. Return
         created_agent = db.select_one("agents", {"id": agent_id})
-        
         if not created_agent:
             raise ValidationError(f"Failed to retrieve agent after creation: {agent_id}")
         
