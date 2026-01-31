@@ -33,7 +33,7 @@ if ($LASTEXITCODE -eq 0) {
     
     # Show deployment output summary
     Write-Host "Deployment Output Summary:" -ForegroundColor Cyan
-    $deployOutput | Select-String -Pattern "ERROR|FAILED|completed successfully" | Select-Object -Last 10
+    $deployOutput | Select-String -Pattern "ERROR|FAILED|completed successfully|SUCCESS|PASSED" | Select-Object -Last 10
     
     Write-Host ""
     Write-Host "Running post-deployment verification..." -ForegroundColor Yellow
@@ -95,8 +95,9 @@ if ($LASTEXITCODE -eq 0) {
     }
     
     Write-Host ""
+    Write-Host "============================================================" -ForegroundColor Gray
     Write-Host "Deployment Summary" -ForegroundColor Cyan
-    Write-Host "========================================" -ForegroundColor Gray
+    Write-Host "============================================================" -ForegroundColor Gray
     
     if ($healthCheck) {
         Write-Host "Deployment Status: SUCCESS" -ForegroundColor Green
