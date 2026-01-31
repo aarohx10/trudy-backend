@@ -217,19 +217,44 @@ class DatabaseService:
         CRITICAL: Automatically appends clerk_org_id filter when org_id is set and table is org-scoped.
         This ensures absolute data isolation at the application layer.
         """
+        # CRITICAL: Re-set org context before each query (Supabase HTTP client doesn't maintain session state)
+        if self.org_id:
+            self.set_org_context(self.org_id)
+        
         # Initialize filters dict if None
         if filters is None:
             filters = {}
         
         # CRITICAL: Auto-append clerk_org_id filter for org-scoped tables
         org_scoped_tables = ["agents", "calls", "voices", "knowledge_bases", "tools", "contacts", "contact_folders", "campaigns", "webhook_endpoints"]
+        original_filters = filters.copy()
+        
         if table in org_scoped_tables and self.org_id:
             # Only append if not already present (allows explicit override if needed)
             if "clerk_org_id" not in filters:
                 filters["clerk_org_id"] = self.org_id
-                logger.debug(f"[DATABASE] [SELECT_ONE] Auto-appended clerk_org_id filter | table={table} | org_id={self.org_id}")
+                logger.info(
+                    f"[DATABASE] [SELECT_ONE] Auto-appended clerk_org_id filter | "
+                    f"table={table} | org_id={self.org_id} | "
+                    f"original_filters={original_filters} | final_filters={filters}"
+                )
+            else:
+                logger.info(
+                    f"[DATABASE] [SELECT_ONE] Using explicit clerk_org_id filter | "
+                    f"table={table} | filter_clerk_org_id={filters.get('clerk_org_id')} | "
+                    f"self.org_id={self.org_id} | filters={filters}"
+                )
+        else:
+            logger.info(
+                f"[DATABASE] [SELECT_ONE] No auto-append (not org-scoped or no org_id) | "
+                f"table={table} | self.org_id={self.org_id} | filters={filters}"
+            )
         
         results = self.select(table, filters)
+        logger.info(
+            f"[DATABASE] [SELECT_ONE] Query completed | "
+            f"table={table} | filters={filters} | results_count={len(results)}"
+        )
         return results[0] if results else None
     
     def insert(self, table: str, data: Dict[str, Any]) -> Dict[str, Any]:
