@@ -96,6 +96,9 @@ async def create_draft_agent(
         # Validate agent can be created in Ultravox
         validation_result = await validate_agent_for_ultravox_sync(agent_record, clerk_org_id)
         
+        # Variable to store the created agent record
+        created_agent = None
+        
         if validation_result["can_sync"]:
             # Create in Ultravox FIRST
             try:
@@ -109,8 +112,8 @@ async def create_draft_agent(
                 agent_record["ultravox_agent_id"] = ultravox_agent_id
                 agent_record["status"] = "active"
                 
-                # Now save to Supabase
-                db.insert("agents", agent_record)
+                # Now save to Supabase - capture the returned record
+                created_agent = db.insert("agents", agent_record)
                 logger.info(f"[AGENTS] [DRAFT] Agent created in Ultravox FIRST, then saved to DB: {agent_id}")
                 
             except Exception as uv_error:
@@ -132,18 +135,21 @@ async def create_draft_agent(
             if reason == "voice_required":
                 # No voice selected - create as draft in DB only
                 agent_record["status"] = "draft"
-                db.insert("agents", agent_record)
+                created_agent = db.insert("agents", agent_record)
                 logger.info(f"[AGENTS] [DRAFT] Agent created as draft (no voice selected): {agent_id}")
             else:
                 # Other validation failure - return error
                 error_msg = "; ".join(validation_result["errors"])
                 raise ValidationError(f"Agent validation failed: {error_msg}")
         
-        # Fetch the created agent - filter by org_id instead of client_id
-        created_agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
+        # Use the agent record returned from insert() directly
+        # If insert() didn't return data (shouldn't happen), try fetching as fallback
+        if not created_agent:
+            logger.warning(f"[AGENTS] [DRAFT] Insert didn't return data, attempting to fetch: {agent_id}")
+            created_agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
         
         if not created_agent:
-            raise ValidationError(f"Failed to retrieve created agent: {agent_id}")
+            raise ValidationError(f"Failed to create/retrieve agent: {agent_id}")
         
         return {
             "data": created_agent,
