@@ -179,13 +179,17 @@ async def create_agent(
         
         # MATCH KNOWLEDGE BASES PATTERN: Insert FIRST (before external operations)
         logger.info(f"[AGENTS] [CREATE] [INSERT] Inserting agent into database | agent_id={agent_id} | clerk_org_id={expected_clerk_org_id}")
-        db.insert("agents", agent_record)  # Don't capture return value (like knowledge bases)
-        
-        logger.info(
-            f"[AGENTS] [CREATE] [INSERT] ✅ Agent record inserted | "
-            f"agent_id={agent_id} | "
-            f"clerk_org_id={expected_clerk_org_id}"
-        )
+        try:
+            insert_result = db.insert("agents", agent_record)  # Capture return value for verification
+            logger.info(
+                f"[AGENTS] [CREATE] [INSERT] ✅ Agent record inserted | "
+                f"agent_id={agent_id} | "
+                f"clerk_org_id={expected_clerk_org_id} | "
+                f"returned_clerk_org_id={insert_result.get('clerk_org_id') if insert_result else 'None'}"
+            )
+        except Exception as insert_error:
+            logger.error(f"[AGENTS] [CREATE] [INSERT] [ERROR] Insert failed! | agent_id={agent_id} | error={insert_error}", exc_info=True)
+            raise ValidationError(f"Failed to insert agent: {str(insert_error)}")
         
         # Create in Ultravox AFTER database insert (like knowledge bases pattern)
         try:
@@ -235,16 +239,22 @@ async def create_agent(
             )
         
         # MATCH KNOWLEDGE BASES PATTERN: Re-fetch at the end (after all operations)
-        logger.info(f"[AGENTS] [CREATE] [FETCH] Fetching agent from database | agent_id={agent_id} | clerk_org_id={expected_clerk_org_id}")
-        created_agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": expected_clerk_org_id})
+        # Use clerk_org_id directly (not expected_clerk_org_id) to match knowledge bases pattern exactly
+        logger.info(f"[AGENTS] [CREATE] [FETCH] Fetching agent from database | agent_id={agent_id} | clerk_org_id={clerk_org_id}")
+        created_agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
         
         if not created_agent:
-            logger.error(f"[AGENTS] [CREATE] [ERROR] Failed to fetch created agent | agent_id={agent_id} | clerk_org_id={expected_clerk_org_id}")
-            raise ValidationError(f"Failed to fetch created agent: {agent_id}")
+            logger.error(
+                f"[AGENTS] [CREATE] [ERROR] Agent not found after insert! | "
+                f"agent_id={agent_id} | "
+                f"clerk_org_id={clerk_org_id} | "
+                f"db.org_id={db.org_id}"
+            )
+            raise ValidationError(f"Failed to create/retrieve agent: {agent_id}")
         
         # Verify fetched record has correct clerk_org_id
-        if created_agent.get("clerk_org_id") != expected_clerk_org_id:
-            logger.error(f"[AGENTS] [CREATE] [ERROR] Fetched record has wrong clerk_org_id! | actual={created_agent.get('clerk_org_id')} | expected={expected_clerk_org_id}")
+        if created_agent.get("clerk_org_id") != clerk_org_id:
+            logger.error(f"[AGENTS] [CREATE] [ERROR] Fetched record has wrong clerk_org_id! | actual={created_agent.get('clerk_org_id')} | expected={clerk_org_id}")
             raise ValidationError(f"Agent created with incorrect organization ID: {agent_id}")
         
         logger.info(f"[AGENTS] [CREATE] [FETCH] ✅ Agent fetched successfully | agent_id={agent_id} | clerk_org_id={created_agent.get('clerk_org_id')}")
