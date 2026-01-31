@@ -204,6 +204,22 @@ class DatabaseService:
         if self.org_id:
             self.set_org_context(self.org_id)
         
+        # CRITICAL: For tables with clerk_org_id, ensure it's set if org_id is available
+        # This is a safety check to prevent empty clerk_org_id values
+        if table in ["agents", "calls", "voices", "knowledge_bases", "tools", "contacts", "contact_folders", "campaigns", "webhook_endpoints"]:
+            if "clerk_org_id" in data:
+                if not data["clerk_org_id"] or data["clerk_org_id"].strip() == "":
+                    logger.error(f"CRITICAL: Attempting to insert {table} with empty clerk_org_id! data keys: {list(data.keys())}")
+                    raise ValueError(f"Cannot insert {table} with empty clerk_org_id")
+            elif self.org_id:
+                # If clerk_org_id is missing but org_id is set, add it
+                logger.warning(f"Missing clerk_org_id in {table} insert data, adding from org_id context: {self.org_id}")
+                data["clerk_org_id"] = self.org_id
+        
+        # Log the data being inserted for debugging
+        if table == "agents":
+            logger.info(f"[DATABASE] [INSERT] Inserting into {table} with clerk_org_id: {data.get('clerk_org_id')}")
+        
         response = self.client.table(table).insert(data).execute()
         return response.data[0] if response.data else {}
     

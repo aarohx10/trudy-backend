@@ -62,6 +62,9 @@ async def create_agent(
         if not clerk_org_id:
             raise ValidationError("Missing organization ID in token")
         
+        # CRITICAL: Log the clerk_org_id to debug empty values
+        logger.info(f"[AGENTS] [CREATE] Creating agent with clerk_org_id: {clerk_org_id}")
+        
         # Initialize database service with org_id context
         db = DatabaseService(org_id=clerk_org_id)
         now = datetime.utcnow()
@@ -70,10 +73,14 @@ async def create_agent(
         agent_dict = agent_data.dict(exclude_none=True)
         
         # Build database record - use clerk_org_id only (organization-first approach)
+        # CRITICAL: Ensure clerk_org_id is never empty
+        if not clerk_org_id or clerk_org_id.strip() == "":
+            raise ValidationError(f"Invalid clerk_org_id: '{clerk_org_id}' - cannot be empty")
+        
         agent_id = str(uuid.uuid4())
         agent_record = {
             "id": agent_id,
-            "clerk_org_id": clerk_org_id,  # CRITICAL: Organization ID for data partitioning
+            "clerk_org_id": clerk_org_id.strip(),  # CRITICAL: Organization ID for data partitioning - ensure no whitespace
             "name": agent_dict["name"],
             "description": agent_dict.get("description"),
             "voice_id": agent_dict["voice_id"],
@@ -144,6 +151,8 @@ async def create_agent(
             agent_record["status"] = "active"
             
             # Now save to Supabase
+            # CRITICAL: Log the agent_record before insert to verify clerk_org_id
+            logger.info(f"[AGENTS] [CREATE] Inserting agent with clerk_org_id: {agent_record.get('clerk_org_id')}")
             db.insert("agents", agent_record)
             logger.info(f"[AGENTS] [CREATE] Agent created in Ultravox FIRST, then saved to DB: {agent_id}")
             

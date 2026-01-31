@@ -34,6 +34,9 @@ async def create_draft_agent(
         if not clerk_org_id:
             raise ValidationError("Missing organization ID in token")
         
+        # CRITICAL: Log the clerk_org_id to debug empty values
+        logger.info(f"[AGENTS] [DRAFT] Creating agent with clerk_org_id: {clerk_org_id}")
+        
         # Initialize database service with org_id context
         db = DatabaseService(org_id=clerk_org_id)
         now = datetime.utcnow()
@@ -63,9 +66,13 @@ async def create_draft_agent(
         
         # Build agent record - use clerk_org_id only (organization-first approach)
         # Note: Some fields require migration 015_expand_agents_table.sql to be run
+        # CRITICAL: Ensure clerk_org_id is never empty
+        if not clerk_org_id or clerk_org_id.strip() == "":
+            raise ValidationError(f"Invalid clerk_org_id: '{clerk_org_id}' - cannot be empty")
+        
         agent_record = {
             "id": agent_id,
-            "clerk_org_id": clerk_org_id,  # CRITICAL: Organization ID for data partitioning
+            "clerk_org_id": clerk_org_id.strip(),  # CRITICAL: Organization ID for data partitioning - ensure no whitespace
             "name": name,
             "description": template.get("description") if template else "Draft agent",
             "voice_id": default_voice_id,  # None if no voice available - user must select voice
@@ -113,8 +120,10 @@ async def create_draft_agent(
                 agent_record["status"] = "active"
                 
                 # Now save to Supabase - capture the returned record
+                # CRITICAL: Log the agent_record before insert to verify clerk_org_id
+                logger.info(f"[AGENTS] [DRAFT] Inserting agent with clerk_org_id: {agent_record.get('clerk_org_id')}")
                 created_agent = db.insert("agents", agent_record)
-                logger.info(f"[AGENTS] [DRAFT] Agent created in Ultravox FIRST, then saved to DB: {agent_id}")
+                logger.info(f"[AGENTS] [DRAFT] Agent created in Ultravox FIRST, then saved to DB: {agent_id} | clerk_org_id: {created_agent.get('clerk_org_id')}")
                 
             except Exception as uv_error:
                 # Ultravox creation failed - DO NOT create in DB
@@ -135,8 +144,10 @@ async def create_draft_agent(
             if reason == "voice_required":
                 # No voice selected - create as draft in DB only
                 agent_record["status"] = "draft"
+                # CRITICAL: Log the agent_record before insert to verify clerk_org_id
+                logger.info(f"[AGENTS] [DRAFT] Inserting draft agent with clerk_org_id: {agent_record.get('clerk_org_id')}")
                 created_agent = db.insert("agents", agent_record)
-                logger.info(f"[AGENTS] [DRAFT] Agent created as draft (no voice selected): {agent_id}")
+                logger.info(f"[AGENTS] [DRAFT] Agent created as draft (no voice selected): {agent_id} | clerk_org_id: {created_agent.get('clerk_org_id')}")
             else:
                 # Other validation failure - return error
                 error_msg = "; ".join(validation_result["errors"])
