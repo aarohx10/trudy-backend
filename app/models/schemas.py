@@ -618,6 +618,7 @@ class AgentCreate(BaseModel):
     tools: Optional[List[str]] = Field(default=[], description="List of tool IDs")
     knowledge_bases: Optional[List[str]] = Field(default=[], description="List of knowledge base IDs")
     template_id: Optional[str] = Field(None, description="Template ID used to create this agent")
+    clerk_org_id: Optional[str] = Field(None, description="Organization ID (fallback if JWT doesn't have it)")
     
     # Call template fields
     call_template_name: Optional[str] = None

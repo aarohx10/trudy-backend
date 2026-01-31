@@ -31,10 +31,12 @@ async def create_agent(
 ):
     """Create new agent (creates in Supabase + Ultravox)"""
     try:
-        # Get org_id from token
-        clerk_org_id = current_user.get("clerk_org_id")
+        # Get org_id from multiple sources (request body takes priority, then JWT token)
+        # Convert to dict first to check for clerk_org_id
+        agent_dict = agent_data.dict(exclude_none=True)
+        clerk_org_id = agent_dict.get("clerk_org_id") or current_user.get("clerk_org_id")
         if not clerk_org_id:
-            raise ValidationError("Missing organization ID in token")
+            raise ValidationError("Missing organization ID in token or request body")
         
         # Check idempotency key
         if idempotency_key:
@@ -42,7 +44,7 @@ async def create_agent(
                 clerk_org_id,
                 idempotency_key,
                 request,
-                agent_data.dict(),
+                agent_dict,
             )
             if cached:
                 return JSONResponse(
@@ -53,9 +55,6 @@ async def create_agent(
         # Initialize database service
         db = DatabaseService(org_id=clerk_org_id)
         now = datetime.utcnow()
-        
-        # Convert Pydantic model to dict
-        agent_dict = agent_data.dict(exclude_none=True)
         agent_id = str(uuid.uuid4())
         
         # Create agent record - always start as "draft"

@@ -26,10 +26,10 @@ async def create_draft_agent(
 ):
     """Create a draft agent with default settings, optionally from a template"""
     try:
-        # Get org_id from token
-        clerk_org_id = current_user.get("clerk_org_id")
+        # Get org_id from multiple sources (frontend request body takes priority, then JWT token)
+        clerk_org_id = payload.get("clerk_org_id") or current_user.get("clerk_org_id")
         if not clerk_org_id:
-            raise ValidationError("Missing organization ID in token")
+            raise ValidationError("Missing organization ID in token or request body")
         
         # Initialize database service
         db = DatabaseService(org_id=clerk_org_id)
