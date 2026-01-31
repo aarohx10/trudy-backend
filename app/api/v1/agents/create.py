@@ -10,7 +10,7 @@ import uuid
 import logging
 
 from app.core.auth import get_current_user
-from app.core.database import DatabaseService
+from app.core.database import insert_agent_via_rest
 from app.core.exceptions import ValidationError, ProviderError
 from app.core.idempotency import check_idempotency_key, store_idempotency_response
 from app.models.schemas import ResponseMeta, AgentCreate
@@ -52,8 +52,6 @@ async def create_agent(
                     status_code=cached["status_code"],
                 )
         
-        # Initialize database service
-        db = DatabaseService(org_id=clerk_org_id)
         now = datetime.utcnow()
         agent_id = str(uuid.uuid4())
         
@@ -109,50 +107,24 @@ async def create_agent(
         if agent_dict.get("crm_webhook_secret"):
             agent_record["crm_webhook_secret"] = agent_dict["crm_webhook_secret"]
         
-        # Insert into database (trust it works)
-        db.insert("agents", agent_record)
-        
-        # Try Ultravox sync (non-blocking)
+        # Ultravox FIRST (same as test script / create_draft): get ultravox_agent_id, then insert once with clerk_org_id + ultravox_agent_id
+        ultravox_agent_id = None
         try:
             validation_result = await validate_agent_for_ultravox_sync(agent_record, clerk_org_id)
             if validation_result["can_sync"]:
                 ultravox_response = await create_agent_ultravox_first(agent_record, clerk_org_id)
                 ultravox_agent_id = ultravox_response.get("agentId")
-                if ultravox_agent_id:
-                    db.update("agents", {"id": agent_id, "clerk_org_id": clerk_org_id}, {
-                        "ultravox_agent_id": ultravox_agent_id,
-                        "status": "active"
-                    })
+                logger.info(f"[AGENTS] [CREATE] Created in Ultravox first: ultravox_agent_id={ultravox_agent_id}")
         except Exception as e:
             logger.warning(f"[AGENTS] [CREATE] Ultravox sync failed: {e}")
-            # Agent stays as "draft"
+        agent_record["ultravox_agent_id"] = ultravox_agent_id
+        agent_record["status"] = "active" if ultravox_agent_id else "draft"
         
-        # Simple re-fetch - let select_one auto-append clerk_org_id using db.org_id (matches what was used during insert)
-        logger.info(
-            f"[AGENTS] [CREATE] [FETCH] Attempting to re-fetch agent | "
-            f"agent_id={agent_id} | "
-            f"clerk_org_id={clerk_org_id} | "
-            f"db.org_id={db.org_id}"
-        )
-        created_agent = db.select_one("agents", {"id": agent_id})
-        
+        # Insert via REST (exact same as test script) so clerk_org_id and ultravox_agent_id are persisted
+        logger.info(f"[AGENTS] [CREATE] Inserting agent via REST: id={agent_id} clerk_org_id={clerk_org_id} ultravox_agent_id={ultravox_agent_id}")
+        created_agent = await insert_agent_via_rest(agent_record)
         if not created_agent:
-            logger.error(
-                f"[AGENTS] [CREATE] [FETCH] [ERROR] Agent not found after insert! | "
-                f"agent_id={agent_id} | "
-                f"clerk_org_id={clerk_org_id} | "
-                f"db.org_id={db.org_id} | "
-                f"filter_used=id only (auto-append expected)"
-            )
             raise ValidationError(f"Failed to retrieve agent after creation: {agent_id}")
-        
-        logger.info(
-            f"[AGENTS] [CREATE] [FETCH] ✅ Agent fetched successfully | "
-            f"agent_id={agent_id} | "
-            f"fetched_clerk_org_id={created_agent.get('clerk_org_id')} | "
-            f"expected_clerk_org_id={clerk_org_id} | "
-            f"db.org_id={db.org_id}"
-        )
         
         response_data = {
             "data": created_agent,

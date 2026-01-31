@@ -1,11 +1,16 @@
 """
 Supabase Database Client
 """
-from supabase import create_client, Client
-from typing import Optional, Dict, Any, List
+import json
 import logging
+from typing import Optional, Dict, Any, List
+
+import httpx
 from jose import jwt as jose_jwt
+from supabase import create_client, Client
+
 from app.core.config import settings
+from app.core.exceptions import ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +99,49 @@ def get_db_client(org_id: Optional[str] = None) -> Client:
             logger.warning(f"Could not set org_id context (RPC function may not exist): {e}")
     
     return client
+
+
+async def insert_agent_via_rest(agent_record: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Insert agent via Supabase REST API (exact same as test script).
+    Ensures clerk_org_id and ultravox_agent_id are persisted. Uses raw POST
+    then fallback PATCH if the DB dropped either value.
+    """
+    url = f"{settings.SUPABASE_URL.rstrip('/')}/rest/v1/agents"
+    headers = {
+        "apikey": settings.SUPABASE_SERVICE_KEY,
+        "Authorization": f"Bearer {settings.SUPABASE_SERVICE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation",
+    }
+    body = json.loads(json.dumps(agent_record, default=str))
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(url, json=body, headers=headers)
+    if resp.status_code >= 400:
+        logger.error("[insert_agent_via_rest] POST failed: %s %s", resp.status_code, resp.text[:500])
+        raise ValidationError(f"Failed to create agent: {resp.status_code} {resp.text[:200]}")
+    data = resp.json()
+    inserted = data[0] if isinstance(data, list) else data
+    agent_id = inserted.get("id")
+    clerk_org_id = agent_record.get("clerk_org_id")
+    ultravox_agent_id = agent_record.get("ultravox_agent_id")
+    if agent_id is None:
+        raise ValidationError("Agent insert did not return id")
+    # Fallback PATCH if DB dropped clerk_org_id or ultravox_agent_id (same as test script)
+    if inserted.get("clerk_org_id") != clerk_org_id or inserted.get("ultravox_agent_id") != ultravox_agent_id:
+        logger.warning("[insert_agent_via_rest] DB row missing clerk_org_id or ultravox_agent_id; applying fallback PATCH.")
+        patch_url = f"{settings.SUPABASE_URL.rstrip('/')}/rest/v1/agents?id=eq.{agent_id}"
+        patch_body = {"clerk_org_id": clerk_org_id, "ultravox_agent_id": ultravox_agent_id}
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            patch_resp = await client.patch(patch_url, json=patch_body, headers=headers)
+        if patch_resp.status_code >= 400:
+            logger.error("[insert_agent_via_rest] PATCH failed: %s %s", patch_resp.status_code, patch_resp.text[:300])
+        else:
+            logger.info("[insert_agent_via_rest] Fallback PATCH succeeded.")
+    # Return full row from DB (refetch so we have consistent state)
+    admin = get_supabase_admin_client()
+    row = admin.table("agents").select("*").eq("id", agent_id).execute()
+    return row.data[0] if row.data else inserted
 
 
 class DatabaseService:
