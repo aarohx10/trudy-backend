@@ -121,15 +121,21 @@ class DatabaseService:
         """
         Set organization ID context for this database connection.
         Executes: SET LOCAL app.current_org_id = org_id
+        
+        CRITICAL: Must be called before EVERY query because Supabase HTTP client
+        doesn't maintain session state across requests. Each HTTP request uses a
+        new connection, so SET LOCAL context is lost.
         """
         try:
             # Call RPC function to set org_id context
-            self.client.rpc("set_org_context", {"org_id": org_id}).execute()
+            # This must be called before each query since Supabase uses HTTP (no persistent connections)
+            result = self.client.rpc("set_org_context", {"org_id": org_id}).execute()
             self.org_id = org_id
             logger.debug(f"Set org_id context: {org_id}")
         except Exception as e:
-            # If RPC function doesn't exist yet, log warning but continue
-            logger.warning(f"Could not set org_id context (RPC function may not exist): {e}")
+            # Log error but don't fail - RLS will block if context isn't set, which is safe
+            logger.error(f"CRITICAL: Could not set org_id context: {e}. RLS policies will block access.", exc_info=True)
+            # Don't raise - let RLS handle security (safer than allowing access without context)
     
     def set_auth(self, token: Optional[str]):
         """Set authentication context if token is a Supabase-issued JWT"""
@@ -151,6 +157,10 @@ class DatabaseService:
     # Generic CRUD operations
     def select(self, table: str, filters: Optional[Dict[str, Any]] = None, order_by: Optional[str] = None, limit: Optional[int] = None, offset: Optional[int] = None) -> List[Dict[str, Any]]:
         """Select records from table"""
+        # CRITICAL: Re-set org context before each query (Supabase HTTP client doesn't maintain session state)
+        if self.org_id:
+            self.set_org_context(self.org_id)
+        
         # #region debug log
         import json
         try:
@@ -190,11 +200,19 @@ class DatabaseService:
     
     def insert(self, table: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Insert record"""
+        # CRITICAL: Re-set org context before each query (Supabase HTTP client doesn't maintain session state)
+        if self.org_id:
+            self.set_org_context(self.org_id)
+        
         response = self.client.table(table).insert(data).execute()
         return response.data[0] if response.data else {}
     
     def update(self, table: str, filters: Dict[str, Any], data: Dict[str, Any]) -> Dict[str, Any]:
         """Update records"""
+        # CRITICAL: Re-set org context before each query (Supabase HTTP client doesn't maintain session state)
+        if self.org_id:
+            self.set_org_context(self.org_id)
+        
         query = self.client.table(table).update(data)
         
         for key, value in filters.items():
@@ -205,6 +223,10 @@ class DatabaseService:
     
     def delete(self, table: str, filters: Dict[str, Any]) -> bool:
         """Delete records"""
+        # CRITICAL: Re-set org context before each query (Supabase HTTP client doesn't maintain session state)
+        if self.org_id:
+            self.set_org_context(self.org_id)
+        
         query = self.client.table(table).delete()
         
         for key, value in filters.items():
@@ -215,6 +237,10 @@ class DatabaseService:
     
     def count(self, table: str, filters: Optional[Dict[str, Any]] = None) -> int:
         """Count records"""
+        # CRITICAL: Re-set org context before each query (Supabase HTTP client doesn't maintain session state)
+        if self.org_id:
+            self.set_org_context(self.org_id)
+        
         query = self.client.table(table).select("*", count="exact")
         
         if filters:
