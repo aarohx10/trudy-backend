@@ -181,12 +181,24 @@ async def create_agent(
         logger.info(f"[AGENTS] [CREATE] [INSERT] Inserting agent into database | agent_id={agent_id} | clerk_org_id={expected_clerk_org_id}")
         try:
             insert_result = db.insert("agents", agent_record)  # Capture return value for verification
+            if not insert_result or not insert_result.get("id"):
+                logger.error(f"[AGENTS] [CREATE] [INSERT] [ERROR] Insert returned empty result! | agent_id={agent_id} | insert_result={insert_result}")
+                raise ValidationError(f"Failed to insert agent: Insert returned empty result")
+            returned_clerk_org_id = insert_result.get("clerk_org_id")
+            if returned_clerk_org_id != expected_clerk_org_id:
+                logger.error(
+                    f"[AGENTS] [CREATE] [INSERT] [ERROR] clerk_org_id mismatch in returned record! | "
+                    f"expected={expected_clerk_org_id} | returned={returned_clerk_org_id} | agent_id={agent_id}"
+                )
+                raise ValidationError(f"Agent inserted with incorrect organization ID: {agent_id}")
             logger.info(
                 f"[AGENTS] [CREATE] [INSERT] ✅ Agent record inserted | "
                 f"agent_id={agent_id} | "
                 f"clerk_org_id={expected_clerk_org_id} | "
-                f"returned_clerk_org_id={insert_result.get('clerk_org_id') if insert_result else 'None'}"
+                f"returned_clerk_org_id={returned_clerk_org_id}"
             )
+        except ValidationError:
+            raise
         except Exception as insert_error:
             logger.error(f"[AGENTS] [CREATE] [INSERT] [ERROR] Insert failed! | agent_id={agent_id} | error={insert_error}", exc_info=True)
             raise ValidationError(f"Failed to insert agent: {str(insert_error)}")
@@ -240,7 +252,12 @@ async def create_agent(
         
         # MATCH KNOWLEDGE BASES PATTERN: Re-fetch at the end (after all operations)
         # Use clerk_org_id directly (not expected_clerk_org_id) to match knowledge bases pattern exactly
-        logger.info(f"[AGENTS] [CREATE] [FETCH] Fetching agent from database | agent_id={agent_id} | clerk_org_id={clerk_org_id}")
+        # Note: We explicitly pass clerk_org_id in filter, but db.org_id should also match (auto-append won't override)
+        logger.info(f"[AGENTS] [CREATE] [FETCH] Fetching agent from database | agent_id={agent_id} | clerk_org_id={clerk_org_id} | db.org_id={db.org_id}")
+        # Ensure db.org_id matches clerk_org_id before re-fetch
+        if db.org_id != clerk_org_id:
+            logger.warning(f"[AGENTS] [CREATE] [WARNING] db.org_id mismatch! | db.org_id={db.org_id} | clerk_org_id={clerk_org_id} | Re-initializing db")
+            db = DatabaseService(org_id=clerk_org_id)
         created_agent = db.select_one("agents", {"id": agent_id, "clerk_org_id": clerk_org_id})
         
         if not created_agent:
